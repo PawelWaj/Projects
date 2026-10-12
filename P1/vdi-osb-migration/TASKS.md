@@ -2,7 +2,7 @@
 
 ![workflow](docs/OSB_CamelK_Workflow.png)
 
-Two separate tracks: **A** migrates the OSB code to a Camel K route (pi implementer), **B** builds the tests and mocks from OSB logs and OSB logic (pi tester). They meet only at verification. Source: `docs/OSB_CamelK_Workflow.drawio`.
+Two separate tracks: **A** migrates the OSB code to a Camel K route in YAML DSL (pi implementer), **B** builds the tests and mocks from OSB logs and OSB logic (pi tester). They meet only at verification. Source: `docs/OSB_CamelK_Workflow.drawio`.
 
 Work in a workspace folder, e.g. `~/work/osb-migration`. Tools: `~/Projects/P1` (`git clone git@github.com:PawelWaj/Projects.git ~/Projects`).
 Nothing unmasked leaves the VDI. Send only reports and file lists, never CSVs or payloads.

@@ -54,10 +54,10 @@ text(40, 438, 900, 26, "TRACK B — TESTING AND MOCKING: OSB logs + OSB logic �
 # Track A
 a1 = box(50, 160, 220, 100, "OSB source code\n(OSB repository: project, proxy,\npipeline, .bix, XQuery, WSDL/XSD)", TGREY, GREY, 12)
 a2 = box(320, 160, 230, 100, "1 Inventory + flow card\nosb_inventory.py · scaffold_flow.py\n(every branch, interface,\nerror path = test-matrix row)", BLUE_F, BLUE_L)
-a3 = box(600, 160, 200, 100, "2 pi ANALYST\ncompletes the flow card\n(mapping OSB → Camel K)", BLUE_F, BLUE_L, bold=True)
+a3 = box(600, 160, 200, 100, "2 pi ANALYST\ncompletes the flow card\n(mapping OSB → Camel K YAML)", BLUE_F, BLUE_L, bold=True)
 ga = box(850, 165, 170, 90, "GATE A\nengineer approves\nthe flow card", AMB_F, AMB_L, bold=True)
-a4 = box(1290, 160, 250, 100, "6 pi IMPLEMENTER\nwrites the Camel K route\n(Java DSL RouteBuilder,\nfrom the approved card)", BLUE_F, BLUE_L, bold=True)
-a5 = box(1590, 160, 270, 100, "Camel K integration\nroute files + properties\n(Integration CR / kamel run)", TGREY, BLUE_L)
+a4 = box(1290, 160, 250, 100, "6 pi IMPLEMENTER\nwrites the Camel K route\n(YAML DSL, *.camel.yaml,\nfrom the approved card)", BLUE_F, BLUE_L, bold=True)
+a5 = box(1590, 160, 270, 100, "Camel K integration\nroute.camel.yaml + properties\n(Integration CR / kamel run)", TGREY, BLUE_L)
 text(1290, 270, 560, 60, "Implementer rule: may not touch src/test or the card. If a test looks wrong it writes "
      "TEST_DISPUTE.md with OSB evidence and stops.", fs=11, bold=False, fc=GREY)
 
@@ -67,7 +67,7 @@ b2 = box(320, 490, 230, 90, "3 Anonymise (inside GOSI)\nanonymize_logs.py · MAS
 b3 = box(600, 490, 200, 90, "4 Test cases\none per real transaction\ninput · headers · expected", TMINT, MINT)
 b4 = box(850, 490, 210, 90, "5 Expected results\nORIGINAL OSB XQuery on the\nsame inputs (golden runner,\nORACLE.lock)", TMINT, MINT)
 b5 = box(1110, 490, 220, 90, "6 pi TESTER\nwrites tests + mocks FIRST\n(fresh context, no route yet)", TMINT, MINT, bold=True)
-b6 = box(1380, 470, 480, 130, "Tests and mocks (src/test)\nL1 unit: Camel mock endpoints (no Docker)\n"
+b6 = box(1380, 470, 480, 130, "Tests and mocks (src/test)\nL1 unit: the YAML route loaded in a Camel test, mock endpoints (no Docker)\n"
          "L2 component: Artemis + WireMock in throwaway containers\nL3 replay: built image against the mock stack\n"
          "DB / DVM / callout / file / mail / security mocks if the card lists them", TGREY, MINT, 12, align="left")
 text(50, 600, 1300, 50, "Track B without the OSB source (task 1): anonymise → signature from one example log line → test cases "
