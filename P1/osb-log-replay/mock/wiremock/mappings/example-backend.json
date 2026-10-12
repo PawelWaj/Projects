@@ -1,0 +1,6 @@
+{
+  "_comment": "Example stub for an HTTP/SOAP business service the flow calls. One file per backend operation; generate them from the business service (.bix) endpoint and the recorded responses.",
+  "request": {"method": "POST", "urlPath": "/backend/MemberLookup", "headers": {"SOAPAction": {"contains": "lookupMember"}}},
+  "response": {"status": 200, "headers": {"Content-Type": "text/xml; charset=utf-8"},
+               "body": "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\"><soap:Body><lookupMemberResponse><status>ACTIVE</status></lookupMemberResponse></soap:Body></soap:Envelope>"}
+}

@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<wsdl:definitions name="ContributorEnquiry" targetNamespace="http://example.com/integration/contributor/v1" xmlns:wsdl="http://schemas.xmlsoap.org/wsdl/" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" xmlns:tns="http://example.com/integration/contributor/v1" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <wsdl:types><xsd:schema><xsd:import namespace="http://example.com/integration/contributor/v1" schemaLocation="../XSD/Contributor.xsd"/></xsd:schema></wsdl:types>
+  <wsdl:message name="getContributorRequest"><wsdl:part name="parameters" element="tns:getContributorRequest"/></wsdl:message>
+  <wsdl:message name="getContributorResponse"><wsdl:part name="parameters" element="tns:getContributorResponse"/></wsdl:message>
+  <wsdl:message name="updateContributorRequest"><wsdl:part name="parameters" element="tns:updateContributorRequest"/></wsdl:message>
+  <wsdl:message name="updateContributorResponse"><wsdl:part name="parameters" element="tns:updateContributorResponse"/></wsdl:message>
+  <wsdl:portType name="ContributorEnquiryPortType">
+    <wsdl:operation name="getContributor"><wsdl:input message="tns:getContributorRequest"/><wsdl:output message="tns:getContributorResponse"/></wsdl:operation>
+    <wsdl:operation name="updateContributor"><wsdl:input message="tns:updateContributorRequest"/><wsdl:output message="tns:updateContributorResponse"/></wsdl:operation>
+  </wsdl:portType>
+  <wsdl:binding name="ContributorEnquiryBinding" type="tns:ContributorEnquiryPortType">
+    <soap:binding style="document" transport="http://schemas.xmlsoap.org/soap/http"/>
+    <wsdl:operation name="getContributor"><soap:operation soapAction="getContributor"/><wsdl:input><soap:body use="literal"/></wsdl:input><wsdl:output><soap:body use="literal"/></wsdl:output></wsdl:operation>
+    <wsdl:operation name="updateContributor"><soap:operation soapAction="updateContributor"/><wsdl:input><soap:body use="literal"/></wsdl:input><wsdl:output><soap:body use="literal"/></wsdl:output></wsdl:operation>
+  </wsdl:binding>
+  <wsdl:service name="ContributorEnquiryService"><wsdl:port name="ContributorEnquiryPort" binding="tns:ContributorEnquiryBinding"><soap:address location="http://localhost/ContributorIntegration/ContributorEnquiry"/></wsdl:port></wsdl:service>
+</wsdl:definitions>

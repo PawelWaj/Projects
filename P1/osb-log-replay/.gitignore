@@ -1,0 +1,4 @@
+work/
+mock/.env
+__pycache__/
+*.pyc

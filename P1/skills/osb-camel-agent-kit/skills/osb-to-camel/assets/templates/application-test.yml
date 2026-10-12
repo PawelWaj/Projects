@@ -1,0 +1,36 @@
+# Test profile for a migrated OSB module. Every external endpoint points at a mock; the values are overridden per test
+# class (WireMock port, Artemis container URL) through @DynamicPropertySource.
+camel:
+  springboot:
+    name: osb-{{project}}-test
+    main-run-controller: true
+  component:
+    amqp:
+      # overridden by the ArtemisContainer in JmsPublishTest; left unresolvable on purpose so a test that forgets
+      # to override fails fast instead of connecting somewhere
+      connection-factory: "#amqpConnectionFactory"
+
+osb:
+  proxy:
+    {{ProxyName}}:
+      path: {{osb_uri}}
+  business:
+    # one block per business service on the card; mirrors the production keys so the same route code runs
+    {{BusinessName}}:
+      url: http://localhost:0/overridden-by-test
+      timeout: {{timeout_ms}}
+      retry-count: {{retry_count}}
+      retry-interval: {{retry_interval_ms}}
+      username: test-user
+      password: test-password
+
+# Interface mocks (keep only the blocks the card needs; each test overrides the addresses via @DynamicPropertySource)
+# osb.file.<Name>.in/done/error, osb.sftp.<Name>.uri, osb.mail.<Name>.smtp/imap, osb.security.token-url/jwks-url,
+# spring.datasource.* : left unresolvable here so a test that forgets to override fails fast.
+# Vault: the Agent Injector is NOT mocked; the properties it would write are given here as plain test values
+# (test-user / test-password above). Never put a real secret in this file.
+
+logging:
+  level:
+    org.apache.camel: INFO
+    {{package}}: DEBUG

@@ -1,0 +1,53 @@
+<!-- Build plugins the gates rely on. Merge into <build><plugins> of each flow module (or the parent pom).
+     Versions are properties: pin them in the parent pom to the programme's approved versions. -->
+<plugins>
+  <!-- G4: unit, route, golden, contract tests (*Test) -->
+  <plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-surefire-plugin</artifactId>
+    <version>${surefire.version}</version>
+    <configuration>
+      <excludes><exclude>**/*IT.java</exclude></excludes>
+    </configuration>
+  </plugin>
+
+  <!-- G5: integration tests (*IT) with Testcontainers AMQ Broker -->
+  <plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-failsafe-plugin</artifactId>
+    <version>${surefire.version}</version>
+    <executions>
+      <execution><goals><goal>integration-test</goal><goal>verify</goal></goals></execution>
+    </executions>
+  </plugin>
+
+  <!-- G2: validates every Camel endpoint URI and option against the Camel catalog of this version -->
+  <plugin>
+    <groupId>org.apache.camel</groupId>
+    <artifactId>camel-report-maven-plugin</artifactId>
+    <version>${camel.version}</version>
+    <configuration>
+      <failOnError>true</failOnError>
+      <includeTest>false</includeTest>
+      <ignoreUnknownComponent>false</ignoreUnknownComponent>
+    </configuration>
+  </plugin>
+
+  <!-- Optional G8b: mutation testing of Java processors -->
+  <plugin>
+    <groupId>org.pitest</groupId>
+    <artifactId>pitest-maven</artifactId>
+    <version>${pitest.version}</version>
+    <dependencies>
+      <dependency>
+        <groupId>org.pitest</groupId>
+        <artifactId>pitest-junit5-plugin</artifactId>
+        <version>${pitest.junit5.version}</version>
+      </dependency>
+    </dependencies>
+    <configuration>
+      <targetClasses><param>${integration.base.package}.*</param>  <!-- base package: OPEN, set in the parent pom --></targetClasses>
+      <mutationThreshold>70</mutationThreshold>
+    </configuration>
+  </plugin>
+</plugins>

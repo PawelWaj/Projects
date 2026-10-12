@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xml-fragment xmlns:ser="http://www.bea.com/wli/sb/services" xmlns:tran="http://www.bea.com/wli/sb/transports" xmlns:env="http://www.bea.com/wli/config/env" xmlns:http="http://www.bea.com/wli/sb/transports/http" xmlns:con="http://www.bea.com/wli/sb/pipeline/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ser:coreEntry isProxy="false" isEnabled="true">
+    <ser:binding type="SOAP" isSoap12="false" xsi:type="con:SoapBindingType">
+      <con:wsdl ref="ContributorIntegration/WSDL/ContributorEnquiry"/>
+      <con:port><con:name>ContributorEnquiryPort</con:name><con:namespace>http://example.com/integration/contributor/v1</con:namespace></con:port>
+    </ser:binding>
+  </ser:coreEntry>
+  <ser:endpointConfig>
+    <tran:provider-id>http</tran:provider-id>
+    <tran:inbound>false</tran:inbound>
+    <tran:URI><env:value>http://core-app.example.local:8001/ContributorService/ContributorEnquiryPort</env:value></tran:URI>
+    <tran:outbound-properties>
+      <tran:load-balancing-algorithm>round-robin</tran:load-balancing-algorithm>
+      <tran:retry-count>1</tran:retry-count>
+      <tran:retry-interval>30</tran:retry-interval>
+      <tran:retry-application-errors>false</tran:retry-application-errors>
+    </tran:outbound-properties>
+    <tran:provider-specific>
+      <http:outbound-properties>
+        <http:request-method>POST</http:request-method>
+        <http:timeout>30</http:timeout>
+        <http:follow-redirects>false</http:follow-redirects>
+        <http:chunked-streaming-mode>true</http:chunked-streaming-mode>
+      </http:outbound-properties>
+      <http:service-account ref="ContributorIntegration/ServiceAccount/CoreSA"/>
+    </tran:provider-specific>
+  </ser:endpointConfig>
+</xml-fragment>

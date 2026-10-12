@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<con:pipelineEntry xmlns:con="http://www.bea.com/wli/sb/pipeline/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:con1="http://www.bea.com/wli/sb/stages/transform/config" xmlns:con2="http://www.bea.com/wli/sb/stages/config" xmlns:con3="http://www.bea.com/wli/sb/stages/routing/config" xmlns:con4="http://www.bea.com/wli/sb/stages/logging/config" xmlns:con5="http://www.bea.com/wli/sb/stages/publish/config">
+  <con:router errorHandler="error-svc">
+    <con:pipeline type="error" name="error-svc">
+      <con:stage id="s1" name="order-event-service-errorhandler-stage"><con:context/><con:actions>
+        <con4:log><con2:id>a1</con2:id><con4:logLevel>error</con4:logLevel><con4:expr><con2:xqueryText>fn:concat("err ",$uuId)</con2:xqueryText></con4:expr></con4:log>
+        <con1:replace varName="body" contents-only="true"><con2:id>a2</con2:id><con1:location><con2:xpathText>.</con2:xpathText></con1:location><con1:expr><con2:xqueryText>$bpmxml</con2:xqueryText></con1:expr></con1:replace>
+        <con5:route><con2:id>a3</con2:id><con5:service ref="order-event-prj/Business_Service/order-event-error-queue" xsi:type="ref:BusinessServiceRef" xmlns:ref="http://www.bea.com/wli/sb/reference"/>
+          <con5:outboundTransform><con1:transport-headers copy-all="false"><con2:id>a4</con2:id><con1:header-set>outbound-request</con1:header-set><con1:header value="expression" name="traceId"><con2:xqueryText>fn:data($uuId)</con2:xqueryText></con1:header></con1:transport-headers></con5:outboundTransform></con5:route>
+        <con2:reply isError="false"><con2:id>a5</con2:id></con2:reply>
+      </con:actions></con:stage>
+    </con:pipeline>
+    <con:pipeline type="request" name="request-1">
+      <con:stage id="s2" name="request-transalate-stage"><con:context/><con:actions>
+        <con1:assign varName="uuId"><con2:id>a6</con2:id><con1:expr><con2:xqueryText>fn-bea:uuid()</con2:xqueryText></con1:expr></con1:assign>
+        <con1:nxsdTranslation><con2:id>a7</con2:id><con1:type>Native-To-XML</con1:type><con1:sourceExpr><con2:xqueryText>fn:string($body)</con2:xqueryText></con1:sourceExpr><con1:nxsd ref="order-event-prj/Resources/Schemas/order-event-nxsd"/></con1:nxsdTranslation>
+      </con:actions></con:stage>
+    </con:pipeline>
+    <con:pipeline type="response" name="response-1"/>
+    <con:flow><con:pipeline-node name="pp"><con:request>request-1</con:request><con:response>response-1</con:response></con:pipeline-node>
+      <con:route-node name="route-to-queue"><con:context/><con:actions><con3:route><con2:id>a8</con2:id><con3:service ref="order-event-prj/Business_Service/order-event" xsi:type="ref:BusinessServiceRef" xmlns:ref="http://www.bea.com/wli/sb/reference"/></con3:route></con:actions></con:route-node></con:flow>
+  </con:router>
+</con:pipelineEntry>

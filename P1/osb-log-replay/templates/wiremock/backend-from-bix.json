@@ -1,0 +1,20 @@
+{
+  "_comment": "TEMPLATE: one stub per business-service operation. Take the URL path and SOAPAction (or HTTP method) from the .bix endpoint and WSDL; take the response from the logs if OSB logged it, else from the OSB test console or a WSDL example. Add a fault variant to test the error path, and a delayed variant (fixedDelayMilliseconds above the business-service timeout) to test retries.",
+  "mappings": [
+    {
+      "request": {"method": "POST", "urlPath": "/backend/MemberLookup", "headers": {"SOAPAction": {"contains": "lookupMember"}},
+                  "bodyPatterns": [{"matchesXPath": "//*[local-name()='memberId']"}]},
+      "response": {"status": 200, "headers": {"Content-Type": "text/xml; charset=utf-8"},
+                   "bodyFileName": "lookupMember-ok.xml"}
+    },
+    {
+      "request": {"method": "POST", "urlPath": "/backend/MemberLookup", "headers": {"X-Test-Case": {"equalTo": "fault"}}},
+      "response": {"status": 500, "headers": {"Content-Type": "text/xml; charset=utf-8"},
+                   "body": "<soap:Envelope xmlns:soap=\"http://schemas.xmlsoap.org/soap/envelope/\"><soap:Body><soap:Fault><faultcode>soap:Server</faultcode><faultstring>backend unavailable</faultstring></soap:Fault></soap:Body></soap:Envelope>"}
+    },
+    {
+      "request": {"method": "POST", "urlPath": "/backend/MemberLookup", "headers": {"X-Test-Case": {"equalTo": "timeout"}}},
+      "response": {"status": 200, "fixedDelayMilliseconds": 35000}
+    }
+  ]
+}

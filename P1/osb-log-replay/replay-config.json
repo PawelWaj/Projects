@@ -1,0 +1,30 @@
+{
+  "_comment": "One entry per OSB flow under test. Destinations are the TARGET broker names (from the queue register), not the WebLogic JNDI names. Values below are for the synthetic order-event sample.",
+  "broker": {
+    "host": "localhost",
+    "stomp_port": 61613,
+    "user": "artemis",
+    "password_env": "ARTEMIS_PASSWORD"
+  },
+  "flows": {
+    "order-event-prj/order-event": {
+      "input": {
+        "address": "orderEventsTopic",
+        "type": "multicast",
+        "subscription": "order-event-sub",
+        "filter": "(resource='Create Order' OR resource='Cancel Order') AND (eventType='updated')"
+      },
+      "correlation_header": "traceId",
+      "outputs": {
+        "success": {"destination": "InboundOrderEventQueue", "type": "anycast"},
+        "error": {"destination": "orderEventErrorQueue", "type": "anycast",
+                  "expect_headers": ["errorCode", "errorMessage", "traceId", "resource", "eventType"]}
+      },
+      "negative_cases": [
+        {"name": "eventType created is filtered out by the subscription", "headers": {"resource": "Create Order", "eventType": "created"}},
+        {"name": "unknown resource is filtered out", "headers": {"resource": "Delete Order", "eventType": "updated"}}
+      ],
+      "timeout_s": 15
+    }
+  }
+}

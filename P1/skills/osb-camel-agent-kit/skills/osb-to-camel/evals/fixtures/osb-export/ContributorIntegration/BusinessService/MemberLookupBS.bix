@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xml-fragment xmlns:ser="http://www.bea.com/wli/sb/services" xmlns:tran="http://www.bea.com/wli/sb/transports" xmlns:env="http://www.bea.com/wli/config/env" xmlns:http="http://www.bea.com/wli/sb/transports/http" xmlns:con="http://www.bea.com/wli/sb/pipeline/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ser:coreEntry isProxy="false" isEnabled="true">
+    <ser:binding type="SOAP" isSoap12="true" xsi:type="con:SoapBindingType">
+      <con:wsdl ref="ContributorIntegration/WSDL/MemberLookup"/>
+      <con:port><con:name>MemberLookupPort</con:name><con:namespace>http://example.com/member/v2</con:namespace></con:port>
+    </ser:binding>
+  </ser:coreEntry>
+  <ser:endpointConfig>
+    <tran:provider-id>http</tran:provider-id>
+    <tran:inbound>false</tran:inbound>
+    <tran:URI><env:value>http://member-api.example.local:7011/MemberLookup/v2</env:value></tran:URI>
+    <tran:outbound-properties>
+      <tran:load-balancing-algorithm>round-robin</tran:load-balancing-algorithm>
+      <tran:retry-count>0</tran:retry-count>
+      <tran:retry-interval>0</tran:retry-interval>
+    </tran:outbound-properties>
+    <tran:provider-specific>
+      <http:outbound-properties><http:request-method>POST</http:request-method><http:timeout>10</http:timeout></http:outbound-properties>
+    </tran:provider-specific>
+  </ser:endpointConfig>
+</xml-fragment>

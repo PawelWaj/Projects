@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:tns="http://example.com/integration/contributor/v1" targetNamespace="http://example.com/integration/contributor/v1" elementFormDefault="qualified">
+  <xsd:element name="getContributorRequest"><xsd:complexType><xsd:sequence>
+    <xsd:element name="contributorId" type="xsd:string"/><xsd:element name="nationalId" type="xsd:string"/>
+    <xsd:element name="fullNameAr" type="xsd:string" minOccurs="0"/><xsd:element name="dateOfBirth" type="xsd:date" minOccurs="0"/>
+    <xsd:element name="status" type="xsd:string" minOccurs="0"/>
+    <xsd:element name="establishment" minOccurs="0" maxOccurs="unbounded"><xsd:complexType><xsd:sequence><xsd:element name="number" type="xsd:string"/><xsd:element name="wage" type="xsd:decimal"/></xsd:sequence></xsd:complexType></xsd:element>
+    <xsd:element name="lookupTime" type="xsd:dateTime" minOccurs="0"/>
+  </xsd:sequence></xsd:complexType></xsd:element>
+  <xsd:element name="getContributorResponse"><xsd:complexType><xsd:sequence><xsd:element name="contributorId" type="xsd:string"/><xsd:element name="status" type="xsd:string"/><xsd:element name="balance" type="xsd:decimal"/></xsd:sequence></xsd:complexType></xsd:element>
+  <xsd:element name="updateContributorRequest"><xsd:complexType><xsd:sequence><xsd:element name="contributorId" type="xsd:string"/><xsd:element name="status" type="xsd:string"/></xsd:sequence></xsd:complexType></xsd:element>
+  <xsd:element name="updateContributorResponse"><xsd:complexType><xsd:sequence><xsd:element name="result" type="xsd:string"/></xsd:sequence></xsd:complexType></xsd:element>
+</xsd:schema>

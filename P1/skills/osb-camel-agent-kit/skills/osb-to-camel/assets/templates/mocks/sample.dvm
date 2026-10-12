@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TEMPLATE ONLY: shape of an Oracle DVM file. In a real module the .dvm files are the EXPORTED OSB resources,
+     copied unchanged to src/main/resources/dvm/ (DG1). Keep the namespace the export uses. -->
+<dvm name="{{dvm_name}}" xmlns="http://xmlns.oracle.com/dvm">
+  <description>{{description}}</description>
+  <columns>
+    <column name="{{source_column}}"/>
+    <column name="{{target_column}}"/>
+  </columns>
+  <rows>
+    <row><cell>{{source_value_1}}</cell><cell>{{target_value_1}}</cell></row>
+    <row><cell>{{source_value_2}}</cell><cell>{{target_value_2}}</cell></row>
+  </rows>
+</dvm>

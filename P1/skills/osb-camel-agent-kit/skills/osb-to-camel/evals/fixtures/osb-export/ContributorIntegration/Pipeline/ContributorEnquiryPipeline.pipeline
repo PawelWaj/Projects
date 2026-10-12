@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<con:pipelineEntry xmlns:con="http://www.bea.com/wli/sb/pipeline/config" xmlns:con1="http://www.bea.com/wli/sb/stages/config" xmlns:con2="http://www.bea.com/wli/sb/stages/transform/config" xmlns:con3="http://www.bea.com/wli/sb/stages/routing/config" xmlns:con4="http://www.bea.com/wli/sb/stages/logging/config" xmlns:con5="http://www.bea.com/wli/sb/stages/publish/config" xmlns:ref="http://www.bea.com/wli/sb/reference" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <con:coreEntry>
+    <con:binding type="SOAP" isSoap12="false" xsi:type="con:SoapBindingType">
+      <con:wsdl ref="ContributorIntegration/WSDL/ContributorEnquiry"/>
+      <con:port><con:name>ContributorEnquiryPort</con:name><con:namespace>http://example.com/integration/contributor/v1</con:namespace></con:port>
+    </con:binding>
+    <con:xqConfiguration><con:snippetVersion>1.0</con:snippetVersion></con:xqConfiguration>
+  </con:coreEntry>
+  <con:router errorHandler="ServiceErrorHandler">
+    <con:pipeline type="request" name="GetContributorRequest">
+      <con:stage name="ValidateAndEnrich">
+        <con:context>
+          <con1:userNsDecl prefix="ns" namespace="http://example.com/integration/contributor/v1"/>
+          <con1:userNsDecl prefix="mem" namespace="http://example.com/member/v2"/>
+        </con:context>
+        <con:actions>
+          <con2:validate>
+            <con1:id>_ActionId-1</con1:id>
+            <con2:schema ref="ContributorIntegration/XSD/Contributor"/>
+            <con2:schemaElement xmlns:c="http://example.com/integration/contributor/v1">c:getContributorRequest</con2:schemaElement>
+            <con2:varName>body</con2:varName>
+            <con2:location><con1:xpathText>./ns:getContributorRequest</con1:xpathText></con2:location>
+          </con2:validate>
+          <con2:assign varName="contributorId">
+            <con1:id>_ActionId-2</con1:id>
+            <con2:expr><con1:xqueryText>$body/ns:getContributorRequest/ns:contributorId/text()</con1:xqueryText></con2:expr>
+          </con2:assign>
+          <con2:assign varName="memberReq">
+            <con1:id>_ActionId-3</con1:id>
+            <con2:expr><con1:xqueryText>&lt;mem:lookupMemberRequest&gt;&lt;mem:nationalId&gt;{ $body/ns:getContributorRequest/ns:nationalId/text() }&lt;/mem:nationalId&gt;&lt;/mem:lookupMemberRequest&gt;</con1:xqueryText></con2:expr>
+          </con2:assign>
+          <con2:wsCallout>
+            <con1:id>_ActionId-4</con1:id>
+            <con3:service ref="ContributorIntegration/BusinessService/MemberLookupBS" xsi:type="ref:BusinessServiceRef"/>
+            <con3:operation>lookupMember</con3:operation>
+            <con3:request><con3:body>memberReq</con3:body></con3:request>
+            <con3:response><con3:body>memberResp</con3:body></con3:response>
+            <con3:requestTransform/>
+            <con3:responseTransform/>
+          </con2:wsCallout>
+          <con1:ifThenElse>
+            <con1:id>_ActionId-5</con1:id>
+            <con1:case>
+              <con1:condition><con1:xqueryText>$memberResp/mem:lookupMemberResponse/mem:status/text() = 'ACTIVE'</con1:xqueryText></con1:condition>
+              <con1:actions>
+                <con2:replace varName="body" contents-only="true">
+                  <con1:id>_ActionId-6</con1:id>
+                  <con2:expr>
+                    <con1:xqueryTransform>
+                      <con1:resource ref="ContributorIntegration/Transform/MemberToContributor"/>
+                      <con1:param name="member"><con1:path>$memberResp/mem:lookupMemberResponse</con1:path></con1:param>
+                      <con1:param name="contributorId"><con1:path>$contributorId</con1:path></con1:param>
+                    </con1:xqueryTransform>
+                  </con2:expr>
+                </con2:replace>
+                <con2:transportHeaders copy-all="false">
+                  <con1:id>_ActionId-7</con1:id>
+                  <con2:header-set>outbound-request</con2:header-set>
+                  <con2:header name="X-Correlation-Id" value="expression"><con2:expr><con1:xqueryText>$inbound/ctx:transport/ctx:request/tp:headers/http:X-Correlation-Id/text()</con1:xqueryText></con2:expr></con2:header>
+                </con2:transportHeaders>
+              </con1:actions>
+            </con1:case>
+            <con1:default>
+              <con1:Error>
+                <con1:id>_ActionId-8</con1:id>
+                <con1:errCode>AMN-4001</con1:errCode>
+                <con1:message>Member is not active</con1:message>
+              </con1:Error>
+            </con1:default>
+          </con1:ifThenElse>
+        </con:actions>
+      </con:stage>
+    </con:pipeline>
+    <con:pipeline type="response" name="GetContributorResponse">
+      <con:stage name="AuditAndLog">
+        <con:actions>
+          <con4:log>
+            <con1:id>_ActionId-9</con1:id>
+            <con4:logLevel>info</con4:logLevel>
+            <con4:expr><con1:xqueryText>concat('getContributor done for ', $contributorId)</con1:xqueryText></con4:expr>
+          </con4:log>
+          <con5:publish>
+            <con1:id>_ActionId-10</con1:id>
+            <con5:service ref="ContributorIntegration/BusinessService/AuditQueueBS" xsi:type="ref:BusinessServiceRef"/>
+            <con5:outboundTransform>
+              <con2:replace varName="body" contents-only="false">
+                <con1:id>_ActionId-11</con1:id>
+                <con2:expr><con1:xqueryText>&lt;audit&gt;&lt;op&gt;getContributor&lt;/op&gt;&lt;id&gt;{ $contributorId }&lt;/id&gt;&lt;/audit&gt;</con1:xqueryText></con2:expr>
+              </con2:replace>
+            </con5:outboundTransform>
+          </con5:publish>
+        </con:actions>
+      </con:stage>
+    </con:pipeline>
+    <con:pipeline type="request" name="UpdateContributorRequest">
+      <con:stage name="PassThrough">
+        <con:actions>
+          <con4:log><con1:id>_ActionId-12</con1:id><con4:logLevel>debug</con4:logLevel><con4:expr><con1:xqueryText>'updateContributor'</con1:xqueryText></con4:expr></con4:log>
+        </con:actions>
+      </con:stage>
+    </con:pipeline>
+    <con:pipeline type="response" name="UpdateContributorResponse"/>
+    <con:pipeline type="error" name="ServiceErrorHandler">
+      <con:stage name="MapFault">
+        <con:actions>
+          <con2:replace varName="body" contents-only="true">
+            <con1:id>_ActionId-13</con1:id>
+            <con2:expr>
+              <con1:xsltTransform>
+                <con1:resource ref="ContributorIntegration/Transform/ContributorFault"/>
+                <con1:input>$fault</con1:input>
+              </con1:xsltTransform>
+            </con2:expr>
+          </con2:replace>
+          <con4:alert>
+            <con1:id>_ActionId-14</con1:id>
+            <con4:destination ref="ContributorIntegration/Alert/OpsAlert"/>
+            <con4:severity>major</con4:severity>
+            <con4:expr><con1:xqueryText>$fault/ctx:errorCode/text()</con1:xqueryText></con4:expr>
+          </con4:alert>
+          <con1:reply isErrorReply="true"/>
+        </con:actions>
+      </con:stage>
+    </con:pipeline>
+    <con:flow>
+      <con:branch-node type="operation" id="_FlowId-1" name="OperationBranch">
+        <con:context/>
+        <con:branch name="getContributor">
+          <con:flow>
+            <con:pipeline-node name="GetContributorPair"><con:request>GetContributorRequest</con:request><con:response>GetContributorResponse</con:response></con:pipeline-node>
+            <con:route-node name="RouteToCore">
+              <con:context/>
+              <con:actions>
+                <con3:route>
+                  <con1:id>_ActionId-15</con1:id>
+                  <con3:service ref="ContributorIntegration/BusinessService/ContributorCoreBS" xsi:type="ref:BusinessServiceRef"/>
+                  <con3:operation>getContributor</con3:operation>
+                  <con3:outboundTransform/>
+                  <con3:responseTransform/>
+                </con3:route>
+              </con:actions>
+            </con:route-node>
+          </con:flow>
+        </con:branch>
+        <con:branch name="updateContributor">
+          <con:flow>
+            <con:pipeline-node name="UpdateContributorPair"><con:request>UpdateContributorRequest</con:request><con:response>UpdateContributorResponse</con:response></con:pipeline-node>
+            <con:route-node name="RouteUpdateToCore">
+              <con:context/>
+              <con:actions>
+                <con3:route>
+                  <con1:id>_ActionId-16</con1:id>
+                  <con3:service ref="ContributorIntegration/BusinessService/ContributorCoreBS" xsi:type="ref:BusinessServiceRef"/>
+                  <con3:operation>updateContributor</con3:operation>
+                  <con3:outboundTransform/>
+                  <con3:responseTransform/>
+                </con3:route>
+              </con:actions>
+            </con:route-node>
+          </con:flow>
+        </con:branch>
+      </con:branch-node>
+    </con:flow>
+  </con:router>
+</con:pipelineEntry>

@@ -1,0 +1,73 @@
+<!--
+  Dependency fragment for a migrated OSB module (Camel on Spring Boot, Java DSL).
+  Versions come from a property block that mirrors references/versions.md; pin them there, not here.
+  Only the starters a flow needs are kept; the scaffold lists the ones the card requires.
+-->
+<properties>
+  <camel.version><!-- versions.md --></camel.version>
+  <spring-boot.version><!-- versions.md --></spring-boot.version>
+  <wiremock.version><!-- versions.md --></wiremock.version>
+  <testcontainers.version><!-- versions.md --></testcontainers.version>
+  <xmlunit.version><!-- versions.md --></xmlunit.version>
+  <h2.version><!-- versions.md --></h2.version>
+  <greenmail.version><!-- versions.md --></greenmail.version>
+  <nimbus.version><!-- versions.md --></nimbus.version>
+</properties>
+
+<dependencyManagement>
+  <dependencies>
+    <dependency>
+      <groupId>org.apache.camel.springboot</groupId>
+      <artifactId>camel-spring-boot-bom</artifactId>
+      <version>${camel.version}</version>
+      <type>pom</type>
+      <scope>import</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.testcontainers</groupId>
+      <artifactId>testcontainers-bom</artifactId>
+      <version>${testcontainers.version}</version>
+      <type>pom</type>
+      <scope>import</scope>
+    </dependency>
+  </dependencies>
+</dependencyManagement>
+
+<dependencies>
+  <!-- runtime: the route, the inbound and outbound components the card selected -->
+  <dependency><groupId>org.apache.camel.springboot</groupId><artifactId>camel-spring-boot-starter</artifactId></dependency>
+  <dependency><groupId>org.apache.camel.springboot</groupId><artifactId>camel-cxf-soap-starter</artifactId></dependency>        <!-- SOAP in/out -->
+  <dependency><groupId>org.apache.camel.springboot</groupId><artifactId>camel-platform-http-starter</artifactId></dependency>   <!-- REST / any-XML in -->
+  <dependency><groupId>org.apache.camel.springboot</groupId><artifactId>camel-http-starter</artifactId></dependency>            <!-- REST / XML out -->
+  <dependency><groupId>org.apache.camel.springboot</groupId><artifactId>camel-saxon-starter</artifactId></dependency>           <!-- XQuery (OSB transforms) -->
+  <dependency><groupId>org.apache.camel.springboot</groupId><artifactId>camel-xslt-saxon-starter</artifactId></dependency>      <!-- XSLT (OSB transforms) -->
+  <dependency><groupId>org.apache.camel.springboot</groupId><artifactId>camel-validator-starter</artifactId></dependency>       <!-- OSB validate action -->
+  <dependency><groupId>org.apache.camel.springboot</groupId><artifactId>camel-amqp-starter</artifactId></dependency>            <!-- JMS over AMQP 1.0 to AMQ Broker -->
+  <dependency><groupId>org.apache.camel.springboot</groupId><artifactId>camel-micrometer-starter</artifactId></dependency>      <!-- alert counters, route metrics -->
+
+  <!-- tests -->
+  <dependency><groupId>org.apache.camel</groupId><artifactId>camel-test-spring-junit5</artifactId><scope>test</scope></dependency>
+  <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-test</artifactId><scope>test</scope></dependency>
+  <dependency><groupId>org.wiremock</groupId><artifactId>wiremock-standalone</artifactId><version>${wiremock.version}</version><scope>test</scope></dependency>
+  <dependency><groupId>org.testcontainers</groupId><artifactId>activemq</artifactId><scope>test</scope></dependency>             <!-- ArtemisContainer -->
+  <dependency><groupId>org.testcontainers</groupId><artifactId>junit-jupiter</artifactId><scope>test</scope></dependency>
+  <dependency><groupId>org.xmlunit</groupId><artifactId>xmlunit-core</artifactId><version>${xmlunit.version}</version><scope>test</scope></dependency>
+  <dependency><groupId>org.xmlunit</groupId><artifactId>xmlunit-assertj3</artifactId><version>${xmlunit.version}</version><scope>test</scope></dependency>
+  <!-- Saxon s9api for the golden tests comes transitively with camel-saxon; declare it explicitly only if the team's
+       dependency analysis demands direct declarations -->
+
+  <!-- interface mocks: keep ONLY the blocks for interfaces the flow card lists (osb_inventory.py shows them) -->
+  <!-- database (JCA DB adapter, fn-bea:execute-sql, XRef): DatabaseMockTestTemplate -->
+  <!-- runtime: <dependency><groupId>org.apache.camel.springboot</groupId><artifactId>camel-sql-starter</artifactId></dependency> + the Oracle JDBC driver -->
+  <dependency><groupId>org.testcontainers</groupId><artifactId>testcontainers-oracle-free</artifactId><scope>test</scope></dependency>  <!-- 1.x id: oracle-free -->
+  <dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><version>${h2.version}</version><scope>test</scope></dependency>   <!-- simple lookups only -->
+  <!-- file / FTP / SFTP: FileSftpMockTestTemplate (SFTP server = GenericContainer, no extra test dependency) -->
+  <!-- runtime: camel-file is in core; <dependency><groupId>org.apache.camel.springboot</groupId><artifactId>camel-ftp-starter</artifactId></dependency> -->
+  <!-- email transport: EmailMockTestTemplate -->
+  <!-- runtime: <dependency><groupId>org.apache.camel.springboot</groupId><artifactId>camel-mail-starter</artifactId></dependency> -->
+  <dependency><groupId>com.icegreen</groupId><artifactId>greenmail-junit5</artifactId><version>${greenmail.version}</version><scope>test</scope></dependency>
+  <!-- security done by the module (outbound client credentials, JWT validated in the module): SecurityMockTestTemplate -->
+  <dependency><groupId>com.nimbusds</groupId><artifactId>nimbus-jose-jwt</artifactId><version>${nimbus.version}</version><scope>test</scope></dependency>
+  <!-- DVM lookups: DvmLookup (main) + LookupMockTestTemplate: no extra dependency (Saxon s9api + JDK XML) -->
+  <!-- Java callout: the callout JAR (DG1) installed in the internal Maven mirror, or the ported class in src/main -->
+</dependencies>

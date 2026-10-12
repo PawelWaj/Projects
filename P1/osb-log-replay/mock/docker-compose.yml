@@ -1,0 +1,55 @@
+# Mock architecture for replaying recorded OSB traffic against a migrated Camel flow.
+# Profiles:  (default) broker + wiremock  ·  sut = your Camel flow image  ·  selftest = stub flow  ·  replay = runner
+# Image tags are pinned through .env; check them against your registry mirror before first use.
+services:
+  artemis:
+    image: ${ARTEMIS_IMAGE:-apache/activemq-artemis:2.37.0}
+    environment:
+      ARTEMIS_USER: ${ARTEMIS_USER:-artemis}
+      ARTEMIS_PASSWORD: ${ARTEMIS_PASSWORD:?set ARTEMIS_PASSWORD in .env}
+    ports: ["61616:61616", "5672:5672", "61613:61613", "8161:8161"]
+    healthcheck:
+      test: ["CMD-SHELL", "/var/lib/artemis-instance/bin/artemis check node --up --user $$ARTEMIS_USER --password $$ARTEMIS_PASSWORD --silent || exit 1"]
+      interval: 10s
+      retries: 12
+
+  wiremock:                       # HTTP / SOAP backends the flow calls (business services); stubs in ./wiremock/mappings
+    image: ${WIREMOCK_IMAGE:-wiremock/wiremock:3.9.1}
+    command: ["--verbose", "--global-response-templating"]
+    volumes: ["./wiremock:/home/wiremock"]
+    ports: ["8080:8080"]
+
+  sut:                            # the migrated Camel flow (Camel K integration image or Camel on Spring Boot jar image)
+    profiles: ["sut"]
+    image: ${SUT_IMAGE:?set SUT_IMAGE in .env to the image of the flow under test}
+    environment:                  # map these to the flow's own property names in .env / an env file
+      BROKER_URL: ${SUT_BROKER_URL:-amqp://artemis:5672}
+      BROKER_USER: ${ARTEMIS_USER:-artemis}
+      BROKER_PASSWORD: ${ARTEMIS_PASSWORD}
+      BACKEND_BASE_URL: http://wiremock:8080
+    depends_on:
+      artemis: {condition: service_healthy}
+
+  sut-stub:                       # harness self-test only: forwards valid JSON to the success queue, invalid to the error queue
+    profiles: ["selftest"]
+    image: ${PYTHON_IMAGE:-python:3.12-slim}
+    working_dir: /app
+    volumes: ["./sut-stub:/app", "../replay-config.json:/app/replay-config.json:ro"]
+    environment:
+      BROKER_HOST: artemis
+      ARTEMIS_PASSWORD: ${ARTEMIS_PASSWORD}
+    command: ["sh", "-c", "pip install -q stomp.py==8.1.2 && python stub_flow.py replay-config.json"]
+    depends_on:
+      artemis: {condition: service_healthy}
+
+  replay:                         # runs the recorded fixtures through the broker and writes report/junit.xml
+    profiles: ["replay"]
+    image: ${PYTHON_IMAGE:-python:3.12-slim}
+    working_dir: /work
+    volumes: ["..:/work"]
+    environment:
+      BROKER_HOST: artemis
+      ARTEMIS_PASSWORD: ${ARTEMIS_PASSWORD}
+    command: ["sh", "-c", "pip install -q stomp.py==8.1.2 && python tools/replay_runner.py replay-config.json ${FIXTURES_DIR:-work/fixtures} -o ${REPORT_DIR:-work/report}"]
+    depends_on:
+      artemis: {condition: service_healthy}

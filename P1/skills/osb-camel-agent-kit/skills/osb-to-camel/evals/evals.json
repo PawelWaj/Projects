@@ -1,0 +1,57 @@
+{
+  "skill_name": "osb-to-camel",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "We got the first Oracle Service Bus export from the client OSB team. It's the JDeveloper project under evals/fixtures/osb-export (one project, ContributorIntegration). Before we touch any code I need: an inventory of what's in there, a complexity triage of each flow with reasons, the dependency picture (which proxies call which business services and transforms), and a list of the things that will need a decision from the client before migration can start. Put it in a markdown report I can send to the integration lead.",
+      "expected_output": "A report built from the inventory script output: 1 proxy (ContributorEnquiryPS), 2 operations, 17 pipeline actions, 3 business services (2 HTTP SOAP, 1 JMS), 1 XQuery with two fn-bea functions, 1 XSLT, service-level error handler; tier with reasons; dependency graph; open items incl. the fn-bea functions, the JMS destination on the target broker, the service account, the alert destination, parity capture. Uses the skill's inventory (not hand-counting), names the triage thresholds as uncalibrated, does not quote effort figures.",
+      "files": [
+        "evals/fixtures/osb-export"
+      ],
+      "assertions": [
+        "Report states exactly one proxy service / flow in the export (ContributorEnquiryPS)",
+        "Report lists the two WSDL operations getContributor and updateContributor",
+        "Report counts three business services and distinguishes the two HTTP/SOAP ones from the JMS one (AuditQueueBS)",
+        "Report names both fn-bea functions (date-to-string-with-format, dateTime-to-string-with-format) as something that needs handling",
+        "Report counts the pipeline actions (17) or lists every action type present incl. wsCallout, publish, ifThenElse, validate, raise error, alert, reply",
+        "Report identifies the service-level error handler / error pipeline (ServiceErrorHandler) and the fault XSLT",
+        "Report gives a dependency picture: proxy -> pipeline -> the 3 business services and the 2 transforms (table or graph)",
+        "Report assigns a complexity tier with explicit reasons and says the tiering is provisional/to be calibrated",
+        "Report lists decisions for the client including at least three of: target-broker JMS destination, CoreSA service account/credentials, OpsAlert alert destination, recorded traffic for parity testing, missing referenced resources (MemberLookup WSDL, OpsAlert)",
+        "Report flags that referenced resources are missing from the export (WSDL/MemberLookup and Alert/OpsAlert are referenced but absent)",
+        "Report contains no effort figures or person-day numbers"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "Migrate the OSB flow ContributorIntegration/Proxy/ContributorEnquiryPS (source under evals/fixtures/osb-export) to Apache Camel on Spring Boot, Java DSL, package com.example.integration. I want the flow design written down first, then the Camel route, the adapted XQuery/XSLT, the configuration keys, and a JUnit test suite where every backend (the two SOAP business services and the audit JMS queue) is mocked and the XQuery is proven against the original. Approve the design yourself for this exercise but show me what you approved. Write everything under migration-out/.",
+      "expected_output": "A FLOW_CARD.md with the action walk (17 actions mapped), backends with config keys, transform plan (fn-bea shim for date-to-string-with-format and dateTime-to-string-with-format), error handler at service scope, test matrix; a RouteBuilder with one route per operation (getContributor, updateContributor), service callout preserving $body, ifThenElse \u2192 choice, raise error AMN-4001, publish as InOnly wire tap, route to ContributorCoreBS, retry-count 1 / timeout 30 s from the business service; XQuery kept with shim import; tests: route test with AdviceWith+MockEndpoint (ACTIVE/INACTIVE branches, unknown operation, backend failure \u2192 fault via original XSLT), golden test running original vs migrated under Saxon, WireMock contract test (timeout \u2192 2 attempts, SOAP fault not retried, X-Correlation-Id), Artemis container publish test, parity replay skipped-with-reason; a MIGRATION_RECORD.md with action-to-code map and open items. No real hostnames in tests; contract (WSDL, path) unchanged.",
+      "files": [
+        "evals/fixtures/osb-export"
+      ],
+      "assertions": [
+        "A flow design document (card) exists with an action-by-action mapping of the pipeline (at least 15 OSB actions mapped to Camel steps)",
+        "A Java RouteBuilder exists with separate handling for both operations getContributor and updateContributor",
+        "The service callout to MemberLookupBS preserves the request body (saved/restored or enrich with aggregation) and stores the response for later use",
+        "The ifThenElse is a choice on the ACTIVE status and the non-active branch raises an error carrying code AMN-4001",
+        "The publish to the audit queue is one-way (wireTap and/or InOnly) to an AMQP or JMS endpoint and does not block the response",
+        "ContributorCoreBS retry-count 1 and 30 s timeout are reflected in configuration/redelivery settings; no backend hostname is hardcoded in the route",
+        "The original XQuery MemberToContributor.xqy is kept as an XQuery resource (not rewritten to Java) and the fn-bea functions are handled via a shim module or an explicit documented replacement",
+        "The fault XSLT ContributorFault.xsl is used on the error-handling path (service-level error handler)",
+        "A route test exists that mocks every backend (MockEndpoint/AdviceWith or equivalent) and covers both the ACTIVE and the non-ACTIVE branch",
+        "A golden/equivalence test exists that executes the original XQuery (Saxon) and compares against the migrated transform instead of hand-written expected output",
+        "A WireMock (or equivalent HTTP stub) test exists for the SOAP backends that exercises timeout/retry behaviour",
+        "A JMS publish test exists using an embedded or containerised broker (Testcontainers Artemis or equivalent)",
+        "No real hostname (e.g. example.local) appears inside any test class; endpoints come from properties",
+        "The contract is unchanged: the original WSDL/port is exposed and the inbound path /ContributorIntegration/ContributorEnquiry is kept",
+        "A migration record or summary lists open items including the JMS destination on the target broker, the service account, and parity fixtures"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "Our team is deciding between two things for the OSB \u2192 Camel work: install camel-kit and use its /camel-migrate, or use our own tooling. We have an OSB 12c export with ~450 flows, Java/Spring Boot teams, JUnit in the pipeline, Red Hat AMQ over AMQP. Give me a one-page recommendation on how the two fit together (not either/or if that's wrong), what camel-kit cannot do for OSB today, and what the first two weeks would look like.",
+      "expected_output": "States that camel-kit has no OSB adapter/parser (adapters exist for MuleSoft, BizTalk, Camel 2/3, Fuse); recommends the skill as the OSB adapter in camel-kit's shape, standalone for the first slice, camel-kit adoption decided after; notes the Java DSL vs YAML and JUnit vs Citrus differences; a two-week plan: inventory run day 1, triage review, ~20-flow slice across tiers, parity capture agreed with the client, recalibrated thresholds; no effort figures invented.",
+      "files": []
+    }
+  ]
+}

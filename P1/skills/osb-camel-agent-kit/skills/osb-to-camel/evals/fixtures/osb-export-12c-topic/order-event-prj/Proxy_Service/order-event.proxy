@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ser:proxyServiceEntry xmlns:ser="http://www.bea.com/wli/sb/services" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:tran="http://www.bea.com/wli/sb/transports" xmlns:env="http://www.bea.com/wli/config/env" xmlns:jms="http://www.bea.com/wli/sb/transports/jms">
+  <ser:coreEntry isAutoPublish="false">
+    <ser:binding type="Mixed" xsi:type="con:MixedBindingType" xmlns:con="http://www.bea.com/wli/sb/services/bindings/config"><con:request type="Text"/></ser:binding>
+    <ser:invoke ref="order-event-prj/Pipeline/order-event" xsi:type="con:PipelineRef" xmlns:con="http://www.bea.com/wli/sb/pipeline/config"/>
+  </ser:coreEntry>
+  <ser:endpointConfig>
+    <tran:provider-id>jms</tran:provider-id><tran:inbound>true</tran:inbound>
+    <tran:URI><env:value>jms://host.example:8045/jndi.jmsConnectionFactory/jndi.orderEventsTopic</env:value></tran:URI>
+    <tran:provider-specific xsi:type="jms:JmsEndPointConfiguration">
+      <jms:is-queue>false</jms:is-queue><jms:is-secure>false</jms:is-secure>
+      <jms:inbound-properties>
+        <jms:message-selector>(resource='Create Order' OR resource='Cancel Order') AND (eventType='updated')</jms:message-selector>
+        <jms:response-required>false</jms:response-required><jms:durable-subscription>true</jms:durable-subscription>
+        <jms:topic-messages-distribution>OneCopyPerApplication</jms:topic-messages-distribution><jms:XA-required>false</jms:XA-required>
+      </jms:inbound-properties>
+      <jms:request-encoding>UTF-8</jms:request-encoding>
+    </tran:provider-specific>
+  </ser:endpointConfig>
+</ser:proxyServiceEntry>

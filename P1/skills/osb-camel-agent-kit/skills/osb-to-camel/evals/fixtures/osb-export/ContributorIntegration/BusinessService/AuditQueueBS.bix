@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xml-fragment xmlns:ser="http://www.bea.com/wli/sb/services" xmlns:tran="http://www.bea.com/wli/sb/transports" xmlns:env="http://www.bea.com/wli/config/env" xmlns:jms="http://www.bea.com/wli/sb/transports/jms" xmlns:con="http://www.bea.com/wli/sb/pipeline/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ser:coreEntry isProxy="false" isEnabled="true">
+    <ser:binding type="abstract XML" xsi:type="con:AnyXmlBindingType"/>
+  </ser:coreEntry>
+  <ser:endpointConfig>
+    <tran:provider-id>jms</tran:provider-id>
+    <tran:inbound>false</tran:inbound>
+    <tran:URI><env:value>jms://wls-jms.example.local:7003/weblogic.jms.XAConnectionFactory/APP.AUDIT.QUEUE</env:value></tran:URI>
+    <tran:outbound-properties><tran:retry-count>0</tran:retry-count></tran:outbound-properties>
+    <tran:provider-specific>
+      <jms:outbound-properties>
+        <jms:destination-type>Queue</jms:destination-type>
+        <jms:message-type>Text</jms:message-type>
+        <jms:response-required>false</jms:response-required>
+        <jms:dispatch-policy>weblogic.kernel.Default</jms:dispatch-policy>
+      </jms:outbound-properties>
+    </tran:provider-specific>
+  </ser:endpointConfig>
+</xml-fragment>

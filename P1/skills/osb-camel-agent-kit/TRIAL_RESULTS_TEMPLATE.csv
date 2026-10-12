@@ -1,0 +1,8 @@
+flow,tier_kit,tier_estimate_sheet,stage,step,minutes_human,minutes_wall_clock,model_runs,corrections_by_hand,gates_red_after_step,fix_loops,blockers,verdict_ok_yes_no,notes
+order-event,complex,,2,1 analyse (card review),,,,,,,,,example row: replace with real values
+order-event,complex,,2,2 implement,,,,,,,,,
+order-event,complex,,2,4 test,,,,,,,,,
+order-event,complex,,2,5 verify,,,,,G4 G7,,,,
+order-event,complex,,2,6 fix,,,,,,,,,
+order-event,complex,,2,7 review,,,,,,,,,
+order-event,complex,,2,8 own judgement,,,,,,,,,

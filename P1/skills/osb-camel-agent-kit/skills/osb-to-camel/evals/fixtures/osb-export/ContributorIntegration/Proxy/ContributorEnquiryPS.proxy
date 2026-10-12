@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xml-fragment xmlns:ser="http://www.bea.com/wli/sb/services" xmlns:tran="http://www.bea.com/wli/sb/transports" xmlns:env="http://www.bea.com/wli/config/env" xmlns:http="http://www.bea.com/wli/sb/transports/http" xmlns:con="http://www.bea.com/wli/sb/pipeline/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ser:coreEntry isProxy="true" isEnabled="true">
+    <ser:description>Contributor enquiry and update, called by the app portal through Apigee</ser:description>
+    <ser:binding type="SOAP" isSoap12="false" xsi:type="con:SoapBindingType">
+      <con:wsdl ref="ContributorIntegration/WSDL/ContributorEnquiry"/>
+      <con:port><con:name>ContributorEnquiryPort</con:name><con:namespace>http://example.com/integration/contributor/v1</con:namespace></con:port>
+    </ser:binding>
+    <ser:monitoring isEnabled="true"><ser:aggregationInterval>10</ser:aggregationInterval></ser:monitoring>
+    <ser:ws-policy><ser:binding-mode>wsdl-policy-attachments</ser:binding-mode></ser:ws-policy>
+  </ser:coreEntry>
+  <ser:endpointConfig>
+    <tran:provider-id>http</tran:provider-id>
+    <tran:inbound>true</tran:inbound>
+    <tran:URI><env:value>/ContributorIntegration/ContributorEnquiry</env:value></tran:URI>
+    <tran:inbound-properties/>
+    <tran:provider-specific>
+      <http:inbound-properties/>
+      <http:authentication><http:basic/></http:authentication>
+    </tran:provider-specific>
+  </ser:endpointConfig>
+  <ser:invoke xsi:type="con:PipelineRef" ref="ContributorIntegration/Pipeline/ContributorEnquiryPipeline"/>
+</xml-fragment>

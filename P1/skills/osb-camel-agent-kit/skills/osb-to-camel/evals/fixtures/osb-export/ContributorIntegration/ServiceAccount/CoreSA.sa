@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xml-fragment xmlns:ser="http://www.bea.com/wli/sb/services" xmlns:con="http://www.bea.com/wli/sb/resources/config">
+  <ser:description>Static credentials for the core application SOAP services (secret value removed from export)</ser:description>
+  <con:static-account><con:username>osb_core_user</con:username><con:password>***</con:password></con:static-account>
+</xml-fragment>
