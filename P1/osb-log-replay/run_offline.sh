@@ -9,7 +9,7 @@ PY=${PYTHON:-$(command -v python3 || command -v python)}
 mkdir -p "$OUT"
 "$PY" tools/osb_log_signatures.py "$SRC" -o "$OUT/signatures.json"
 "$PY" tools/spl_from_signatures.py "$OUT/signatures.json" --index "${SPLUNK_INDEX:-osb}" --sourcetype "${SPLUNK_SOURCETYPE:-weblogic}" -o "$OUT/queries.spl"
-"$PY" tools/osb_log_traces.py "$OUT/signatures.json" "$EVENTS" -o "$OUT/traces"
+"$PY" tools/osb_log_traces.py "$OUT/signatures.json" "$EVENTS" -o "$OUT/traces" $([ -n "${MASK_KEY:-}" ] || echo --unkeyed)   # synthetic samples run unkeyed
 rm -rf "$OUT/fixtures"
 "$PY" tools/fixtures_from_traces.py "$OUT/traces/traces.jsonl" replay-config.json -o "$OUT/fixtures"
 echo "Scenarios by frequency:"

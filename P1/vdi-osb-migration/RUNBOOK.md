@@ -10,6 +10,8 @@ Splunk CSV ──► 3 traces (keyed masking, residue check) ──► 4 replay-
            ──► 6 pi analyst → GATE A (you approve the card) ──► 7 pi tester → implementer → gates G1-G10 → reviewer → GATE B
 ```
 
+> **Starting out?** Follow [TASKS.md](TASKS.md): task 1 works on the Splunk export alone (anonymise, test cases, mock replay), task 2 adds the OSB source.
+
 ## Map: how the parts fit together
 
 **Two kinds of directories.** The repository holds code only; the workspace holds the data of each flow. Nothing from

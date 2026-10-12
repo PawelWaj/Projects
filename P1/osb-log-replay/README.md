@@ -254,3 +254,7 @@ with the same keyed rules as the trace builder (`MASK_KEY`), runs the residue ch
 `<masked>.report.json` with counts, key id, residue result and a key inventory (key, count, type, masked yes/no, no
 values) for the reviewer. `osb_log_traces.py --already-masked` then reads the masked file without masking again.
 Synthetic example with the structure of a real ODL pipeline line: `samples/splunk-export-synthetic.csv`.
+
+## Without the OSB source
+
+`tools/signature_from_example.py <masked.csv> -o signatures.json` builds the log signature from one anonymised example line (payload, TraceID, `Resource Name`, flow id, stage direction), so traces, fixtures and the replay work on the log alone. `vdi-osb-migration/bin/task1_log_only.sh` chains it: anonymise → signature → traces → fixtures → optional mock replay.

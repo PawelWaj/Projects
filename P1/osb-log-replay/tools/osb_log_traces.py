@@ -178,7 +178,11 @@ class Masker:
         return hmac.new(self.key, s.encode(), hashlib.sha256).hexdigest() if self.key else hashlib.sha256(s.encode()).hexdigest()
 
     def _digits(self, s: str) -> str:
-        return "".join(str(int(c, 16) % 10) for c in self._h(s))[: len(s)]
+        h = self._h(s)
+        out = "".join(str(int(c, 16) % 10) for c in h)[: len(s)]
+        if out[:1] == "0" and s[:1] != "0":          # never introduce a leading zero: 0123 is not a valid JSON number
+            out = str(1 + int(h[-1], 16) % 9) + out[1:]
+        return out
 
     def _date(self, m: re.Match) -> str:
         y, mo, d, rest = int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4)

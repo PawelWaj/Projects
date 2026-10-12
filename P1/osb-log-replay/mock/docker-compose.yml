@@ -34,7 +34,7 @@ services:
     profiles: ["selftest"]
     image: ${PYTHON_IMAGE:-python:3.12-slim}
     working_dir: /app
-    volumes: ["./sut-stub:/app", "../replay-config.json:/app/replay-config.json:ro"]
+    volumes: ["./sut-stub:/app", "${REPLAY_CONFIG:-../replay-config.json}:/app/replay-config.json:ro"]
     environment:
       BROKER_HOST: artemis
       ARTEMIS_PASSWORD: ${ARTEMIS_PASSWORD}
@@ -50,6 +50,6 @@ services:
     environment:
       BROKER_HOST: artemis
       ARTEMIS_PASSWORD: ${ARTEMIS_PASSWORD}
-    command: ["sh", "-c", "pip install -q stomp.py==8.1.2 && python tools/replay_runner.py replay-config.json ${FIXTURES_DIR:-work/fixtures} -o ${REPORT_DIR:-work/report}"]
+    command: ["sh", "-c", "pip install -q stomp.py==8.1.2 && python tools/replay_runner.py ${REPLAY_CONFIG_IN_WORK:-replay-config.json} ${FIXTURES_DIR:-work/fixtures} -o ${REPORT_DIR:-work/report}"]
     depends_on:
       artemis: {condition: service_healthy}

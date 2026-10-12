@@ -389,3 +389,30 @@ class AnonymizeLogsTests(unittest.TestCase):
             raw = (d / "m.csv").read_text(encoding="utf-8")
             self.assertNotIn("FullTime", raw)
             self.assertTrue(json.loads((d / "m.csv.report.json").read_text())["key_inventory"]["workType"]["masked"])
+
+
+class ExampleSignatureTests(unittest.TestCase):
+    def test_masked_numbers_never_get_a_leading_zero(self):
+        m = trmod.Masker(trmod.DEFAULT_MASKS, trmod.DEFAULT_JSON_KEYS, key=b"k")
+        for n in range(1000000000, 1000000400):
+            out = m(f'{{"nin":{n}}}')
+            json.loads(out)                                   # must stay valid JSON
+            self.assertNotEqual(json.loads(out)["nin"], n)
+
+    def test_log_only_chain_anonymise_signature_traces_fixtures(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            env = dict(__import__("os").environ, MASK_KEY="k")
+            subprocess.run([sys.executable, str(ROOT / "tools/anonymize_logs.py"), str(SAMPLES / "splunk-export-synthetic.csv"),
+                            "-o", str(d / "e.masked.csv")], check=True, capture_output=True, env=env)
+            out = run(ROOT / "tools/signature_from_example.py", d / "e.masked.csv", "-o", d / "sig.json")
+            info = json.loads(out.stdout)
+            self.assertEqual(info["matches_in_file"], "1/1")
+            self.assertEqual(info["signature"], "sample-change-prj/sample-adjustment#example-request")
+            self.assertIn("hdr_resource", info["groups"])
+            run(ROOT / "tools/osb_log_traces.py", d / "sig.json", d / "e.masked.csv", "-o", d / "t", "--already-masked")
+            tr = [json.loads(l) for l in (d / "t/traces.jsonl").read_text().splitlines()]
+            self.assertEqual(len(tr), 1)
+            self.assertTrue(tr[0]["has_payload"])
+            self.assertEqual(tr[0]["branch"], {"hdr_resource": "Contributory Wage"})
+            json.loads(tr[0]["events"][0]["fields"]["body"])        # payload still valid JSON after masking

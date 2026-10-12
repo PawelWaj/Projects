@@ -785,7 +785,11 @@ class Masker:
         return hmac.new(self.key, s.encode(), hashlib.sha256).hexdigest() if self.key else hashlib.sha256(s.encode()).hexdigest()
 
     def _digits(self, s: str) -> str:
-        return "".join(str(int(c, 16) % 10) for c in self._h(s))[: len(s)]
+        h = self._h(s)
+        out = "".join(str(int(c, 16) % 10) for c in h)[: len(s)]
+        if out[:1] == "0" and s[:1] != "0":          # never introduce a leading zero: 0123 is not a valid JSON number
+            out = str(1 + int(h[-1], 16) % 9) + out[1:]
+        return out
 
     def _date(self, m: re.Match) -> str:
         y, mo, d, rest = int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4)
@@ -1181,6 +1185,168 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 KIT_EOF_LOG_REPLAY_TOOLS_REPLAY_RUNNER_PY
+mkdir -p "$(dirname "log-replay/tools/signature_from_example.py")"
+cat > 'log-replay/tools/signature_from_example.py' <<'KIT_EOF_LOG_REPLAY_TOOLS_SIGNATURE_FROM_EXAMPLE_PY'
+#!/usr/bin/env python3
+"""Build a log signature from ONE example log line, when the OSB source is not available yet.
+
+    signature_from_example.py <masked.csv|masked.log> -o signatures.json [--line N] [--flow project/proxy]
+                              [--field hdr_name="literal text"] [--append]
+
+The normal path derives signatures from the Log actions in the OSB source (osb_log_signatures.py). Without the
+source, this tool takes one ANONYMISED example line and turns it into the same signature format, so
+osb_log_traces.py, fixtures_from_traces.py and the replay work on the log alone:
+  * the OSB message text is taken without its ODL/WebLogic envelope;
+  * a trailing JSON or XML payload becomes the `body` group;
+  * UUIDs become `traceId` (the first one is the correlation id; without any, traces fall back to the ODL ecid);
+  * "Resource Name: <x> event" becomes `hdr_resource` (a scenario dimension); add more with --field hdr_x="literal";
+  * `Project <p> :: for PS <proxy>` gives the flow id <p>/<proxy> (or pass --flow);
+  * the stage direction in the ODL location ([..., REQUEST|RESPONSE|ERROR_HANDLER]) gives the pipeline type.
+Run it once per kind of line (e.g. a request line, then an error line) with --append to build one signatures file.
+Stdlib only."""
+import argparse
+import csv
+import io
+import json
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from osb_log_traces import osb_message  # noqa: E402
+
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
+UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+DIRECTION = re.compile(r",\s*(REQUEST|RESPONSE|ERROR_HANDLER|ROUTING|ROUTE|NONE)\]")
+LEVEL = re.compile(r"^\[[^\]]*\]\s*\[[^\]]*\]\s*\[([A-Z_]+)")
+
+
+def example_lines(path: Path) -> list[str]:
+    text = path.read_text(encoding="utf-8-sig", errors="replace")
+    if path.suffix.lower() == ".csv":
+        return [r["_raw"] for r in csv.DictReader(io.StringIO(text, newline="")) if r.get("_raw")]
+    return [line for line in text.splitlines() if line.strip()]
+
+
+def payload_start(msg: str) -> int | None:
+    """Earliest position from which the rest of the message parses as JSON (or looks like an XML document)."""
+    for m in re.finditer(r"[{<]", msg):
+        rest = msg[m.start():].strip()
+        if rest.startswith("{"):
+            try:
+                json.loads(rest)
+                return m.start()
+            except ValueError:
+                continue
+        elif re.match(r"<[A-Za-z_][\w:.-]*[\s>/]", rest) and rest.rstrip().endswith(">"):
+            return m.start()
+    return None
+
+
+def to_regex(literal: str) -> str:
+    return r"\s+".join(re.escape(part) for part in literal.split())
+
+
+def build(raw: str, flow: str | None, fields: dict[str, str]) -> dict:
+    msg, meta = osb_message(raw)
+    msg = msg.strip()
+    p = payload_start(msg)
+    prefix, has_body = (msg[:p], True) if p is not None else (msg, False)
+
+    m = re.search(r"Resource Name:\s*(.+?)\s+event\b", prefix)
+    if m and "hdr_resource" not in fields:
+        fields = {**fields, "hdr_resource": m.group(1)}
+    pieces = [(prefix, None)]
+
+    def split(pieces, literal, name):
+        out = []
+        for text, grp in pieces:
+            if grp is not None or literal not in text:
+                out.append((text, grp))
+                continue
+            a, b = text.split(literal, 1)
+            out += [(a, None), (literal, name), (b, None)]
+        return out
+
+    for name, literal in fields.items():
+        pieces = split(pieces, literal, name)
+    uuids = []
+    for text, grp in list(pieces):
+        if grp is None:
+            uuids += UUID.findall(text)
+    for i, u in enumerate(dict.fromkeys(uuids)):
+        pieces = split(pieces, u, "traceId" if i == 0 else f"uuid{i + 1}")
+
+    regex, groups = "", []
+    for text, grp in pieces:
+        if grp is None:
+            if text[:1].isspace():
+                regex += r"\s*"
+            regex += to_regex(text) if text.strip() else ""
+            if text[-1:].isspace() and text.strip():
+                regex += r"\s*"
+        else:
+            regex += rf"(?P<{grp}>.+?)" if not grp.startswith(("traceId", "uuid")) else rf"(?P<{grp}>[0-9a-fA-F-]{{36}})"
+            groups.append({"name": grp, "expr": "example"})
+    regex = re.sub(r"(\\s\*)+", r"\\s*", regex)
+    if has_body:
+        regex += r"\s*(?P<body>.*)"
+        groups.append({"name": "body", "expr": "example payload"})
+
+    fm = re.search(r"Project\s+(\S+)\s+::\s+for\s+PS\s+(\S+)", prefix)
+    flow = flow or (f"{fm.group(1)}/{fm.group(2)}" if fm else None)
+    if not flow:
+        sys.exit("cannot derive the flow id from the line: pass --flow <project>/<proxy>")
+    d = DIRECTION.search(raw)
+    direction = d.group(1) if d else "NONE"
+    lv = LEVEL.search(raw)
+    level = (lv.group(1) if lv else meta.get("level", "")).lower()
+    ptype = "error" if direction == "ERROR_HANDLER" or level in ("error", "incident_error") else (
+        "response" if direction == "RESPONSE" else "request")
+    anchor = next((t for t, g in pieces if g is None and t.strip()), "").strip()
+    names = [g["name"] for g in groups]
+    return {
+        "id": f"{flow}#example-{ptype}",
+        "flow": flow, "file": "(from example log line)", "pipeline_type": ptype, "stage": direction.lower(),
+        "level": level or "info", "annotation": "derived from an example line, not from the OSB source",
+        "expression": "", "regex": regex, "anchor": anchor[:80], "groups": groups,
+        "roles": {"correlation": [n for n in names if n == "traceId"], "payload": ["body"] if has_body else [],
+                  "fault": ["body"] if ptype == "error" and has_body else [],
+                  "headers": [n for n in names if n.startswith("hdr_")], "business_keys": []},
+        "warnings": [] if "traceId" in names else ["no UUID in the line: traces will be grouped by the ODL ecid"],
+    }
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("examples", type=Path, help="anonymised CSV (_raw column) or log file")
+    ap.add_argument("-o", "--out", type=Path, required=True)
+    ap.add_argument("--line", type=int, default=1, help="which event of the file to use as the example (1-based)")
+    ap.add_argument("--flow", help="flow id <project>/<proxy> when the line does not name them")
+    ap.add_argument("--field", action="append", default=[], help='hdr_<name>="literal" turns a literal into a scenario field')
+    ap.add_argument("--append", action="store_true", help="add to an existing signatures file (one signature per kind of line)")
+    a = ap.parse_args()
+    lines = example_lines(a.examples)
+    if not 1 <= a.line <= len(lines):
+        sys.exit(f"{a.examples}: {len(lines)} events, --line {a.line} out of range")
+    fields = dict(f.split("=", 1) for f in a.field)
+    sig = build(lines[a.line - 1], a.flow, {k: v.strip('"') for k, v in fields.items()})
+    rx = re.compile(sig["regex"], re.S)
+    msg = osb_message(lines[a.line - 1])[0].strip()
+    if not (rx.fullmatch(msg) or rx.search(msg)):
+        sys.exit("internal check failed: the generated regex does not match its own example")
+    doc = json.loads(a.out.read_text(encoding="utf-8")) if a.append and a.out.is_file() else {"source": "example lines", "signatures": []}
+    doc["signatures"] = [s for s in doc["signatures"] if s["id"] != sig["id"]] + [sig]
+    a.out.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
+    matched = sum(1 for line in lines if rx.search(osb_message(line)[0]))
+    print(json.dumps({"signature": sig["id"], "pipeline_type": sig["pipeline_type"], "groups": [g["name"] for g in sig["groups"]],
+                      "matches_in_file": f"{matched}/{len(lines)}", "warnings": sig["warnings"], "out": str(a.out)}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+KIT_EOF_LOG_REPLAY_TOOLS_SIGNATURE_FROM_EXAMPLE_PY
 mkdir -p "$(dirname "log-replay/tools/spl_from_signatures.py")"
 cat > 'log-replay/tools/spl_from_signatures.py' <<'KIT_EOF_LOG_REPLAY_TOOLS_SPL_FROM_SIGNATURES_PY'
 #!/usr/bin/env python3
@@ -1365,7 +1531,7 @@ PY=${PYTHON:-$(command -v python3 || command -v python)}
 mkdir -p "$OUT"
 "$PY" tools/osb_log_signatures.py "$SRC" -o "$OUT/signatures.json"
 "$PY" tools/spl_from_signatures.py "$OUT/signatures.json" --index "${SPLUNK_INDEX:-osb}" --sourcetype "${SPLUNK_SOURCETYPE:-weblogic}" -o "$OUT/queries.spl"
-"$PY" tools/osb_log_traces.py "$OUT/signatures.json" "$EVENTS" -o "$OUT/traces"
+"$PY" tools/osb_log_traces.py "$OUT/signatures.json" "$EVENTS" -o "$OUT/traces" $([ -n "${MASK_KEY:-}" ] || echo --unkeyed)   # synthetic samples run unkeyed
 rm -rf "$OUT/fixtures"
 "$PY" tools/fixtures_from_traces.py "$OUT/traces/traces.jsonl" replay-config.json -o "$OUT/fixtures"
 echo "Scenarios by frequency:"
@@ -1685,7 +1851,7 @@ services:
     profiles: ["selftest"]
     image: ${PYTHON_IMAGE:-python:3.12-slim}
     working_dir: /app
-    volumes: ["./sut-stub:/app", "../replay-config.json:/app/replay-config.json:ro"]
+    volumes: ["./sut-stub:/app", "${REPLAY_CONFIG:-../replay-config.json}:/app/replay-config.json:ro"]
     environment:
       BROKER_HOST: artemis
       ARTEMIS_PASSWORD: ${ARTEMIS_PASSWORD}
@@ -1701,7 +1867,7 @@ services:
     environment:
       BROKER_HOST: artemis
       ARTEMIS_PASSWORD: ${ARTEMIS_PASSWORD}
-    command: ["sh", "-c", "pip install -q stomp.py==8.1.2 && python tools/replay_runner.py replay-config.json ${FIXTURES_DIR:-work/fixtures} -o ${REPORT_DIR:-work/report}"]
+    command: ["sh", "-c", "pip install -q stomp.py==8.1.2 && python tools/replay_runner.py ${REPLAY_CONFIG_IN_WORK:-replay-config.json} ${FIXTURES_DIR:-work/fixtures} -o ${REPORT_DIR:-work/report}"]
     depends_on:
       artemis: {condition: service_healthy}
 KIT_EOF_LOG_REPLAY_MOCK_DOCKER_COMPOSE_YML
@@ -1713,7 +1879,7 @@ cat > 'log-replay/mock/setup_broker.sh' <<'KIT_EOF_LOG_REPLAY_MOCK_SETUP_BROKER_
 set -euo pipefail
 cd "$(dirname "$0")"
 [ -f .env ] && set -a && . ./.env && set +a
-python3 ../tools/broker_setup_commands.py ../replay-config.json | while IFS= read -r cmd; do
+python3 ../tools/broker_setup_commands.py "${REPLAY_CONFIG:-../replay-config.json}" | while IFS= read -r cmd; do
   echo "+ ${cmd%%--user*}"
   docker compose exec -T -e ARTEMIS_USER="${ARTEMIS_USER:-artemis}" -e ARTEMIS_PASSWORD="$ARTEMIS_PASSWORD" artemis sh -c "$cmd" \
     || echo "  (already exists or failed: check the output above)"
@@ -2083,6 +2249,10 @@ with the same keyed rules as the trace builder (`MASK_KEY`), runs the residue ch
 `<masked>.report.json` with counts, key id, residue result and a key inventory (key, count, type, masked yes/no, no
 values) for the reviewer. `osb_log_traces.py --already-masked` then reads the masked file without masking again.
 Synthetic example with the structure of a real ODL pipeline line: `samples/splunk-export-synthetic.csv`.
+
+## Without the OSB source
+
+`tools/signature_from_example.py <masked.csv> -o signatures.json` builds the log signature from one anonymised example line (payload, TraceID, `Resource Name`, flow id, stage direction), so traces, fixtures and the replay work on the log alone. `vdi-osb-migration/bin/task1_log_only.sh` chains it: anonymise → signature → traces → fixtures → optional mock replay.
 KIT_EOF_LOG_REPLAY_README_MD
 mkdir -p "$(dirname "log-replay/docs/AUTOMATION.md")"
 cat > 'log-replay/docs/AUTOMATION.md' <<'KIT_EOF_LOG_REPLAY_DOCS_AUTOMATION_MD'
@@ -2557,4 +2727,4 @@ running the new Camel code.
 | Personal data | Mask at extraction (the trace builder does), review a sample before fixtures leave the secure environment |
 KIT_EOF_LOG_REPLAY_DOCS_WORKFLOW_MD
 chmod +x log-replay/tools/*.py log-replay/*.sh log-replay/mock/*.sh 2>/dev/null || true
-echo "installed: 25 files (log replay tools)"
+echo "installed: 26 files (log replay tools)"
