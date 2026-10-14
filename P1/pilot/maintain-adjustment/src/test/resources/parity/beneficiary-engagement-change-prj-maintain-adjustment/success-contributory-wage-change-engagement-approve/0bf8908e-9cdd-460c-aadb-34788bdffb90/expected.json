@@ -1,0 +1,10 @@
+{
+  "outcome": "success",
+  "destination": "maintain-adjustment-success",
+  "destination_type": "anycast",
+  "correlation": "0bf8908e-9cdd-460c-aadb-34788bdffb90",
+  "fault_code": null,
+  "business_keys": {},
+  "expected_headers": [],
+  "body_oracle": "original XQuery on input.payload (golden test), not the logs"
+}

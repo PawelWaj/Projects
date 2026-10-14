@@ -1,0 +1,40 @@
+# Camel K route (YAML DSL) for OSB project beneficiary-engagement-change-prj, proxy maintain-adjustment.
+#
+# STAND-IN LOGIC. Until the flow card is approved (task 2), this route reproduces only what the Splunk logs prove:
+#   - input: topic contributorAgreementTopic (the subscription filter is set on the broker, not here)
+#   - OSB accepts payloads with raw control characters and text after the JSON -> OsbJson.annotate does the same
+#   - the OSB Log action line, unchanged, so existing Splunk searches and dashboards keep working
+#   - valid message -> success destination; unreadable message -> error destination with errorCode/errorMessage
+# The pi implementer replaces the block between BEGIN/END flow logic with the pipeline from the OSB source.
+# Endpoints are properties: production values in application.properties (Camel K: traits.camel.properties),
+# tests set flow.input=direct:in and mock: endpoints.
+- route:
+    id: maintain-adjustment
+    from:
+      uri: "{{flow.input}}"
+      steps:
+        - doTry:
+            steps:
+              - bean:
+                  beanType: pilot.maintainadjustment.OsbJson
+                  method: annotate
+              - log:
+                  loggingLevel: INFO
+                  logName: oracle.osb.logging.pipeline
+                  message: "Request Received to Project beneficiary-engagement-change-prj :: for PS maintain-adjustment from JMS contributorAgreementTopic for Resource Name: ${header.resource} event with TraceID - ${header.traceId} ::${body}"
+              # --- BEGIN flow logic (generated from the approved flow card) ---
+              - to:
+                  uri: "{{flow.success}}"
+              # --- END flow logic ---
+            doCatch:
+              - exception:
+                  - java.lang.Exception
+                steps:
+                  - setHeader:
+                      name: errorCode
+                      constant: INVALID_PAYLOAD
+                  - setHeader:
+                      name: errorMessage
+                      simple: "${exception.message}"
+                  - to:
+                      uri: "{{flow.error}}"

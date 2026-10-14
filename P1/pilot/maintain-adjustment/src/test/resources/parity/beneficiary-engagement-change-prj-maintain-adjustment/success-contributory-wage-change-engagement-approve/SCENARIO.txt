@@ -1,0 +1,1 @@
+beneficiary-engagement-change-prj/maintain-adjustment|success|hdr_resource=Contributory Wage|businessTransaction=CHANGE_ENGAGEMENT|approvedOrRejected=Approve
