@@ -256,6 +256,15 @@ def slug(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()[:80]
 
 
+def scenario_dir(t: dict) -> str:
+    """Readable scenario folder: outcome + branch VALUES only ('none' when absent); a hash keeps cut names unique."""
+    vals = [t["outcome"]] + [v if v not in ("", "?") else "none" for v in t["branch"].values()]
+    if t.get("fault_code"):
+        vals.append("err-" + str(t["fault_code"]))
+    name = re.sub(r"[^A-Za-z0-9]+", "-", "_".join(vals)).strip("-").lower()
+    return name if len(name) <= 80 else name[:71] + "-" + hashlib.sha1(t["scenario"].encode()).hexdigest()[:8]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("traces", type=Path)
@@ -309,8 +318,9 @@ def main() -> int:
                 for e in t["events"]:
                     for k, v in e["fields"].items():
                         merged.setdefault(k, v)
-                d = args.out / "parity" / slug(flow) / slug(scen.split("|", 1)[1]) / slug(t["correlation"])
+                d = args.out / "parity" / slug(flow) / scenario_dir(t) / slug(t["correlation"])
                 d.mkdir(parents=True, exist_ok=True)
+                (d.parent / "SCENARIO.txt").write_text(scen + "\n", encoding="utf-8")
                 headers = {k[4:]: v for k, v in merged.items() if k.startswith("hdr_")}
                 headers[fc.get("correlation_header", "traceId")] = t["correlation"]
                 out_cfg = fc["outputs"][t["outcome"]]
