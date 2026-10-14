@@ -182,3 +182,34 @@ class TestCatalogTests(unittest.TestCase):
                 self.assertIn(f"| {tid} |", md)
             neg = json.loads((Path(d) / "t" / "negative-cases.json").read_text(encoding="utf-8"))
             self.assertEqual(neg[0]["headers"], {"resource": "Other Resource"})
+
+
+class BatchTask1Tests(unittest.TestCase):
+    def test_three_flows_one_export(self):
+        import csv as _csv
+        import uuid
+        raw = next(_csv.DictReader((ROOT / "osb-log-replay/samples/splunk-export-synthetic.csv").open(encoding="utf-8")))["_raw"]
+
+        def mk(prj, ps, res, bt):
+            r = raw.replace("Project sample-change-prj :: for PS sample-adjustment", f"Project {prj} :: for PS {ps}")
+            r = r.replace("Contributory Wage event", f"{res} event").replace("TERMINATE_ENGAGEMENT", bt)
+            return r.replace("99999999-8888-4777-8666-555555555555", str(uuid.uuid4()))
+        lines = [mk("a-prj", "a", "Wage", ["X_ONE", "X_TWO"][i % 2]) for i in range(6)]
+        lines += [mk("b-prj", "b", "Wage", "X_ONE") for _ in range(3)] + [mk("c-prj", "c", "Transfer", "T_IN") for _ in range(3)]
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "all.csv"
+            with f.open("w", encoding="utf-8", newline="") as fh:
+                w = _csv.writer(fh, quoting=_csv.QUOTE_ALL)
+                w.writerow(["_time", "_raw"])
+                w.writerows(["t", l] for l in lines)
+            r = subprocess.run([sys.executable, str(BIN / "batch_task1.py"), str(f), "-o", str(Path(d) / "out")],
+                               capture_output=True, text=True, env=dict(os.environ, MASK_KEY="k"))
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            info = json.loads(r.stdout.strip().splitlines()[-1])
+            self.assertEqual((info["flows"], info["ok"]), (3, 3))
+            topics = json.loads((Path(d) / "out/topics.json").read_text(encoding="utf-8"))
+            self.assertEqual(topics["a-prj/a"]["negatives"], ["Transfer"])
+            self.assertEqual(topics["a-prj/a"]["fanout"], ["b"])
+            dims = json.loads((Path(d) / "out/flows/a-prj-a/dims.json").read_text(encoding="utf-8"))["chosen"]
+            self.assertIn("body:data.businessTransaction", dims)
+            self.assertTrue((Path(d) / "out/SUMMARY.md").is_file())
