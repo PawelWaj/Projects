@@ -24,12 +24,14 @@
 |---|---|---|---|---|
 
 ## Q5 Scenario mapping
-| Scenario (from logs) | Count | Branch / path | Output | Evidence |
+Fields the branches decide on (`scenario_dims`): ...
+
+| Scenario (k=v / k!=v) | Outputs (business services, or none) | Branch / path | Log scenarios showing it | Evidence |
 |---|---|---|---|---|
 
 ## Q6 Outputs
-| Destination | Path / branch | Body built by | Headers / properties set (name ← source) | Evidence |
-|---|---|---|---|---|
+| Business service | Destination | Path / branch | Body built by | Headers / properties set (name ← source) | Evidence |
+|---|---|---|---|---|---|
 
 ## Q7 Transforms
 ### <transform>

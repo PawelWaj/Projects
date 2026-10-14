@@ -1,41 +1,334 @@
 {
   "$comment": "Machine-readable twin of RESEARCH.md. Same content, no code, no hosts, no data.",
   "type": "object",
-  "required": ["proxy", "entry", "branches", "outputs", "transforms", "backends", "errors", "logs", "open_questions"],
+  "required": [
+    "proxy",
+    "entry",
+    "branches",
+    "outputs",
+    "transforms",
+    "backends",
+    "errors",
+    "logs",
+    "open_questions"
+  ],
   "properties": {
-    "proxy": {"type": "string"},
-    "project": {"type": "string"},
-    "export_version": {"type": "string"},
-    "entry": {"type": "object", "properties": {
-      "transport": {"type": "string"}, "destination": {"type": "string"}, "is_topic": {"type": "boolean"},
-      "durable_subscription": {"type": "string"}, "selector": {"type": "string"}, "message_type": {"type": "string"},
-      "payload_format": {"enum": ["json", "xml", "text", "binary", "UNKNOWN"]}, "nxsd": {"type": "string"}}},
-    "branches": {"type": "array", "items": {"type": "object", "required": ["name", "paths"], "properties": {
-      "name": {"type": "string"}, "stage": {"type": "string"},
-      "paths": {"type": "array", "items": {"type": "object", "properties": {
-        "label": {"type": "string"}, "condition_plain": {"type": "string"}, "condition_expr": {"type": "string"},
-        "actions": {"type": "array", "items": {"type": "string"}}, "outputs": {"type": "array", "items": {"type": "string"}}}}}}}},
-    "scenario_mapping": {"type": "array", "items": {"type": "object", "properties": {
-      "scenario": {"type": "string"}, "branch": {"type": "string"}, "path": {"type": "string"}, "output": {"type": "string"}}}},
-    "outputs": {"type": "array", "items": {"type": "object", "properties": {
-      "name": {"type": "string"}, "destination": {"type": "string"}, "on_path": {"type": "string"}, "body_from": {"type": "string"},
-      "headers": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "source": {"type": "string"}}}}}}},
-    "transforms": {"type": "array", "items": {"type": "object", "properties": {
-      "name": {"type": "string"}, "purpose": {"type": "string"}, "inputs": {"type": "array", "items": {"type": "string"}},
-      "output_root": {"type": "string"}, "fn_bea": {"type": "array", "items": {"type": "string"}},
-      "mappings": {"type": "array", "items": {"type": "object", "properties": {
-        "from": {"type": "string"}, "to": {"type": "string"}, "rule": {"type": "string"}}}}}}},
-    "backends": {"type": "array", "items": {"type": "object", "properties": {
-      "name": {"type": "string"}, "type": {"type": "string"}, "operation": {"type": "string"}, "called_when": {"type": "string"},
-      "request_from": {"type": "string"}, "response_use": {"type": "string"}, "retry": {"type": "string"},
-      "timeout": {"type": "string"}, "on_fault": {"type": "string"}}}},
-    "errors": {"type": "array", "items": {"type": "object", "properties": {
-      "scope": {"type": "string"}, "catches": {"type": "string"}, "logs": {"type": "string"}, "goes_to": {"type": "string"},
-      "headers": {"type": "array", "items": {"type": "string"}}, "redelivery": {"type": "string"}}}},
-    "logs": {"type": "array", "items": {"type": "object", "properties": {
-      "stage": {"type": "string"}, "level": {"type": "string"}, "template": {"type": "string"}}}},
-    "dependencies": {"type": "array", "items": {"type": "object", "properties": {
-      "kind": {"type": "string"}, "name": {"type": "string"}, "used_for": {"type": "string"}, "in_export": {"type": "boolean"}}}},
-    "open_questions": {"type": "array", "items": {"type": "string"}}
+    "proxy": {
+      "type": "string"
+    },
+    "project": {
+      "type": "string"
+    },
+    "export_version": {
+      "type": "string"
+    },
+    "entry": {
+      "type": "object",
+      "properties": {
+        "transport": {
+          "type": "string"
+        },
+        "destination": {
+          "type": "string"
+        },
+        "is_topic": {
+          "type": "boolean"
+        },
+        "durable_subscription": {
+          "type": "string"
+        },
+        "selector": {
+          "type": "string"
+        },
+        "message_type": {
+          "type": "string"
+        },
+        "payload_format": {
+          "enum": [
+            "json",
+            "xml",
+            "text",
+            "binary",
+            "UNKNOWN"
+          ]
+        },
+        "nxsd": {
+          "type": "string"
+        }
+      }
+    },
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "paths"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "condition_plain": {
+                  "type": "string"
+                },
+                "condition_expr": {
+                  "type": "string"
+                },
+                "actions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "outputs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "scenario_mapping": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "scenario",
+          "outputs"
+        ],
+        "properties": {
+          "scenario": {
+            "type": "string",
+            "description": "k=v|k!=v over scenario dims (last path segment as k); first matching row wins; 'k!=true' also matches a missing field"
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "business service names the message reaches; [] = consumed, nothing sent"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "on_path": {
+            "type": "string"
+          },
+          "body_from": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "business_service": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "transforms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "output_root": {
+            "type": "string"
+          },
+          "fn_bea": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "mappings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "rule": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "backends": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "called_when": {
+            "type": "string"
+          },
+          "request_from": {
+            "type": "string"
+          },
+          "response_use": {
+            "type": "string"
+          },
+          "retry": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "string"
+          },
+          "on_fault": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string"
+          },
+          "catches": {
+            "type": "string"
+          },
+          "logs": {
+            "type": "string"
+          },
+          "goes_to": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "redelivery": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "logs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "stage": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "used_for": {
+            "type": "string"
+          },
+          "in_export": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "scenario_dims": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "JSON paths (data.x) or XML element names of the payload fields the branches decide on; task 1 is rerun with SCENARIO_DIMS=...,body:<path> so the log scenarios carry them"
+    }
   }
 }

@@ -724,7 +724,15 @@ def build(root: Path) -> dict:
             return None
         if ref in by_ref:
             return ref
-        tail = ref.split("/")[-1]
+        parts = ref.split("/")
+        for i in range(1, len(parts)):          # export rooted at the project folder: drop the leading project name(s)
+            if "/".join(parts[i:]) in by_ref and i < len(parts) - 1:
+                return "/".join(parts[i:])
+        two = "/".join(parts[-2:])              # Folder/Name is unique where Name alone is not (proxy + pipeline + bix share it)
+        cands = [r for r in by_ref if r.endswith("/" + two) or r == two]
+        if len(cands) == 1:
+            return cands[0]
+        tail = parts[-1]
         cands = [r for r in by_ref if r.endswith("/" + tail) or r == tail]
         return cands[0] if len(cands) == 1 else ref
 

@@ -4,26 +4,28 @@ Every AI agent working in this repository follows these rules. Role prompts in `
 
 ## What this repository is
 
-Camel on Spring Boot modules that replace Oracle Service Bus flows, one Maven module per OSB project folder, one
-`RouteBuilder` per OSB proxy service. Source of truth for behaviour = the OSB export under `osb-src/` (read-only).
+Camel K integrations (YAML DSL) that replace Oracle Service Bus flows: one module per OSB proxy under
+`modules/<project>/<proxy>/` (route `*.camel.yaml` + helper beans + L1 tests). Source of truth for behaviour = the OSB export under `osb-src/` (read-only).
 
 ## Workflow (never skip a step)
 
 1. **Check first:** search this repository for the proxy name, its queues/topics/URLs and XQuery file names. If a
    route already exists, compare and report; do not generate a second one.
-2. **Analyse** with skill `osb-to-camel` Step 0–1 → `migration/<flow>/FLOW_CARD.md`.
-3. **Stop for approval.** No code for a card without `Status: approved` and an approver name.
-4. **Implement** with `osb-to-camel` Step 2.
-5. **Test** with `osb-to-camel` Step 3 and skill `camel-migration-verification`.
-6. **Verify:** `tools/verify_flow.sh <module> <flow>` must report all gates green.
-7. **Record:** `migration/<flow>/MIGRATION_RECORD.md` with the four sections: Original OSB behaviour / Camel
+2. **Research** with skill `osb-research` → `research/<project>/<proxy>/` (shareable pack, check PASS).
+3. **Card + tests** with skill `osb-camelk-route` Step 1 → `modules/<project>/<proxy>/FLOW_CARD.md` + generated tests.
+4. **Stop for approval.** No code for a card without `Status: approved` and an approver name.
+5. **Implement and test** with `osb-camelk-route` Steps 3–5 (route, error tests, stubs).
+6. **Verify:** `check_camelk.py modules/<project>/<proxy>` must print PASS (K1–K8).
+7. **Record:** `modules/<project>/<proxy>/MIGRATION_NOTES.md` with the four sections: Original OSB behaviour / Camel
    implementation / Behavioural differences / Items requiring human validation.
 
 ## Hard rules
 
 - Inputs are files from `osb-src/`. Never build code from screenshots, chat text or memory of "how OSB usually works".
-- Runtime: Camel on Spring Boot. **No Camel K, no Kubernetes operators, no Kamelet CRDs.** YAML DSL and the `kamelet`
-  component inside Spring Boot are allowed only if the card says so.
+- Runtime (decision 2026-10-14): **Camel K, routes in YAML DSL** (`*.camel.yaml`), Camel 4.18.4 = Camel Quarkus 3.33.3
+  (`camel.runtime-version=3.33.3`), small Java helper beans next to the YAML, tests with `camel-test-main-junit5` +
+  mock endpoints. Pattern: `pilot/maintain-adjustment`, skill `osb-camelk-route`. Older Spring Boot templates in
+  `osb-to-camel/assets` are reference only.
 - Messaging: Red Hat AMQ Broker, AMQP 1.0 on port 5672, `camel-amqp` (Qpid JMS) with a failover URI. Destinations
   exist only through the Git register; never rely on auto-create. A WebLogic durable topic subscription becomes a
   named subscription queue with a broker-side filter, consumed by FQQN `<address>::<subscription>`.
@@ -45,6 +47,9 @@ Camel on Spring Boot modules that replace Oracle Service Bus flows, one Maven mo
 | Purpose | Command |
 |---|---|
 | Research pack (source stays, knowledge travels) | `pi/run_research.sh osb-src/<project> <proxy> [task1-dir]` → `research/<proxy>/` (shared only after `research_check.py` PASS) |
+| All proxies of one OSB application | `pi/run_domain.sh <osb-app-dir> <stage>` (stages: list, research, scaffold, build, status) → `domain/STATUS.md` |
+| Research pack → Camel K module + tests | `pi/run_camelk.sh research/<project>/<proxy> modules/<project>/<proxy> <project> [task1-dir]` (stops until the card is approved) |
+| Gates of a Camel K module | `python3 skills/osb-camelk-route/scripts/check_camelk.py modules/<project>/<proxy>` (K1-K8) |
 | Inventory an export | `python3 skills/osb-to-camel/scripts/osb_inventory.py osb-src/<project> -o migration/osb-inventory` |
 | Scaffold a card | `python3 skills/osb-to-camel/scripts/scaffold_flow.py migration/osb-inventory/flows/<flow>.json -o migration/<flow>/` |
 | Build + tests | `mvn -q -f <module>/pom.xml verify` |
@@ -52,5 +57,5 @@ Camel on Spring Boot modules that replace Oracle Service Bus flows, one Maven mo
 
 ## Definition of done (per flow)
 
-Card approved · gates G1–G8 green in `verify-report.json` · record written · reviewer report with no open BLOCKER ·
-human sign-off · shadow run in E2E passed (TESTING.md L6) before cut-over.
+Card approved · gates K1–K8 PASS in `GATES.json` · `MIGRATION_NOTES.md` written · reviewer report with no open BLOCKER ·
+human sign-off · shadow run passed (TESTING.md L6) before cut-over.

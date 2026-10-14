@@ -81,6 +81,15 @@ def main() -> None:
          + [(KIT / "agents/researcher.md", "agents/researcher.md"), (KIT / "pi/run_research.sh", "pi/run_research.sh"),
             (KIT / "pi/prompts/osb-research.md", ".pi/prompts/osb-research.md")],
          ["chmod +x .pi/skills/osb-research/scripts/*.py pi/run_research.sh 2>/dev/null || true"], "skill osb-research")
+    ck = KIT / "skills" / "osb-camelk-route"
+    emit("9_install_skill_osb_camelk.sh", "Skill osb-camelk-route (research pack -> Camel K YAML module + tests + gates) under .pi/skills/ + implementer role + pi runners (one flow, whole domain).",
+         [(p, ".pi/skills/osb-camelk-route/" + rel(ck, p)) for p in files_under(ck, ["SKILL.md", "scripts/*.py", "references/*", "assets/templates/*"])]
+         + [(KIT / "agents/implementer-camelk.md", "agents/implementer-camelk.md"), (KIT / "pi/run_camelk.sh", "pi/run_camelk.sh"),
+            (KIT / "pi/run_domain.sh", "pi/run_domain.sh"), (KIT / "pi/run_research.sh", "pi/run_research.sh"),
+            (KIT / "pi/preflight.sh", "pi/preflight.sh"), (KIT / "AGENTS.md", "AGENTS.md"),
+            (KIT / "pi/prompts/osb-camelk.md", ".pi/prompts/osb-camelk.md")]
+         + [(p, ".pi/skills/osb-research/" + rel(rs, p)) for p in files_under(rs, ["references/*", "assets/*"])],
+         ["chmod +x .pi/skills/osb-camelk-route/scripts/*.py pi/*.sh 2>/dev/null || true"], "skill osb-camelk-route + domain runner")
     emit("4_install_skill_osb_templates.sh", "Skill osb-to-camel: assets/templates (Java, XQuery shim, mocks) under .pi/skills/.",
          [(p, ".pi/skills/osb-to-camel/" + rel(sk, p)) for p in tpl],
          ["chmod +x .pi/skills/osb-to-camel/assets/templates/mocks/*.sh 2>/dev/null || true"], "skill osb-to-camel: assets/templates")
@@ -96,7 +105,7 @@ def main() -> None:
          [(p, "log-replay/" + rel(REPLAY, p)) for p in lr], ["chmod +x log-replay/tools/*.py log-replay/*.sh log-replay/mock/*.sh 2>/dev/null || true"],
          "log replay tools")
     # 7 this workflow -> bin/ + RUNBOOK.md
-    wf = files_under(VDI, ["bin/*", "RUNBOOK.md", "TASKS.md", "LOGS_END_TO_END.md", "ALL_FLOWS.md", "RESEARCH_PACK.md"])
+    wf = files_under(VDI, ["bin/*", "RUNBOOK.md", "TASKS.md", "LOGS_END_TO_END.md", "ALL_FLOWS.md", "RESEARCH_PACK.md", "DOMAIN_RUN.md"])
     emit("7_install_vdi_workflow.sh", "VDI workflow: bin/start_flow.sh (one entry point per flow), preflight, replay-config generator, RUNBOOK.md.",
          [(p, rel(VDI, p)) for p in wf], ["chmod +x bin/*.sh bin/*.py 2>/dev/null || true",
                                           'echo "next: bash bin/preflight_vdi.sh, then read RUNBOOK.md"'], "VDI workflow")

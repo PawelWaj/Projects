@@ -241,3 +241,72 @@ class ResearchPackTests(unittest.TestCase):
             rules = json.loads((Path(d) / "SHARE_CHECK.json").read_text())["findings_per_rule"]
             self.assertEqual(set(rules), {"host", "secret", "pii", "code"})
             self.assertNotIn("hunter22", r.stdout)                      # findings never print the value
+
+
+class CamelkRouteTests(unittest.TestCase):
+    """scaffold_camelk.py + check_camelk.py on a pack shaped like the pilot's (fake names)."""
+    SK = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts"
+    PACK = {
+        "proxy": "px", "entry": {"destination": "jndi.inTopic", "is_topic": True, "durable_subscription": "true", "payload_format": "json"},
+        "scenario_dims": ["data.flagA", "data.flagB"],
+        "branches": [{"name": "A check", "paths": [{"label": "A", "condition_plain": "flagA true", "outputs": ["svc-a"]}]},
+                     {"name": "B check", "paths": [{"label": "B", "condition_plain": "flagB true", "outputs": ["jndi.qB"]}]}],
+        "scenario_mapping": [{"scenario": "flagA=true|flagB=true", "outputs": ["svc-a", "svc-b"]},
+                             {"scenario": "flagA!=true|flagB!=true", "outputs": []}],
+        "outputs": [{"name": "A out", "destination": "jndi.qA"}, {"name": "B out", "destination": "jndi.qB"},
+                    {"name": "error out", "destination": "jndi.qErr", "on": "error handler"}],
+        "backends": [{"name": "svc-a", "type": "JMS queue", "operation": "jndi.qA"}, {"name": "svc-b", "type": "JMS queue", "operation": "jndi.qB"},
+                     {"name": "svc-err", "type": "JMS queue", "operation": "jndi.qErr"}],
+        "errors": [{"scope": "pipeline", "goes_to": "svc-err"}],
+        "logs": [{"stage": "s1", "level": "INFO", "template": "Request {x}"}, {"stage": "error stage", "template": "Error {x}"}],
+        "open_questions": ["q1"]}
+
+    def test_scaffold_normalises_outputs_and_check_flags_gaps(self):
+        with tempfile.TemporaryDirectory() as d:
+            res, mod = Path(d, "res"), Path(d, "mod")
+            res.mkdir()
+            (res / "research.json").write_text(json.dumps(self.PACK), encoding="utf-8")
+            r = subprocess.run([sys.executable, str(self.SK / "scaffold_camelk.py"), str(res), "-o", str(mod), "--project", "p-prj"],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            cfg = json.loads((mod / "src/test/resources/flow-test.json").read_text())
+            self.assertEqual(sorted(cfg["outputs"]), ["svc-a", "svc-b", "svc-err"], "JMS backends are outputs, keyed by service")
+            self.assertEqual(cfg["backends"], {})
+            self.assertEqual(cfg["error_output"], "svc-err")
+            self.assertEqual(cfg["scenario_mapping"][0]["outputs"], ["svc-a", "svc-b"])
+            props = (mod / "src/main/resources/application.properties").read_text()
+            self.assertIn("flow.input=amqp:queue:jndi.inTopic::px", props)
+            route = (mod / "src/main/resources/routes/px.camel.yaml").read_text()
+            self.assertIn("id: out-svc-b", route)
+            self.assertLess(route.index("doCatch"), route.index("Error {x}"), "error-stage log goes into the catch")
+            bean = next(mod.rglob("OsbJson.java")).read_text()
+            self.assertIn('{"flagA", "data.flagA"}', bean)
+            c = subprocess.run([sys.executable, str(self.SK / "check_camelk.py"), str(mod), "--no-surefire"], capture_output=True, text=True)
+            self.assertEqual(c.returncode, 1)
+            gates = json.loads((mod / "GATES.json").read_text())["gates"]
+            self.assertFalse(gates["K1_card_approved"]["ok"])
+            self.assertFalse(gates["K2_no_gaps"]["ok"])
+            self.assertTrue(gates["K3_route_ids"]["ok"])
+            self.assertTrue(gates["K4_no_infrastructure"]["ok"])
+            self.assertFalse(gates["K7_error_tests"]["ok"])
+            # editing a generated test is caught; a host in the properties is caught
+            t = next(mod.rglob("FlowParityTest.java"))
+            t.write_text(t.read_text() + "\n// weakened\n")
+            (mod / "src/main/resources/application.properties").write_text(props + "x=amqp://broker.example.com:5672\n")
+            subprocess.run([sys.executable, str(self.SK / "check_camelk.py"), str(mod), "--no-surefire"], capture_output=True)
+            gates = json.loads((mod / "GATES.json").read_text())["gates"]
+            self.assertFalse(gates["K5_tests_untouched"]["ok"])
+            self.assertFalse(gates["K4_no_infrastructure"]["ok"])
+
+    def test_pilot_module_passes_static_gates_except_approval(self):
+        mod = ROOT / "pilot/maintain-adjustment"
+        with tempfile.TemporaryDirectory() as d:
+            m = Path(d, "m")
+            shutil.copytree(mod, m, ignore=shutil.ignore_patterns("target"))
+            subprocess.run([sys.executable, str(self.SK / "check_camelk.py"), str(m), "--no-surefire"], capture_output=True)
+            gates = json.loads((m / "GATES.json").read_text())["gates"]
+            self.assertEqual([k for k, g in gates.items() if not g["ok"]], ["K1_card_approved"])
+
+
+if __name__ == "__main__":
+    unittest.main()

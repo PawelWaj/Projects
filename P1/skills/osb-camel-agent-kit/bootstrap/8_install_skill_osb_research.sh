@@ -298,8 +298,8 @@ source does not say. No code, no hosts, no data (see SKILL.md rules).
 | Q2 | **Message format.** What arrives (JSON or XML; root element or top-level keys), is there an nXSD/JSON-to-XML translation (which one, is the file in the export), what `$body` contains after it | short text + field list |
 | Q3 | **Flow overview.** The pipeline in order: stage → action type → what it does in one sentence. Include route nodes, branches, publish, service callouts, Java callouts, reply/resume | numbered list |
 | Q4 | **Branches.** For each branch/if-then: condition in plain words, the condition expression (one line), which values lead to which path, what happens on each path, default path | table per branch |
-| Q5 | **Scenario mapping.** For each scenario in `facts.json` → `log_scenarios` (e.g. businessTransaction=MANAGE_WAGE): which branch/path it takes and what output it produces. Scenarios the code handles that never appeared in the logs: list them too | table |
-| Q6 | **Outputs.** Every destination the flow writes to (business service → queue/topic/HTTP path/operation): on which path, which body (built by which transform), which JMS properties / transport headers / HTTP headers are set and from where | table |
+| Q5 | **Scenario mapping.** Branches decide on payload fields: list those fields in `scenario_dims` (JSON path such as `data.hasPPAEngagement`, or the element name). Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
+| Q6 | **Outputs.** Name each output after the business service that writes it (the same name in branches, scenario_mapping and backends). Every destination the flow writes to (business service → queue/topic/HTTP path/operation): on which path, which body (built by which transform), which JMS properties / transport headers / HTTP headers are set and from where | table |
 | Q7 | **Transforms.** For each XQuery/XSLT/assign/replace that builds a message: purpose, inputs (external params), output root, field mapping `source path → target path → rule` (copy, constant, format, lookup, condition), fn-bea functions used, constants | table per transform |
 | Q8 | **Backends.** Each business service / service callout: type, operation, when it is called, request built from, how the response is used, retry count/interval, timeout, load balancing, result caching, what happens on fault | table |
 | Q9 | **Errors.** Each error handler scope (stage, pipeline, service): what it catches, what it logs, where the message goes (error queue, reply, resume, re-raise), headers/fields set (errorCode, errorMessage, traceId ...), redelivery/retry behaviour of the transport | table |
@@ -335,12 +335,14 @@ cat > '.pi/skills/osb-research/assets/RESEARCH_TEMPLATE.md' <<'KIT_EOF__PI_SKILL
 |---|---|---|---|---|
 
 ## Q5 Scenario mapping
-| Scenario (from logs) | Count | Branch / path | Output | Evidence |
+Fields the branches decide on (`scenario_dims`): ...
+
+| Scenario (k=v / k!=v) | Outputs (business services, or none) | Branch / path | Log scenarios showing it | Evidence |
 |---|---|---|---|---|
 
 ## Q6 Outputs
-| Destination | Path / branch | Body built by | Headers / properties set (name ← source) | Evidence |
-|---|---|---|---|---|
+| Business service | Destination | Path / branch | Body built by | Headers / properties set (name ← source) | Evidence |
+|---|---|---|---|---|---|
 
 ## Q7 Transforms
 ### <transform>
@@ -372,42 +374,335 @@ cat > '.pi/skills/osb-research/assets/research.schema.json' <<'KIT_EOF__PI_SKILL
 {
   "$comment": "Machine-readable twin of RESEARCH.md. Same content, no code, no hosts, no data.",
   "type": "object",
-  "required": ["proxy", "entry", "branches", "outputs", "transforms", "backends", "errors", "logs", "open_questions"],
+  "required": [
+    "proxy",
+    "entry",
+    "branches",
+    "outputs",
+    "transforms",
+    "backends",
+    "errors",
+    "logs",
+    "open_questions"
+  ],
   "properties": {
-    "proxy": {"type": "string"},
-    "project": {"type": "string"},
-    "export_version": {"type": "string"},
-    "entry": {"type": "object", "properties": {
-      "transport": {"type": "string"}, "destination": {"type": "string"}, "is_topic": {"type": "boolean"},
-      "durable_subscription": {"type": "string"}, "selector": {"type": "string"}, "message_type": {"type": "string"},
-      "payload_format": {"enum": ["json", "xml", "text", "binary", "UNKNOWN"]}, "nxsd": {"type": "string"}}},
-    "branches": {"type": "array", "items": {"type": "object", "required": ["name", "paths"], "properties": {
-      "name": {"type": "string"}, "stage": {"type": "string"},
-      "paths": {"type": "array", "items": {"type": "object", "properties": {
-        "label": {"type": "string"}, "condition_plain": {"type": "string"}, "condition_expr": {"type": "string"},
-        "actions": {"type": "array", "items": {"type": "string"}}, "outputs": {"type": "array", "items": {"type": "string"}}}}}}}},
-    "scenario_mapping": {"type": "array", "items": {"type": "object", "properties": {
-      "scenario": {"type": "string"}, "branch": {"type": "string"}, "path": {"type": "string"}, "output": {"type": "string"}}}},
-    "outputs": {"type": "array", "items": {"type": "object", "properties": {
-      "name": {"type": "string"}, "destination": {"type": "string"}, "on_path": {"type": "string"}, "body_from": {"type": "string"},
-      "headers": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "source": {"type": "string"}}}}}}},
-    "transforms": {"type": "array", "items": {"type": "object", "properties": {
-      "name": {"type": "string"}, "purpose": {"type": "string"}, "inputs": {"type": "array", "items": {"type": "string"}},
-      "output_root": {"type": "string"}, "fn_bea": {"type": "array", "items": {"type": "string"}},
-      "mappings": {"type": "array", "items": {"type": "object", "properties": {
-        "from": {"type": "string"}, "to": {"type": "string"}, "rule": {"type": "string"}}}}}}},
-    "backends": {"type": "array", "items": {"type": "object", "properties": {
-      "name": {"type": "string"}, "type": {"type": "string"}, "operation": {"type": "string"}, "called_when": {"type": "string"},
-      "request_from": {"type": "string"}, "response_use": {"type": "string"}, "retry": {"type": "string"},
-      "timeout": {"type": "string"}, "on_fault": {"type": "string"}}}},
-    "errors": {"type": "array", "items": {"type": "object", "properties": {
-      "scope": {"type": "string"}, "catches": {"type": "string"}, "logs": {"type": "string"}, "goes_to": {"type": "string"},
-      "headers": {"type": "array", "items": {"type": "string"}}, "redelivery": {"type": "string"}}}},
-    "logs": {"type": "array", "items": {"type": "object", "properties": {
-      "stage": {"type": "string"}, "level": {"type": "string"}, "template": {"type": "string"}}}},
-    "dependencies": {"type": "array", "items": {"type": "object", "properties": {
-      "kind": {"type": "string"}, "name": {"type": "string"}, "used_for": {"type": "string"}, "in_export": {"type": "boolean"}}}},
-    "open_questions": {"type": "array", "items": {"type": "string"}}
+    "proxy": {
+      "type": "string"
+    },
+    "project": {
+      "type": "string"
+    },
+    "export_version": {
+      "type": "string"
+    },
+    "entry": {
+      "type": "object",
+      "properties": {
+        "transport": {
+          "type": "string"
+        },
+        "destination": {
+          "type": "string"
+        },
+        "is_topic": {
+          "type": "boolean"
+        },
+        "durable_subscription": {
+          "type": "string"
+        },
+        "selector": {
+          "type": "string"
+        },
+        "message_type": {
+          "type": "string"
+        },
+        "payload_format": {
+          "enum": [
+            "json",
+            "xml",
+            "text",
+            "binary",
+            "UNKNOWN"
+          ]
+        },
+        "nxsd": {
+          "type": "string"
+        }
+      }
+    },
+    "branches": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "paths"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string"
+          },
+          "paths": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "condition_plain": {
+                  "type": "string"
+                },
+                "condition_expr": {
+                  "type": "string"
+                },
+                "actions": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "outputs": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "scenario_mapping": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "scenario",
+          "outputs"
+        ],
+        "properties": {
+          "scenario": {
+            "type": "string",
+            "description": "k=v|k!=v over scenario dims (last path segment as k); first matching row wins; 'k!=true' also matches a missing field"
+          },
+          "outputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "business service names the message reaches; [] = consumed, nothing sent"
+          },
+          "branch": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "outputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "destination": {
+            "type": "string"
+          },
+          "on_path": {
+            "type": "string"
+          },
+          "body_from": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "business_service": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "transforms": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "string"
+          },
+          "inputs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "output_root": {
+            "type": "string"
+          },
+          "fn_bea": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "mappings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "from": {
+                  "type": "string"
+                },
+                "to": {
+                  "type": "string"
+                },
+                "rule": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "backends": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "operation": {
+            "type": "string"
+          },
+          "called_when": {
+            "type": "string"
+          },
+          "request_from": {
+            "type": "string"
+          },
+          "response_use": {
+            "type": "string"
+          },
+          "retry": {
+            "type": "string"
+          },
+          "timeout": {
+            "type": "string"
+          },
+          "on_fault": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "scope": {
+            "type": "string"
+          },
+          "catches": {
+            "type": "string"
+          },
+          "logs": {
+            "type": "string"
+          },
+          "goes_to": {
+            "type": "string"
+          },
+          "headers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "redelivery": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "logs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "stage": {
+            "type": "string"
+          },
+          "level": {
+            "type": "string"
+          },
+          "template": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "used_for": {
+            "type": "string"
+          },
+          "in_export": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "scenario_dims": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "JSON paths (data.x) or XML element names of the payload fields the branches decide on; task 1 is rerun with SCENARIO_DIMS=...,body:<path> so the log scenarios carry them"
+    }
   }
 }
 KIT_EOF__PI_SKILLS_OSB_RESEARCH_ASSETS_RESEARCH_SCHEMA_JSON
@@ -428,14 +723,18 @@ cat > 'pi/run_research.sh' <<'KIT_EOF_PI_RUN_RESEARCH_SH'
 # The OSB source never leaves the machine; only research/<proxy>/ is shared, and only after the check passes.
 #
 # Usage: pi/run_research.sh <osb-project-dir> <proxy> [task1-dir]
-# Env:   OSB_PI_MODEL (model pattern for `pi --model`), PI_THINKING (default high), KIT, PYTHON
+# Env:   OUT (default research/<proxy>; run_domain.sh uses research/<project>/<proxy>), OSB_PI_MODEL (model pattern for
+#        `pi --model`), PI_THINKING (default high), KIT, PYTHON
 set -euo pipefail
 PROJECT=${1:?usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]}
 PROXY=${2:?proxy name}
 TASK1=${3:-}
+case "$PROJECT" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && PROJECT=$(cygpath -u "$PROJECT");; esac   # Windows path (quoted) -> /e/...
+case "$PROXY" in */*|*\\*) echo "2nd argument must be the proxy name (e.g. maintain-adjustment), not a path. usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]"; exit 2;; esac
+[ -e "$PROJECT" ] || { echo "OSB project not found: $PROJECT  (Git Bash: write /e/folder/project, not E:\\folder\\project)"; exit 2; }
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
 PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
-OUT="research/$PROXY"
+OUT=${OUT:-research/$PROXY}
 LOG="$OUT/agent-logs"
 skill_dir() { if [ -d "$KIT/skills/$1" ]; then echo "$KIT/skills/$1"; elif [ -d "$KIT/.pi/skills/$1" ]; then echo "$KIT/.pi/skills/$1"; fi; }
 SK=$(skill_dir osb-research); [ -n "$SK" ] || { echo "skill osb-research not found under $KIT"; exit 1; }
@@ -452,7 +751,7 @@ echo "== 2 questionnaire (pi)"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,write"
     --append-system-prompt "$KIT/agents/researcher.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
-"${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." \
+"${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." \
   > "$LOG/research.out" 2> "$LOG/research.err" || true
 [ "$(fp "$PROJECT")" = "$before" ] || { echo "VIOLATION: the OSB export was changed during research"; exit 1; }
 

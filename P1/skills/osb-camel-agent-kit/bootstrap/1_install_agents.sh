@@ -10,26 +10,28 @@ Every AI agent working in this repository follows these rules. Role prompts in `
 
 ## What this repository is
 
-Camel on Spring Boot modules that replace Oracle Service Bus flows, one Maven module per OSB project folder, one
-`RouteBuilder` per OSB proxy service. Source of truth for behaviour = the OSB export under `osb-src/` (read-only).
+Camel K integrations (YAML DSL) that replace Oracle Service Bus flows: one module per OSB proxy under
+`modules/<project>/<proxy>/` (route `*.camel.yaml` + helper beans + L1 tests). Source of truth for behaviour = the OSB export under `osb-src/` (read-only).
 
 ## Workflow (never skip a step)
 
 1. **Check first:** search this repository for the proxy name, its queues/topics/URLs and XQuery file names. If a
    route already exists, compare and report; do not generate a second one.
-2. **Analyse** with skill `osb-to-camel` Step 0–1 → `migration/<flow>/FLOW_CARD.md`.
-3. **Stop for approval.** No code for a card without `Status: approved` and an approver name.
-4. **Implement** with `osb-to-camel` Step 2.
-5. **Test** with `osb-to-camel` Step 3 and skill `camel-migration-verification`.
-6. **Verify:** `tools/verify_flow.sh <module> <flow>` must report all gates green.
-7. **Record:** `migration/<flow>/MIGRATION_RECORD.md` with the four sections: Original OSB behaviour / Camel
+2. **Research** with skill `osb-research` → `research/<project>/<proxy>/` (shareable pack, check PASS).
+3. **Card + tests** with skill `osb-camelk-route` Step 1 → `modules/<project>/<proxy>/FLOW_CARD.md` + generated tests.
+4. **Stop for approval.** No code for a card without `Status: approved` and an approver name.
+5. **Implement and test** with `osb-camelk-route` Steps 3–5 (route, error tests, stubs).
+6. **Verify:** `check_camelk.py modules/<project>/<proxy>` must print PASS (K1–K8).
+7. **Record:** `modules/<project>/<proxy>/MIGRATION_NOTES.md` with the four sections: Original OSB behaviour / Camel
    implementation / Behavioural differences / Items requiring human validation.
 
 ## Hard rules
 
 - Inputs are files from `osb-src/`. Never build code from screenshots, chat text or memory of "how OSB usually works".
-- Runtime: Camel on Spring Boot. **No Camel K, no Kubernetes operators, no Kamelet CRDs.** YAML DSL and the `kamelet`
-  component inside Spring Boot are allowed only if the card says so.
+- Runtime (decision 2026-10-14): **Camel K, routes in YAML DSL** (`*.camel.yaml`), Camel 4.18.4 = Camel Quarkus 3.33.3
+  (`camel.runtime-version=3.33.3`), small Java helper beans next to the YAML, tests with `camel-test-main-junit5` +
+  mock endpoints. Pattern: `pilot/maintain-adjustment`, skill `osb-camelk-route`. Older Spring Boot templates in
+  `osb-to-camel/assets` are reference only.
 - Messaging: Red Hat AMQ Broker, AMQP 1.0 on port 5672, `camel-amqp` (Qpid JMS) with a failover URI. Destinations
   exist only through the Git register; never rely on auto-create. A WebLogic durable topic subscription becomes a
   named subscription queue with a broker-side filter, consumed by FQQN `<address>::<subscription>`.
@@ -51,6 +53,9 @@ Camel on Spring Boot modules that replace Oracle Service Bus flows, one Maven mo
 | Purpose | Command |
 |---|---|
 | Research pack (source stays, knowledge travels) | `pi/run_research.sh osb-src/<project> <proxy> [task1-dir]` → `research/<proxy>/` (shared only after `research_check.py` PASS) |
+| All proxies of one OSB application | `pi/run_domain.sh <osb-app-dir> <stage>` (stages: list, research, scaffold, build, status) → `domain/STATUS.md` |
+| Research pack → Camel K module + tests | `pi/run_camelk.sh research/<project>/<proxy> modules/<project>/<proxy> <project> [task1-dir]` (stops until the card is approved) |
+| Gates of a Camel K module | `python3 skills/osb-camelk-route/scripts/check_camelk.py modules/<project>/<proxy>` (K1-K8) |
 | Inventory an export | `python3 skills/osb-to-camel/scripts/osb_inventory.py osb-src/<project> -o migration/osb-inventory` |
 | Scaffold a card | `python3 skills/osb-to-camel/scripts/scaffold_flow.py migration/osb-inventory/flows/<flow>.json -o migration/<flow>/` |
 | Build + tests | `mvn -q -f <module>/pom.xml verify` |
@@ -58,8 +63,8 @@ Camel on Spring Boot modules that replace Oracle Service Bus flows, one Maven mo
 
 ## Definition of done (per flow)
 
-Card approved · gates G1–G8 green in `verify-report.json` · record written · reviewer report with no open BLOCKER ·
-human sign-off · shadow run in E2E passed (TESTING.md L6) before cut-over.
+Card approved · gates K1–K8 PASS in `GATES.json` · `MIGRATION_NOTES.md` written · reviewer report with no open BLOCKER ·
+human sign-off · shadow run passed (TESTING.md L6) before cut-over.
 KIT_EOF_AGENTS_MD
 mkdir -p "$(dirname "README.md")"
 cat > 'README.md' <<'KIT_EOF_README_MD'
@@ -410,6 +415,16 @@ cat > 'agents/analyst.md' <<'KIT_EOF_AGENTS_ANALYST_MD'
 
 **Hand-off:** `migration/<flow>/FLOW_CARD.md`, status `draft`, plus a 5-line summary for the human reviewer.
 KIT_EOF_AGENTS_ANALYST_MD
+mkdir -p "$(dirname "agents/implementer-camelk.md")"
+cat > 'agents/implementer-camelk.md' <<'KIT_EOF_AGENTS_IMPLEMENTER_CAMELK_MD'
+# Role: implementer (Camel K YAML route from an approved card)
+
+You implement ONE flow in `modules/<project>/<proxy>/` with skill `osb-camelk-route`, from its approved FLOW_CARD.md and
+research pack. You never change the OSB source, the research pack, FlowParityTest.java or flow-test.json, and you never
+disable or weaken a test. You may copy original XQuery/XSLT/XSD files from the OSB source into the module.
+Behaviour that is not on the card is not implemented: record it as an open question in MIGRATION_NOTES.md.
+Finish only when check_camelk.py prints PASS, or stop and report which gate fails and why it cannot pass.
+KIT_EOF_AGENTS_IMPLEMENTER_CAMELK_MD
 mkdir -p "$(dirname "agents/implementer.md")"
 cat > 'agents/implementer.md' <<'KIT_EOF_AGENTS_IMPLEMENTER_MD'
 # Role: implementer
@@ -589,6 +604,8 @@ sk=0; for d in .pi/skills "$HOME/.pi/agent/skills" .agents/skills; do [ -f "$d/o
 [ $sk = 1 ] && pass "skill osb-to-camel discoverable" || bad "skill osb-to-camel not in .pi/skills, ~/.pi/agent/skills or .agents/skills"
 sr=0; for d in .pi/skills "$HOME/.pi/agent/skills" .agents/skills skills; do [ -f "$d/osb-research/SKILL.md" ] && sr=1; done
 [ $sr = 1 ] && pass "skill osb-research discoverable" || bad "skill osb-research not found (needed for research packs: pi/run_research.sh)"
+sc=0; for d in .pi/skills "$HOME/.pi/agent/skills" .agents/skills skills; do [ -f "$d/osb-camelk-route/SKILL.md" ] && sc=1; done
+[ $sc = 1 ] && pass "skill osb-camelk-route discoverable" || bad "skill osb-camelk-route not found (needed for pi/run_camelk.sh, pi/run_domain.sh)"
 # pi skips a SKILL.md whose front matter is not valid YAML, without an error: check the usual traps
 for f in .pi/skills/*/SKILL.md "$HOME/.pi/agent/skills"/*/SKILL.md .agents/skills/*/SKILL.md; do
   [ -f "$f" ] || continue
@@ -613,6 +630,137 @@ else bad "/osb-* commands missing: run  mkdir -p .pi/prompts && cp pi/prompts/*.
 echo; echo "Result: $ok ok, $warn warnings, $fail failures"
 [ $fail -eq 0 ]
 KIT_EOF_PI_PREFLIGHT_SH
+mkdir -p "$(dirname "pi/run_camelk.sh")"
+cat > 'pi/run_camelk.sh' <<'KIT_EOF_PI_RUN_CAMELK_SH'
+#!/usr/bin/env bash
+# Research pack -> Camel K module for ONE proxy: scaffold (script) -> approval gate -> implement (pi) -> mvn test -> gates.
+#
+# Usage: pi/run_camelk.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]
+#   research-dir   research/<project>/<proxy> with research.json (+ facts.json), check PASS
+#   module-dir     modules/<project>/<proxy> (created on the first run)
+#   task1-dir      its fixtures/parity/* are copied into the module as test inputs (masked; .gitignore keeps them out of Git)
+# Env: OSB_SRC (OSB project folder: the implementer may copy original XQuery/XSLT/XSD into the module), MVN_ARGS
+#      (e.g. "-s ~/.m2/gosi-settings.xml"), OSB_PI_MODEL, PI_THINKING (default high), KIT, PYTHON
+# Exit: 0 gates PASS, 3 card not approved yet (expected after the first run), 1 anything else.
+set -euo pipefail
+RES=${1:?usage: run_camelk.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]}
+MOD=${2:?module dir}
+PRJ=${3:?osb project name}
+TASK1=${4:-}
+KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
+skill_dir() { if [ -d "$KIT/skills/$1" ]; then echo "$KIT/skills/$1"; elif [ -d "$KIT/.pi/skills/$1" ]; then echo "$KIT/.pi/skills/$1"; fi; }
+SK=$(skill_dir osb-camelk-route); [ -n "$SK" ] || { echo "skill osb-camelk-route not found under $KIT"; exit 1; }
+[ -s "$RES/research.json" ] || { echo "missing $RES/research.json: run pi/run_research.sh first"; exit 1; }
+if [ -f "$RES/SHARE_CHECK.json" ] && ! grep -q '"pass": true' "$RES/SHARE_CHECK.json"; then echo "research pack did not pass its check: $RES/SHARE_CHECK.json"; exit 1; fi
+
+echo "== 1 scaffold"
+"$PY" "$SK/scripts/scaffold_camelk.py" "$RES" -o "$MOD" --project "$PRJ" ${TASK1:+--parity "$TASK1/fixtures/parity"}
+
+echo "== 2 approval"
+if ! grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$MOD/FLOW_CARD.md" || ! grep -qE '^Approver:[[:space:]]*[^[:space:]]' "$MOD/FLOW_CARD.md"; then
+  echo "card not approved: review $MOD/FLOW_CARD.md against $RES/RESEARCH.md, set 'Status: approved' + Approver + Date, rerun"
+  exit 3
+fi
+
+echo "== 3 implement (pi)"
+LOG="$MOD/.agent-logs"; mkdir -p "$LOG"
+PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,edit,write"
+    --append-system-prompt "$KIT/agents/implementer-camelk.md")
+[ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
+"${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/RESEARCH.md and $RES/research.json. ${OSB_SRC:+OSB source (read only): $OSB_SRC.} Do steps 3-6 of the skill: fill every TODO(flow-card) in the route, write FlowErrorTest (one test per error scope at least) and the backend stubs, run 'mvn -B ${MVN_ARGS:-} -f $MOD/pom.xml test' and '$PY $SK/scripts/check_camelk.py $MOD' until it prints PASS. Never edit FlowParityTest.java or flow-test.json. Write nothing outside $MOD." \
+  > "$LOG/implement.out" 2> "$LOG/implement.err" || true
+
+echo "== 4 verify"
+mvn -B -q ${MVN_ARGS:-} -f "$MOD/pom.xml" test > "$LOG/mvn.out" 2>&1 || true
+grep -h "Tests run:" "$LOG/mvn.out" | tail -1 || true
+"$PY" "$SK/scripts/check_camelk.py" "$MOD"
+KIT_EOF_PI_RUN_CAMELK_SH
+mkdir -p "$(dirname "pi/run_domain.sh")"
+cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
+#!/usr/bin/env bash
+# One OSB application (domain) with many projects and proxies: run the per-flow steps for all of them, keep going when
+# one flow fails, and keep a status table. Safe to rerun: finished steps are skipped.
+#
+# Usage: pi/run_domain.sh <osb-app-dir> <stage> [workspace]
+#   osb-app-dir  e.g. /e/contributor-agreement-mb-app (the folder holding the *-prj projects)
+#   stage        list      projects and proxies found (no agent)
+#                research  research pack per proxy -> <ws>/research/<project>/<proxy>/   (skips packs that PASS)
+#                scaffold  module + FLOW_CARD.md per researched proxy -> <ws>/modules/<project>/<proxy>/
+#                build     implement + test + gates for every proxy whose card is approved
+#                status    only rewrite <ws>/domain/STATUS.md + status.csv
+#   workspace    default: current folder
+# Env: PROJECTS (regex on project names, e.g. 'beneficiary|cancel-'), TASK1_ROOT (folder with <proxy>/task1 from the
+#      Splunk step), plus the env of run_research.sh / run_camelk.sh (OSB_PI_MODEL, MVN_ARGS, ...).
+set -uo pipefail
+APP=${1:?usage: run_domain.sh <osb-app-dir> <list|research|scaffold|build|status> [workspace]}
+STAGE=${2:?stage}
+WS=${3:-.}
+case "$APP" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && APP=$(cygpath -u "$APP");; esac
+[ -d "$APP" ] || { echo "OSB application folder not found: $APP (Git Bash: /e/folder, not E:\\folder)"; exit 2; }
+KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
+FILTER=${PROJECTS:-.}
+mkdir -p "$WS/domain"
+
+flows() {   # "<project> <proxy>" for every proxy file (12c .proxy, sbconfig .ProxyService) in every project folder
+  for prj in "$APP"/*/; do
+    p=$(basename "$prj"); case "$p" in .*) continue;; esac
+    echo "$p" | grep -Eq "$FILTER" || continue
+    find "$prj" -type f \( -name '*.proxy' -o -name '*.ProxyService' \) | sort | while read -r f; do
+      n=$(basename "$f"); echo "$p ${n%.*}"
+    done
+  done
+}
+
+status() {
+  local csv="$WS/domain/status.csv" md="$WS/domain/STATUS.md"
+  echo "project,proxy,research,card,gates,tests" > "$csv"
+  flows | while read -r p x; do
+    r="$WS/research/$p/$x"; m="$WS/modules/$p/$x"
+    rs=-; [ -f "$r/SHARE_CHECK.json" ] && { grep -q '"pass": true' "$r/SHARE_CHECK.json" && rs=PASS || rs=FAIL; }
+    cs=-; [ -f "$m/FLOW_CARD.md" ] && { grep -qiE '^Status:[[:space:]]*approved' "$m/FLOW_CARD.md" && cs=approved || cs=draft; }
+    gs=-; ts=-; if [ -f "$m/GATES.json" ]; then grep -q '"result": "PASS"' "$m/GATES.json" && gs=PASS || gs=FAIL
+      ts=$("$PY" -c "import json,sys; g=json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}); print(f\"{g.get('tests','-')}/{g.get('failures','-')}F/{g.get('skipped','-')}S\")" "$m/GATES.json"); fi
+    echo "$p,$x,$rs,$cs,$gs,$ts" >> "$csv"
+  done
+  { echo "# Domain status: $(basename "$APP")"; echo; echo "Generated $(date '+%F %H:%M'). research = pack check, card = FLOW_CARD.md, gates = check_camelk.py, tests = run/failed/skipped."; echo
+    echo "| Project | Proxy | Research | Card | Gates | Tests |"; echo "|---|---|---|---|---|---|"
+    tail -n +2 "$csv" | awk -F, '{printf "| %s | %s | %s | %s | %s | %s |\n",$1,$2,$3,$4,$5,$6}'
+    echo; tail -n +2 "$csv" | awk -F, '{n++; if($3=="PASS")r++; if($4=="approved")c++; if($5=="PASS")g++} END{printf "%d proxies: %d researched, %d cards approved, %d green\n",n,r,c,g}'
+  } > "$md"
+  tail -1 "$md"
+}
+
+case "$STAGE" in
+  list) flows | awk '{print} END{print NR " proxies"}' ;;
+  research)
+    flows | while read -r p x; do
+      out="$WS/research/$p/$x"
+      if [ -f "$out/SHARE_CHECK.json" ] && grep -q '"pass": true' "$out/SHARE_CHECK.json"; then echo "skip $p/$x (PASS)"; continue; fi
+      echo "=== research $p/$x"
+      t1="${TASK1_ROOT:+$TASK1_ROOT/$x/task1}"; [ -n "$t1" ] && [ ! -d "$t1" ] && t1=""
+      (cd "$WS" && OUT="research/$p/$x" bash "$KIT/pi/run_research.sh" "$APP/$p" "$x" ${t1:+"$t1"}) < /dev/null || echo "FAILED research $p/$x (continuing)"
+    done; status ;;
+  scaffold)
+    flows | while read -r p x; do
+      r="$WS/research/$p/$x"; [ -s "$r/research.json" ] || continue
+      "$PY" "$KIT/skills/osb-camelk-route/scripts/scaffold_camelk.py" "$r" -o "$WS/modules/$p/$x" --project "$p" \
+        ${TASK1_ROOT:+--parity "$TASK1_ROOT/$x/task1/fixtures/parity"} || echo "FAILED scaffold $p/$x (continuing)"
+    done; status ;;
+  build)
+    flows | while read -r p x; do
+      m="$WS/modules/$p/$x"; [ -f "$m/FLOW_CARD.md" ] || continue
+      grep -qiE '^Status:[[:space:]]*approved' "$m/FLOW_CARD.md" || { echo "skip $p/$x (card not approved)"; continue; }
+      if [ -f "$m/GATES.json" ] && grep -q '"result": "PASS"' "$m/GATES.json"; then echo "skip $p/$x (gates PASS)"; continue; fi
+      echo "=== build $p/$x"
+      t1="${TASK1_ROOT:+$TASK1_ROOT/$x/task1}"; [ -n "$t1" ] && [ ! -d "$t1" ] && t1=""
+      OSB_SRC="$APP/$p" bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
+    done; status ;;
+  status) status ;;
+  *) echo "unknown stage: $STAGE"; exit 2 ;;
+esac
+KIT_EOF_PI_RUN_DOMAIN_SH
 mkdir -p "$(dirname "pi/run_flow.sh")"
 cat > 'pi/run_flow.sh' <<'KIT_EOF_PI_RUN_FLOW_SH'
 #!/usr/bin/env bash
@@ -732,14 +880,18 @@ cat > 'pi/run_research.sh' <<'KIT_EOF_PI_RUN_RESEARCH_SH'
 # The OSB source never leaves the machine; only research/<proxy>/ is shared, and only after the check passes.
 #
 # Usage: pi/run_research.sh <osb-project-dir> <proxy> [task1-dir]
-# Env:   OSB_PI_MODEL (model pattern for `pi --model`), PI_THINKING (default high), KIT, PYTHON
+# Env:   OUT (default research/<proxy>; run_domain.sh uses research/<project>/<proxy>), OSB_PI_MODEL (model pattern for
+#        `pi --model`), PI_THINKING (default high), KIT, PYTHON
 set -euo pipefail
 PROJECT=${1:?usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]}
 PROXY=${2:?proxy name}
 TASK1=${3:-}
+case "$PROJECT" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && PROJECT=$(cygpath -u "$PROJECT");; esac   # Windows path (quoted) -> /e/...
+case "$PROXY" in */*|*\\*) echo "2nd argument must be the proxy name (e.g. maintain-adjustment), not a path. usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]"; exit 2;; esac
+[ -e "$PROJECT" ] || { echo "OSB project not found: $PROJECT  (Git Bash: write /e/folder/project, not E:\\folder\\project)"; exit 2; }
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
 PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
-OUT="research/$PROXY"
+OUT=${OUT:-research/$PROXY}
 LOG="$OUT/agent-logs"
 skill_dir() { if [ -d "$KIT/skills/$1" ]; then echo "$KIT/skills/$1"; elif [ -d "$KIT/.pi/skills/$1" ]; then echo "$KIT/.pi/skills/$1"; fi; }
 SK=$(skill_dir osb-research); [ -n "$SK" ] || { echo "skill osb-research not found under $KIT"; exit 1; }
@@ -756,7 +908,7 @@ echo "== 2 questionnaire (pi)"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,write"
     --append-system-prompt "$KIT/agents/researcher.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
-"${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." \
+"${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." \
   > "$LOG/research.out" 2> "$LOG/research.err" || true
 [ "$(fp "$PROJECT")" = "$before" ] || { echo "VIOLATION: the OSB export was changed during research"; exit 1; }
 
@@ -982,6 +1134,16 @@ Act as the analyst defined in agents/analyst.md and follow AGENTS.md.
 Use skill osb-to-camel Steps 0 and 1 on the OSB export $1 for flow $2.
 Write migration/$2/FLOW_CARD.md with Status draft, then stop and list the BLOCKING open items.
 KIT_EOF_PI_PROMPTS_OSB_ANALYSE_MD
+mkdir -p "$(dirname "pi/prompts/osb-camelk.md")"
+cat > 'pi/prompts/osb-camelk.md' <<'KIT_EOF_PI_PROMPTS_OSB_CAMELK_MD'
+---
+description: "Approved flow card + research pack -> Camel K YAML route + tests, until the gates pass"
+argument-hint: "<module-dir> <research-dir>"
+---
+Act as the implementer defined in agents/implementer-camelk.md and follow AGENTS.md.
+Use skill osb-camelk-route on module $1 (approved card $1/FLOW_CARD.md) with research pack $2.
+Do steps 3-6 of the skill until check_camelk.py prints PASS, then give the five-line report.
+KIT_EOF_PI_PROMPTS_OSB_CAMELK_MD
 mkdir -p "$(dirname "pi/prompts/osb-implement.md")"
 cat > 'pi/prompts/osb-implement.md' <<'KIT_EOF_PI_PROMPTS_OSB_IMPLEMENT_MD'
 ---
@@ -1043,6 +1205,16 @@ Act as the analyst defined in agents/analyst.md and follow AGENTS.md.
 Use skill osb-to-camel Steps 0 and 1 on the OSB export $1 for flow $2.
 Write migration/$2/FLOW_CARD.md with Status draft, then stop and list the BLOCKING open items.
 KIT_EOF__PI_PROMPTS_OSB_ANALYSE_MD
+mkdir -p "$(dirname ".pi/prompts/osb-camelk.md")"
+cat > '.pi/prompts/osb-camelk.md' <<'KIT_EOF__PI_PROMPTS_OSB_CAMELK_MD'
+---
+description: "Approved flow card + research pack -> Camel K YAML route + tests, until the gates pass"
+argument-hint: "<module-dir> <research-dir>"
+---
+Act as the implementer defined in agents/implementer-camelk.md and follow AGENTS.md.
+Use skill osb-camelk-route on module $1 (approved card $1/FLOW_CARD.md) with research pack $2.
+Do steps 3-6 of the skill until check_camelk.py prints PASS, then give the five-line report.
+KIT_EOF__PI_PROMPTS_OSB_CAMELK_MD
 mkdir -p "$(dirname ".pi/prompts/osb-implement.md")"
 cat > '.pi/prompts/osb-implement.md' <<'KIT_EOF__PI_PROMPTS_OSB_IMPLEMENT_MD'
 ---
@@ -1096,4 +1268,4 @@ For each red gate, name the owner role per skill camel-migration-verification St
 KIT_EOF__PI_PROMPTS_OSB_VERIFY_MD
 chmod +x pi/*.sh 2>/dev/null || true
 echo "commands /osb-* installed in .pi/prompts: start pi in this folder and trust the project (or pi --approve)"
-echo "installed: 28 files (agent layer)"
+echo "installed: 33 files (agent layer)"

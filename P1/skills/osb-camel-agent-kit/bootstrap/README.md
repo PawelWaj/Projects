@@ -12,8 +12,10 @@ Run each script from the migration repository root in Git Bash or WSL, in this o
 | `5_install_skill_verification.sh` | .pi/skills/camel-migration-verification | 10 KB |
 | `6_install_log_replay.sh` | log-replay/: Splunk logs -> keyed masking -> fixtures -> replay tools, mock stack, docs | 124 KB |
 | `7_install_vdi_workflow.sh` | bin/start_flow.sh (one entry point per flow), preflight, replay-config generator, RUNBOOK.md | 32 KB |
+| `8_install_skill_osb_research.sh` | .pi/skills/osb-research (shareable research pack), researcher role, pi/run_research.sh | 34 KB |
+| `9_install_skill_osb_camelk.sh` | .pi/skills/osb-camelk-route (research pack → Camel K YAML module + tests + gates K1-K8), implementer role, pi/run_camelk.sh, pi/run_domain.sh (all proxies of an OSB application), AGENTS.md (Camel K) | 89 KB |
 
-All seven are generated from the repository by `python3 vdi-osb-migration/bin/build_bootstrap.py` (run it after any change; the install round-trips byte-identical).
+All nine are generated from the repository by `python3 vdi-osb-migration/bin/build_bootstrap.py` (run it after any change; the install round-trips byte-identical).
 
 How to paste a script: in the VDI terminal type `cat > 1_install_agents.sh`, press Enter, paste, press Ctrl-D,
 then `bash 1_install_agents.sh`. Afterwards: `pi/preflight.sh`, then start `pi` and check the startup header lists

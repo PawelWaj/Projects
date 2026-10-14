@@ -1,0 +1,21 @@
+{
+  "proxy": "maintain-adjustment",
+  "project": "beneficiary-engagement-change-prj",
+  "package": "osb.beneficiaryengagementchangeprj.maintainadjustment",
+  "research_sha256": "581bca6b076ccc3997577f037fd8574d391756a5ec2d2a2f18780244538e77de",
+  "generated": {
+    "src/test/java/osb/beneficiaryengagementchangeprj/maintainadjustment/FlowParityTest.java": "5a88ffb927c7bf9d4d8b9f02704d1a7112fc73ff88ff35f7e2f3f4ffabe16577",
+    "src/test/resources/flow-test.json": "e16a68168535f1f9fa51b5f87f4808a6fd466d93d4b7e79d870ae1afc2f8f858"
+  },
+  "route_ids": [
+    "branch-hasgosiengagement-check",
+    "branch-hasgosiengagement-check-gosi-path",
+    "branch-hasppaengagement-check",
+    "branch-hasppaengagement-check-ppa-path",
+    "out-maintain-adjustment",
+    "out-maintain-adjustment-error-queue",
+    "out-ppa-engagement"
+  ],
+  "errors": 1,
+  "backends_with_response": []
+}
