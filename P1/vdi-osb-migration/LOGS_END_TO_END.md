@@ -93,7 +93,7 @@ What it prints, in order:
 | Output line | Meaning | Must be |
 |---|---|---|
 | `== 1 anonymise … residue findings 0` | names, IDs, birth dates, passport numbers masked; same value → same mask everywhere | `residue findings 0` |
-| `== 2 signature … matches_in_file N/N` | the log pattern learnt from the first line | N/N (all lines match) |
+| `== 2 signatures …` then `lines_matched N/N` | the log pattern, learnt automatically: first from a line with valid JSON, then one more pattern per kind of line still unmatched | N/N (all lines match) |
 | `== 3 traces … K scenarios` | one trace per message, grouped by resource × businessTransaction × decision | K = rows of 1c |
 | `== 4 … fixtures written` + `0 findings` | test cases written; second residue check on the test files | `0 findings` |
 | `Scenarios:` list | count per scenario | same as 1c |
@@ -161,7 +161,7 @@ What the logs cannot give (known for this flow): backend responses and error cas
 | `export MASK_KEY=<key> first` | `export MASK_KEY=…` |
 | `residue found` | open `events.masked.csv.report.json`, add the listed field with `--mask-json-key`, rerun |
 | `matches_in_file` 1/N, no `body` in `groups` | payload not recognised: update the repo (fixed 2026-10-14); then send the `payloads` block of the report |
-| `matches_in_file` below N/N (but more than 1) | lines of another format in the export; send the count, try `EXAMPLE_LINE=2` |
+| `lines_matched` below N/N | more than 5 kinds of line in the export; send the `== 2` output (no values in it) |
 | warning `payload is json-lenient` / `json-trailing` / `unparsed` | OSB logged JSON that is not strictly valid (raw tabs/newlines, text after `}`, or cut off). Tests still build; send the `payloads` block of the report: Camel's JSON parser must be configured to accept the same input |
 | `cannot derive the flow id` | `FLOW=beneficiary-engagement-change-prj/maintain-adjustment` before the command |
 | 1 scenario only | `SCENARIO_DIMS` not exported in this shell |

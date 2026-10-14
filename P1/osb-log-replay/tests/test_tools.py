@@ -406,8 +406,9 @@ class ExampleSignatureTests(unittest.TestCase):
             subprocess.run([sys.executable, str(ROOT / "tools/anonymize_logs.py"), str(SAMPLES / "splunk-export-synthetic.csv"),
                             "-o", str(d / "e.masked.csv")], check=True, capture_output=True, env=env)
             out = run(ROOT / "tools/signature_from_example.py", d / "e.masked.csv", "-o", d / "sig.json")
-            info = json.loads(out.stdout)
+            info = json.loads(out.stdout.splitlines()[0])
             self.assertEqual(info["matches_in_file"], "1/1")
+            self.assertEqual(json.loads(out.stdout.splitlines()[-1])["lines_matched"], "1/1")
             self.assertEqual(info["signature"], "sample-change-prj/sample-adjustment#example-request")
             self.assertIn("hdr_resource", info["groups"])
             run(ROOT / "tools/osb_log_traces.py", d / "sig.json", d / "e.masked.csv", "-o", d / "t", "--already-masked")
@@ -449,3 +450,24 @@ class PayloadFinderTests(unittest.TestCase):
             f = Path(d) / "e.csv"
             f.write_text('"_time","_raw"\n"t","' + "x" * 200000 + '"\n', encoding="utf-8")
             self.assertEqual(len(trmod.load_events(f, "csv")[0]["raw"]), 200000)
+
+
+class AutoExampleTests(unittest.TestCase):
+    def test_atypical_first_line_gets_its_own_signature(self):
+        import csv as _csv
+        raw = next(_csv.DictReader((SAMPLES / "splunk-export-synthetic.csv").open(encoding="utf-8")))["_raw"]
+        odd = raw.replace("Request Received", "Request Re-Received") + " ]tail"       # other text + text after the JSON
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "e.csv"
+            with f.open("w", encoding="utf-8", newline="") as fh:
+                w = _csv.writer(fh, quoting=_csv.QUOTE_ALL)
+                w.writerow(["_time", "_raw"])
+                for r in (odd, raw, raw, raw):
+                    w.writerow(["t", r])
+            out = run(ROOT / "tools/signature_from_example.py", f, "-o", Path(d) / "sig.json").stdout.splitlines()
+            first, last = json.loads(out[0]), json.loads(out[-1])
+            self.assertEqual(first["example_line"], 2)                  # a strict-JSON line is the first example
+            self.assertEqual(first["matches_in_file"], "3/4")
+            self.assertEqual(last, {"signatures": 2, "lines_matched": "4/4", "out": str(Path(d) / "sig.json")})
+            ids = [s["id"] for s in json.loads((Path(d) / "sig.json").read_text())["signatures"]]
+            self.assertEqual(len(set(ids)), 2)

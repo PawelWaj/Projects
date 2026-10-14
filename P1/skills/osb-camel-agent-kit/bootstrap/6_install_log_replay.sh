@@ -1269,7 +1269,7 @@ cat > 'log-replay/tools/signature_from_example.py' <<'KIT_EOF_LOG_REPLAY_TOOLS_S
 #!/usr/bin/env python3
 """Build a log signature from ONE example log line, when the OSB source is not available yet.
 
-    signature_from_example.py <masked.csv|masked.log> -o signatures.json [--line N] [--flow project/proxy]
+    signature_from_example.py <masked.csv|masked.log> -o signatures.json [--line N | auto] [--flow project/proxy]
                               [--field hdr_name="literal text"] [--append]
 
 The normal path derives signatures from the Log actions in the OSB source (osb_log_signatures.py). Without the
@@ -1386,30 +1386,70 @@ def build(raw: str, flow: str | None, fields: dict[str, str]) -> dict:
     }
 
 
+def matches(rx: re.Pattern, line: str) -> bool:
+    return bool(rx.search(osb_message(line)[0]))
+
+
+def build_checked(line: str, flow: str | None, fields: dict[str, str]) -> tuple[dict, re.Pattern]:
+    sig = build(line, flow, fields)
+    rx = re.compile(sig["regex"], re.S)
+    msg = osb_message(line)[0].strip()
+    if not (rx.fullmatch(msg) or rx.search(msg)):
+        sys.exit("internal check failed: the generated regex does not match its own example")
+    return sig, rx
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("examples", type=Path, help="anonymised CSV (_raw column) or log file")
     ap.add_argument("-o", "--out", type=Path, required=True)
-    ap.add_argument("--line", type=int, default=1, help="which event of the file to use as the example (1-based)")
+    ap.add_argument("--line", type=int, default=0, help="event to use as the example (1-based); 0 = auto: start with the "
+                    "first line whose payload is strict JSON, then add one signature per kind of line still unmatched")
+    ap.add_argument("--max-signatures", type=int, default=5, help="auto mode: at most this many kinds of line")
     ap.add_argument("--flow", help="flow id <project>/<proxy> when the line does not name them")
     ap.add_argument("--field", action="append", default=[], help='hdr_<name>="literal" turns a literal into a scenario field')
     ap.add_argument("--append", action="store_true", help="add to an existing signatures file (one signature per kind of line)")
     a = ap.parse_args()
     lines = example_lines(a.examples)
-    if not 1 <= a.line <= len(lines):
+    if not lines:
+        sys.exit(f"{a.examples}: no events")
+    if not 0 <= a.line <= len(lines):
         sys.exit(f"{a.examples}: {len(lines)} events, --line {a.line} out of range")
-    fields = dict(f.split("=", 1) for f in a.field)
-    sig = build(lines[a.line - 1], a.flow, {k: v.strip('"') for k, v in fields.items()})
-    rx = re.compile(sig["regex"], re.S)
-    msg = osb_message(lines[a.line - 1])[0].strip()
-    if not (rx.fullmatch(msg) or rx.search(msg)):
-        sys.exit("internal check failed: the generated regex does not match its own example")
+    fields = {k: v.strip('"') for k, v in (f.split("=", 1) for f in a.field)}
     doc = json.loads(a.out.read_text(encoding="utf-8")) if a.append and a.out.is_file() else {"source": "example lines", "signatures": []}
-    doc["signatures"] = [s for s in doc["signatures"] if s["id"] != sig["id"]] + [sig]
+
+    built = []                                                         # (signature, regex, example line number)
+    if a.line:
+        sig, rx = build_checked(lines[a.line - 1], a.flow, fields)
+        built.append((sig, rx, a.line))
+    else:
+        strict = [i for i, l in enumerate(lines) if find_payload(osb_message(l)[0])[1] in ("json", "xml")]
+        order = strict + [i for i in range(len(lines)) if i not in set(strict)]
+        unmatched = list(order)
+        while unmatched and len(built) < a.max_signatures:
+            i = unmatched[0]
+            sig, rx = build_checked(lines[i], a.flow, fields)
+            built.append((sig, rx, i + 1))
+            unmatched = [j for j in unmatched if not matches(rx, lines[j])]
+
+    ids = {s["id"] for s in doc["signatures"]}
+    out = []
+    for n, (sig, rx, line_no) in enumerate(built, 1):
+        base, k = sig["id"], 2
+        while sig["id"] in ids and not (a.line and a.append):           # one id per kind of line
+            sig["id"], k = f"{base}-{k}", k + 1
+        ids.add(sig["id"])
+        sig["annotation"] += f" (example event {line_no})"
+        doc["signatures"] = [s for s in doc["signatures"] if s["id"] != sig["id"]] + [sig]
+        out.append({"signature": sig["id"], "example_line": line_no, "pipeline_type": sig["pipeline_type"],
+                    "groups": [g["name"] for g in sig["groups"]],
+                    "matches_in_file": f"{sum(1 for l in lines if matches(rx, l))}/{len(lines)}", "warnings": sig["warnings"]})
     a.out.write_text(json.dumps(doc, indent=2, ensure_ascii=False), encoding="utf-8")
-    matched = sum(1 for line in lines if rx.search(osb_message(line)[0]))
-    print(json.dumps({"signature": sig["id"], "pipeline_type": sig["pipeline_type"], "groups": [g["name"] for g in sig["groups"]],
-                      "matches_in_file": f"{matched}/{len(lines)}", "warnings": sig["warnings"], "out": str(a.out)}))
+    rxs = [r for _, r, _ in built]
+    total = sum(1 for l in lines if any(matches(r, l) for r in rxs))
+    for o in out:
+        print(json.dumps(o, ensure_ascii=False))
+    print(json.dumps({"signatures": len(out), "lines_matched": f"{total}/{len(lines)}", "out": str(a.out)}))
     return 0
 
 
