@@ -79,12 +79,12 @@ if step_reached traces; then
   else
     if [ -f "$EVENTS.report.json" ]; then
       say "3 traces from $EVENTS (already anonymised by anonymize_logs.py)"
-      "$PY" "$REPLAY/tools/osb_log_traces.py" "$WORK/signatures.json" "$EVENTS" -o "$WORK/traces" --already-masked
+      "$PY" "$REPLAY/tools/osb_log_traces.py" "$WORK/signatures.json" "$EVENTS" -o "$WORK/traces" --already-masked ${SCENARIO_DIMS:+--dims "$SCENARIO_DIMS"}
     else
       say "3 traces from $EVENTS (masking key: ${MASK_KEY:+set}${MASK_KEY:-MISSING})"
       [ -n "${MASK_KEY:-}" ] || { echo "export MASK_KEY=<key held by the data owner> first (or anonymise first: tools/anonymize_logs.py)"; exit 1; }
       # shellcheck disable=SC2086
-      "$PY" "$REPLAY/tools/osb_log_traces.py" "$WORK/signatures.json" "$EVENTS" -o "$WORK/traces" ${DELETE_INPUT:+--delete-input} ${EXTRA_MASK_ARGS:-}
+      "$PY" "$REPLAY/tools/osb_log_traces.py" "$WORK/signatures.json" "$EVENTS" -o "$WORK/traces" ${DELETE_INPUT:+--delete-input} ${EXTRA_MASK_ARGS:-} ${SCENARIO_DIMS:+--dims "$SCENARIO_DIMS"}
     fi
     "$PY" "$REPLAY/tools/mask_residue_check.py" "$WORK/traces" || { echo "residue check failed: add --mask-json-key/--mask-key-pattern (see RUNBOOK) and rerun --from traces"; exit 1; }
     "$PY" - "$WORK/traces/coverage.json" <<'PY'

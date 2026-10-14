@@ -96,7 +96,7 @@ def main() -> None:
          [(p, "log-replay/" + rel(REPLAY, p)) for p in lr], ["chmod +x log-replay/tools/*.py log-replay/*.sh log-replay/mock/*.sh 2>/dev/null || true"],
          "log replay tools")
     # 7 this workflow -> bin/ + RUNBOOK.md
-    wf = files_under(VDI, ["bin/*", "RUNBOOK.md"])
+    wf = files_under(VDI, ["bin/*", "RUNBOOK.md", "TASKS.md", "LOGS_END_TO_END.md"])
     emit("7_install_vdi_workflow.sh", "VDI workflow: bin/start_flow.sh (one entry point per flow), preflight, replay-config generator, RUNBOOK.md.",
          [(p, rel(VDI, p)) for p in wf], ["chmod +x bin/*.sh bin/*.py 2>/dev/null || true",
                                           'echo "next: bash bin/preflight_vdi.sh, then read RUNBOOK.md"'], "VDI workflow")
@@ -337,12 +337,12 @@ if step_reached traces; then
   else
     if [ -f "$EVENTS.report.json" ]; then
       say "3 traces from $EVENTS (already anonymised by anonymize_logs.py)"
-      "$PY" "$REPLAY/tools/osb_log_traces.py" "$WORK/signatures.json" "$EVENTS" -o "$WORK/traces" --already-masked
+      "$PY" "$REPLAY/tools/osb_log_traces.py" "$WORK/signatures.json" "$EVENTS" -o "$WORK/traces" --already-masked ${SCENARIO_DIMS:+--dims "$SCENARIO_DIMS"}
     else
       say "3 traces from $EVENTS (masking key: ${MASK_KEY:+set}${MASK_KEY:-MISSING})"
       [ -n "${MASK_KEY:-}" ] || { echo "export MASK_KEY=<key held by the data owner> first (or anonymise first: tools/anonymize_logs.py)"; exit 1; }
       # shellcheck disable=SC2086
-      "$PY" "$REPLAY/tools/osb_log_traces.py" "$WORK/signatures.json" "$EVENTS" -o "$WORK/traces" ${DELETE_INPUT:+--delete-input} ${EXTRA_MASK_ARGS:-}
+      "$PY" "$REPLAY/tools/osb_log_traces.py" "$WORK/signatures.json" "$EVENTS" -o "$WORK/traces" ${DELETE_INPUT:+--delete-input} ${EXTRA_MASK_ARGS:-} ${SCENARIO_DIMS:+--dims "$SCENARIO_DIMS"}
     fi
     "$PY" "$REPLAY/tools/mask_residue_check.py" "$WORK/traces" || { echo "residue check failed: add --mask-json-key/--mask-key-pattern (see RUNBOOK) and rerun --from traces"; exit 1; }
     "$PY" - "$WORK/traces/coverage.json" <<'PY'
@@ -415,7 +415,9 @@ cat > 'bin/task1_log_only.sh' <<'KIT_EOF_BIN_TASK1_LOG_ONLY_SH'
 #   4 replay-config draft + fixtures  -> <work>/replay-config.json, <work>/fixtures/parity/**
 #   5 --replay: Artemis + WireMock + stub flow in Docker Compose, replay every case -> <work>/report/report.json
 # Env: MASK_KEY (required), REPLAY (osb-log-replay root), EXAMPLE_LINE (which event is the example, default 1),
-#      FLOW (<project>/<proxy> if the line does not name them), SUCCESS_QUEUE / ERROR_QUEUE (stand-in output names).
+#      FLOW (<project>/<proxy> if the line does not name them), SUCCESS_QUEUE / ERROR_QUEUE (stand-in output names),
+#      EXTRA_MASK_ARGS (e.g. "--mask-json-key establishmentNameArb"),
+#      SCENARIO_DIMS (split scenarios by payload fields, e.g. hdr_resource,body:data.businessTransaction), PER_SCENARIO (default 3).
 set -euo pipefail
 EVENTS=${1:?usage: task1_log_only.sh <events.csv> [work-dir] [--replay]}
 WORK=${2:-work/task1}; [ "${2:-}" = "--replay" ] && WORK=work/task1
@@ -427,13 +429,13 @@ T="$REPLAY/tools"; mkdir -p "$WORK"
 [ -n "${MASK_KEY:-}" ] || { echo "export MASK_KEY=<key> first (real key from the data owner; any value for a private trial)"; exit 1; }
 
 echo "== 1 anonymise"
-"$PY" "$T/anonymize_logs.py" "$EVENTS" -o "$WORK/events.masked.csv" || { echo "residue found: see $WORK/events.masked.csv.report.json, add --mask-json-key and rerun"; exit 1; }
+"$PY" "$T/anonymize_logs.py" "$EVENTS" -o "$WORK/events.masked.csv" ${EXTRA_MASK_ARGS:-} || { echo "residue found: see $WORK/events.masked.csv.report.json, add --mask-json-key and rerun"; exit 1; }
 
 echo "== 2 signature from example line ${EXAMPLE_LINE:-1}"
 "$PY" "$T/signature_from_example.py" "$WORK/events.masked.csv" -o "$WORK/signatures.json" --line "${EXAMPLE_LINE:-1}" ${FLOW:+--flow "$FLOW"}
 
 echo "== 3 traces"
-"$PY" "$T/osb_log_traces.py" "$WORK/signatures.json" "$WORK/events.masked.csv" -o "$WORK/traces" --already-masked
+"$PY" "$T/osb_log_traces.py" "$WORK/signatures.json" "$WORK/events.masked.csv" -o "$WORK/traces" --already-masked ${SCENARIO_DIMS:+--dims "$SCENARIO_DIMS"}
 
 echo "== 4 replay-config draft + fixtures"
 "$PY" - "$WORK/signatures.json" "$WORK/events.masked.csv" "$WORK/replay-config.json" <<'PY'
@@ -667,6 +669,288 @@ approver) · G8 mutation of transforms · G10 golden outputs unchanged since the
 - [ ] Review without BLOCKER; gate B signed by a second engineer; `MIGRATION_RECORD.md` lists deviations and the delivery-semantics delta.
 - [ ] Time per step noted in `TRIAL_RESULTS_TEMPLATE.csv`.
 KIT_EOF_RUNBOOK_MD
+mkdir -p "$(dirname "TASKS.md")"
+cat > 'TASKS.md' <<'KIT_EOF_TASKS_MD'
+# First two tasks on the VDI (one flow, start small)
+
+![workflow](docs/OSB_CamelK_Workflow.png)
+
+Two separate tracks: **A** migrates the OSB code to a Camel K route in YAML DSL (pi implementer), **B** builds the tests and mocks from OSB logs and OSB logic (pi tester). They meet only at verification. Source: `docs/OSB_CamelK_Workflow.drawio`.
+
+Work in a workspace folder, e.g. `~/work/osb-migration`. Tools: `~/Projects/P1` (`git clone git@github.com:PawelWaj/Projects.git ~/Projects`).
+Nothing unmasked leaves the VDI. Send only reports and file lists, never CSVs or payloads.
+
+**Step-by-step with the Splunk searches (index `ameen_e2e`): [LOGS_END_TO_END.md](LOGS_END_TO_END.md).**
+
+---
+
+## Task 1 — logs only: anonymise, build test cases, replay them through the mocks
+
+**Goal:** prove the data chain and the mock environment on one real flow, before any OSB source or Camel code.
+**Input:** a Splunk export of the flow (CSV, columns `_time,_raw`).
+**Output:** masked log, test cases, and (with Docker) a replay report.
+
+1. Export from Splunk (2–4 weeks incl. a month-end; one line is enough to start):
+   ```
+   index=<osb_index> sourcetype=<osb_sourcetype> earliest=-28d@d ("<osb-project>" OR <osb-project-pipeline>*) | sort 0 _time | table _time _raw
+   ```
+   Save as `work/<flow>/events.csv`.
+2. Run:
+   ```bash
+   export MASK_KEY='<key>'     # private trial: any value; real key: from the data owner
+   ~/Projects/P1/vdi-osb-migration/bin/task1_log_only.sh work/<flow>/events.csv work/<flow>/task1
+   ```
+   It does, in order:
+   - **anonymise:** `events.masked.csv` plus a report with no values; must end with `residue findings 0`;
+   - **signature from the example line:** stands in for the OSB source;
+   - **traces and scenarios:** one scenario per resource type and outcome;
+   - **test cases:** `fixtures/parity/<flow>/<scenario>/<traceId>/{input.payload, headers.json, expected.json}`.
+3. Check:
+   - `task1/events.masked.csv.report.json` → `residue_check.findings` is 0.
+   - In `key_inventory`, every key with `masked: false` that could identify a person is added with `--mask-json-key` and the script is rerun (edit `anonymize_logs.py` args in the script, or anonymise by hand first; see RUNBOOK 0a).
+   - `task1/traces/scenarios.json` lists the scenarios you expect.
+   - `task1/fixtures/**/input.payload` contains no real names or IDs.
+4. With Docker/Podman: rerun with `--replay`:
+   - It starts Artemis + WireMock + a **stand-in flow** (forwards valid JSON to the success queue) and replays every case.
+   - Report: `task1/report/report.json`, one line per case (PASS/FAIL).
+   - This proves the mock environment, not the migration.
+5. Send back:
+   - `events.masked.csv.report.json`
+   - `traces/scenarios.json`
+   - the fields you added to the masking
+   - `report/report.json`, if you ran the replay
+   - errors, if any
+
+**Limits of task 1:**
+- The signature comes from one example line, not from the OSB source.
+- The selector, output queue names and error headers are stand-ins (`_todo` in `replay-config.json`).
+- No expected output body yet. That comes from the original XQuery in task 2.
+
+---
+
+## Task 2 — with the OSB source: flow card, real test cases, expected results
+
+**Goal:** the full test basis for the flow, ready for the agent to write the tests and the route.
+**Input:**
+- the OSB project export from the running OSB (sbconfig `.jar` unzipped, or the JDeveloper project), with shared projects and JARs it uses;
+- the **masked** CSV from task 1.
+
+1. Put the export in `osb-src/<project>/`.
+2. Preflight:
+   ```bash
+   bash ~/Projects/P1/vdi-osb-migration/bin/preflight_vdi.sh
+   ```
+   Fix FAIL lines. Saxon comes from `mvn dependency:get -Dartifact=net.sf.saxon:Saxon-HE:12.9`.
+3. Run (the masked file is recognised; no second masking):
+   ```bash
+   ~/Projects/P1/vdi-osb-migration/bin/start_flow.sh osb-src/<project> <proxy> modules/<proxy> work/<flow>/task1/events.masked.csv
+   ```
+   - **Inventory and flow card:** `migration/osb-inventory/`, `migration/<proxy>/FLOW_CARD.md`. Every branch, interface and error path is listed, and there's a "referenced but missing" list.
+   - **Signatures from the real Log actions:** these replace task 1's example; `work/<proxy>/queries.spl` holds the exact Splunk searches.
+   - **Test cases:** `modules/<proxy>/src/test/resources/parity/**`, with `replay-config.json` drafted from the export (real topic, selector, queues; check the `_todo` items).
+   - **Expected outputs:** the original XQuery is run on every input, giving `expected-output.xml` and `golden/ORACLE.lock`.
+     - A JSON input is reported `oracle-blocked` unless the export contains the nXSD translation.
+     - Never hand-write an expected file.
+   - **pi analyst:** completes the flow card and stops at **"card not approved"**.
+4. Check:
+   - "Referenced but missing" in `INVENTORY.md` is empty, or each item has been requested.
+   - Every branch on the card has a scenario, or note "no traffic in window".
+   - Note how many `oracle-blocked` cases there are.
+5. **Do not approve the card yet.** The test and route templates are being switched to Camel K. After that:
+   - approve the card;
+   - `start_flow.sh … --from pi-test` → tests first, then the Camel K route, gates G1–G10, review.
+6. Send back:
+   - `FLOW_CARD.md`
+   - `INVENTORY.md`
+   - `work/<proxy>/traces/coverage.json`
+   - `modules/<proxy>/src/test/resources/golden/ORACLE.lock`
+   - the preflight output
+   - errors, if any
+
+---
+
+## If something stops
+
+| Message | Do |
+|---|---|
+| `no masking key` | `export MASK_KEY=…` |
+| `residue found` | open the report, add the listed field with `--mask-json-key`, rerun |
+| `cannot derive the flow id` | `FLOW=<project>/<proxy> bin/task1_log_only.sh …` |
+| `internal check failed` (signature) | send the masked example line's structure (no values) to Paweł; try `EXAMPLE_LINE=2` |
+| `flow '<name>' not in .../flows` | use the proxy name from `ls migration/osb-inventory/flows` |
+| `oracle-blocked` | expected for JSON input without nXSD; the case stays, the body check uses the OSB Test Console later |
+| Docker errors in `--replay` | run without `--replay`; the replay can run on a Jenkins agent with Docker |
+KIT_EOF_TASKS_MD
+mkdir -p "$(dirname "LOGS_END_TO_END.md")"
+cat > 'LOGS_END_TO_END.md' <<'KIT_EOF_LOGS_END_TO_END_MD'
+# From Splunk logs to test cases — end to end, one flow
+
+Pilot: project `beneficiary-engagement-change-prj`, proxy `maintain-adjustment`, topic `contributorAgreementTopic`.
+Other flows: replace the three names. Everything below runs on the VDI. Never send CSVs, payloads or screenshots of them; only the files listed in step 6.
+
+| Where | What you need |
+|---|---|
+| Splunk | read access to `ameen_e2e` (E2E) — `ameen_ann_e2e` (Dev) runs other code, don't use it for test data |
+| VDI | Python 3, Git, this repo at `~/Projects` (`git clone git@github.com:PawelWaj/Projects.git ~/Projects`, later `git pull`) |
+| Optional | Docker or Podman for the replay (step 5) |
+
+Folders used below: `~/work/osb-migration/work/maintain-adjustment/`.
+
+---
+
+## Step 1 — check the flow in Splunk (counts only, 5 minutes)
+
+Paste each block as ONE search. Time picker does not matter: `earliest=` inside the search wins.
+
+**1a. The flow logs payloads, and how many**
+```
+index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d "beneficiary-engagement-change-prj"
+| rex "for PS (?<proxy>\S+)"
+| eval payload=case(match(_raw, "::\s*\{"), "json", match(_raw, "::\s*<"), "xml", true(), "none")
+| stats count by proxy, payload
+```
+Expect `maintain-adjustment | json | ~800`. If `payload=none`: this flow logs no payload → stop, ask for OSB message tracing.
+
+**1b. Events are complete (not cut by Splunk)**
+```
+index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d "beneficiary-engagement-change-prj" "::{"
+| eval size=len(_raw), complete=if(match(_raw, "\}\s*$"), "yes", "no")
+| stats count max(size) as max_bytes by complete
+```
+All `complete=yes` and `max_bytes` well below 10000. Otherwise ask the Splunk admin for the sourcetype's `TRUNCATE`.
+
+**1c. Scenarios (what the tests must cover)**
+```
+index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d "beneficiary-engagement-change-prj" "::{"
+| dedup _raw
+| rex "::(?<payload>\{.*)$"
+| spath input=payload path=data.businessTransaction output=business_transaction
+| spath input=payload path=data.approvedOrRejected output=decision
+| stats count by business_transaction, decision
+| sort - count
+```
+Keep this table: it is the scenario list; step 4 must show the same scenarios.
+
+**1d. Duplicate lines**
+```
+index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-7d "for PS maintain-adjustment"
+| rex "TraceID - (?<trace>[0-9a-fA-F-]{36})"
+| eval rawhash=md5(_raw)
+| stats count as lines dc(rawhash) as distinct_raw dc(source) as sources by trace
+| where lines>1
+| stats count by distinct_raw, sources
+```
+`distinct_raw=1` = the same line stored twice (the export removes it with `dedup _raw`). `distinct_raw=2` = OSB processed the message twice: tell Paweł (redelivery = error-path test).
+
+---
+
+## Step 2 — export (contains personal data: VDI only)
+
+```
+index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d@d "beneficiary-engagement-change-prj" ("::{" OR "::<")
+| dedup _raw
+| sort 0 _time
+| table _time _raw
+```
+1. Run it, then **Export** (arrow icon) → format **CSV** → number of results **Unlimited** → file name `events.csv`.
+2. Move it to `~/work/osb-migration/work/maintain-adjustment/events.csv`.
+3. Check: the first line is `"_time","_raw"`, and the row count matches 1a (minus duplicates).
+   ```
+   head -c 300 ~/work/osb-migration/work/maintain-adjustment/events.csv; echo
+   python3 -c "import csv,sys; csv.field_size_limit(2**31-1); print(sum(1 for _ in csv.DictReader(open(sys.argv[1], encoding='utf-8-sig'))), 'events')" ~/work/osb-migration/work/maintain-adjustment/events.csv
+   ```
+   If the CSV is too big for the export: run step 2 per week (`earliest=-28d@d latest=-21d@d`, …) and combine (`tail -n +2` for files 2–4).
+
+---
+
+## Step 3 — anonymise and build the test cases (one command)
+
+```
+cd ~/work/osb-migration
+export MASK_KEY='<key>'     # trial: any value; real runs: the key from the GOSI data owner, never in a file
+export SCENARIO_DIMS='hdr_resource,body:data.businessTransaction,body:data.approvedOrRejected'
+export PER_SCENARIO=5       # real inputs kept per scenario
+~/Projects/P1/vdi-osb-migration/bin/task1_log_only.sh work/maintain-adjustment/events.csv work/maintain-adjustment/task1
+```
+
+What it prints, in order:
+
+| Output line | Meaning | Must be |
+|---|---|---|
+| `== 1 anonymise … residue findings 0` | names, IDs, birth dates, passport numbers masked; same value → same mask everywhere | `residue findings 0` |
+| `== 2 signature … matches_in_file N/N` | the log pattern learnt from the first line | N/N (all lines match) |
+| `== 3 traces … K scenarios` | one trace per message, grouped by resource × businessTransaction × decision | K = rows of 1c |
+| `== 4 … fixtures written` + `0 findings` | test cases written; second residue check on the test files | `0 findings` |
+| `Scenarios:` list | count per scenario | same as 1c |
+
+---
+
+## Step 4 — check the result
+
+```
+cd ~/work/osb-migration/work/maintain-adjustment/task1
+python3 -c "import json; r=json.load(open('events.masked.csv.report.json')); print('residue', r['residue_check']['findings']); [print(k, v) for k, v in sorted(r['key_inventory'].items()) if not v.get('masked')]"
+ls fixtures/parity/*/
+```
+1. `residue 0`.
+2. The printed list = JSON fields NOT masked by name. Numbers with 9+ digits are masked anyway, whatever the field. Any other field that could identify a person (name, short ID, date, address, free text)? Add it and rerun step 3:
+   ```
+   export EXTRA_MASK_ARGS='--mask-json-key <field1> --mask-json-key <field2>'
+   ```
+3. One folder per scenario under `fixtures/parity/<flow>/`, each with up to 5 cases: `input.payload` (masked JSON), `headers.json`, `expected.json`.
+4. Open ONE `input.payload`: names must read `masked_…`, numbers must differ from the real ones you saw in Splunk.
+5. Then delete the raw export: `rm ../events.csv` (rerun from Splunk if ever needed).
+
+---
+
+## Step 5 — replay through the mocks (optional, needs Docker/Podman)
+
+```
+~/Projects/P1/vdi-osb-migration/bin/task1_log_only.sh work/maintain-adjustment/events.csv work/maintain-adjustment/task1 --replay
+```
+Starts Artemis + WireMock + a stand-in flow, sends every case, writes `task1/report/report.json` (PASS/FAIL per case). This proves the mock environment and the test cases, not the migration: the stand-in only forwards valid JSON.
+Stop afterwards: `cd ~/Projects/P1/osb-log-replay/mock && docker compose down -v`.
+
+---
+
+## Step 6 — send back (no data inside these files)
+
+- table 1a, 1c, 1d (counts)
+- `task1/events.masked.csv.report.json`
+- `task1/traces/scenarios.json`
+- `task1/report/report.json` (if step 5 ran)
+- fields you added to the masking
+- any error message
+
+---
+
+## Step 7 — with the OSB source (Task 2, next)
+
+Test inputs alone are not a test: the expected output and the mocks come from the OSB code.
+1. OSB project `beneficiary-engagement-change-prj` from the OSB repository, **the version deployed in E2E**, into `~/work/osb-migration/osb-src/beneficiary-engagement-change-prj/`.
+2. `bash ~/Projects/P1/vdi-osb-migration/bin/preflight_vdi.sh`
+3. Same `MASK_KEY` and `SCENARIO_DIMS` exported, then:
+   ```
+   ~/Projects/P1/vdi-osb-migration/bin/start_flow.sh osb-src/beneficiary-engagement-change-prj maintain-adjustment modules/maintain-adjustment work/maintain-adjustment/task1/events.masked.csv
+   ```
+   Gives the flow card (selector, branches, backends, error handler), the real replay config, and the expected outputs from the original XQuery. Stops at "card not approved": don't approve yet (templates are being switched to Camel K YAML).
+
+What the logs cannot give (known for this flow): backend responses and error cases — only REQUEST lines are logged. Those come from the OSB source (WSDL/XSD, error handler) until GOSI enables message tracing in E2E.
+
+---
+
+## If something stops
+
+| Message | Do |
+|---|---|
+| `export MASK_KEY=<key> first` | `export MASK_KEY=…` |
+| `residue found` | open `events.masked.csv.report.json`, add the listed field with `--mask-json-key`, rerun |
+| `matches_in_file` below N/N | lines of another format in the export; send the count, try `EXAMPLE_LINE=2` |
+| `cannot derive the flow id` | `FLOW=beneficiary-engagement-change-prj/maintain-adjustment` before the command |
+| 1 scenario only | `SCENARIO_DIMS` not exported in this shell |
+| `_csv.Error: field larger than field limit` | old repo version: `cd ~/Projects && git pull` |
+| Docker errors in step 5 | skip step 5; replay can run on a Jenkins agent with Docker |
+KIT_EOF_LOGS_END_TO_END_MD
 chmod +x bin/*.sh bin/*.py 2>/dev/null || true
 echo "next: bash bin/preflight_vdi.sh, then read RUNBOOK.md"
-echo "installed: 6 files (VDI workflow)"
+echo "installed: 8 files (VDI workflow)"

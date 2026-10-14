@@ -416,3 +416,13 @@ class ExampleSignatureTests(unittest.TestCase):
             self.assertTrue(tr[0]["has_payload"])
             self.assertEqual(tr[0]["branch"], {"hdr_resource": "Contributory Wage"})
             json.loads(tr[0]["events"][0]["fields"]["body"])        # payload still valid JSON after masking
+
+
+class ScenarioDimsTests(unittest.TestCase):
+    def test_body_path_dimension(self):
+        f = {"hdr_resource": "R", "body": '{"data":{"businessTransaction":"MANAGE_WAGE","list":[1]}}'}
+        self.assertEqual(trmod.dim_value(f, "hdr_resource"), "R")
+        self.assertEqual(trmod.dim_value(f, "body:data.businessTransaction"), "MANAGE_WAGE")
+        self.assertEqual(trmod.dim_value(f, "body:data.missing"), "?")
+        self.assertEqual(trmod.dim_value(f, "body:data.list"), "?")          # containers never split scenarios
+        self.assertEqual(trmod.dim_value({"body": "<xml/>"}, "body:a"), "?")  # non-JSON payload

@@ -52,6 +52,19 @@ DEFAULT_MASKS = [r"(?<![\w-])\d{9,}(?![\w-])",                   # national / ac
                  r"(?<![A-Z0-9])SA\d{22}(?![0-9])"]                # Saudi IBAN
 
 
+def dim_value(fields: dict, dim: str) -> str:
+    """A scenario dimension: a captured field, or body:<a.b.c> = a field of the JSON payload ('?' when absent)."""
+    if not dim.startswith("body:"):
+        return fields.get(dim, "?")
+    try:
+        node = json.loads(fields.get("body") or "")
+    except ValueError:
+        return "?"
+    for part in dim[5:].split("."):
+        node = node.get(part) if isinstance(node, dict) else None
+    return "?" if node is None or isinstance(node, (dict, list)) else str(node)
+
+
 # ------------------------------------------------------------------ loading
 def load_events(path: Path, fmt: str) -> list[dict]:
     text = path.read_text(encoding="utf-8", errors="replace")
@@ -280,7 +293,8 @@ def main() -> int:
     ap.add_argument("events", type=Path)
     ap.add_argument("-o", "--out", type=Path, default=Path("traces-out"))
     ap.add_argument("--format", default="auto", choices=["auto", "splunk-json", "csv", "weblogic", "odl", "lines"])
-    ap.add_argument("--dims", default="", help="comma-separated fields that split scenarios (default: all hdr_* fields)")
+    ap.add_argument("--dims", default="", help="comma-separated fields that split scenarios (default: all hdr_* fields); "
+                    "body:<json.path> takes a field of the JSON payload, e.g. body:data.businessTransaction")
     ap.add_argument("--mask-regex", action="append", default=[])
     ap.add_argument("--no-default-masks", action="store_true")
     ap.add_argument("--mask-json-key", action="append", default=[], help="extra JSON field to mask, e.g. establishmentNameArb")
@@ -339,7 +353,7 @@ def main() -> int:
                     merged.setdefault(k, v)
             outcome = "error" if any(r["pipeline_type"] == "error" for r in evs) else "success"
             dims = dims_arg or sorted(k for k in merged if k.startswith("hdr_"))
-            branch = {d: merged.get(d, "?") for d in dims}
+            branch = {d.split(".")[-1] if d.startswith("body:") else d: dim_value(merged, d) for d in dims}
             fault_code = None
             if merged.get("fault"):
                 m = re.search(r"<(?:\w+:)?errorCode>([^<]+)<", merged["fault"])

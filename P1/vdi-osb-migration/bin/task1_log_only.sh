@@ -10,7 +10,9 @@
 #   4 replay-config draft + fixtures  -> <work>/replay-config.json, <work>/fixtures/parity/**
 #   5 --replay: Artemis + WireMock + stub flow in Docker Compose, replay every case -> <work>/report/report.json
 # Env: MASK_KEY (required), REPLAY (osb-log-replay root), EXAMPLE_LINE (which event is the example, default 1),
-#      FLOW (<project>/<proxy> if the line does not name them), SUCCESS_QUEUE / ERROR_QUEUE (stand-in output names).
+#      FLOW (<project>/<proxy> if the line does not name them), SUCCESS_QUEUE / ERROR_QUEUE (stand-in output names),
+#      EXTRA_MASK_ARGS (e.g. "--mask-json-key establishmentNameArb"),
+#      SCENARIO_DIMS (split scenarios by payload fields, e.g. hdr_resource,body:data.businessTransaction), PER_SCENARIO (default 3).
 set -euo pipefail
 EVENTS=${1:?usage: task1_log_only.sh <events.csv> [work-dir] [--replay]}
 WORK=${2:-work/task1}; [ "${2:-}" = "--replay" ] && WORK=work/task1
@@ -22,13 +24,13 @@ T="$REPLAY/tools"; mkdir -p "$WORK"
 [ -n "${MASK_KEY:-}" ] || { echo "export MASK_KEY=<key> first (real key from the data owner; any value for a private trial)"; exit 1; }
 
 echo "== 1 anonymise"
-"$PY" "$T/anonymize_logs.py" "$EVENTS" -o "$WORK/events.masked.csv" || { echo "residue found: see $WORK/events.masked.csv.report.json, add --mask-json-key and rerun"; exit 1; }
+"$PY" "$T/anonymize_logs.py" "$EVENTS" -o "$WORK/events.masked.csv" ${EXTRA_MASK_ARGS:-} || { echo "residue found: see $WORK/events.masked.csv.report.json, add --mask-json-key and rerun"; exit 1; }
 
 echo "== 2 signature from example line ${EXAMPLE_LINE:-1}"
 "$PY" "$T/signature_from_example.py" "$WORK/events.masked.csv" -o "$WORK/signatures.json" --line "${EXAMPLE_LINE:-1}" ${FLOW:+--flow "$FLOW"}
 
 echo "== 3 traces"
-"$PY" "$T/osb_log_traces.py" "$WORK/signatures.json" "$WORK/events.masked.csv" -o "$WORK/traces" --already-masked
+"$PY" "$T/osb_log_traces.py" "$WORK/signatures.json" "$WORK/events.masked.csv" -o "$WORK/traces" --already-masked ${SCENARIO_DIMS:+--dims "$SCENARIO_DIMS"}
 
 echo "== 4 replay-config draft + fixtures"
 "$PY" - "$WORK/signatures.json" "$WORK/events.masked.csv" "$WORK/replay-config.json" <<'PY'
