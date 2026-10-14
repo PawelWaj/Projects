@@ -741,6 +741,8 @@ def dim_value(fields: dict, dim: str) -> str:
         return "?"
     for part in dim[5:].split("."):
         node = node.get(part) if isinstance(node, dict) else None
+    if isinstance(node, bool):
+        return "true" if node else "false"      # JSON text, as OSB sees it (str(True) would give "True")
     return "?" if node is None or isinstance(node, (dict, list)) else str(node)
 
 
