@@ -75,6 +75,12 @@ def main() -> None:
     emit("3_install_skill_osb_core.sh", "Skill osb-to-camel: SKILL.md, scripts, references under .pi/skills/.",
          [(p, ".pi/skills/osb-to-camel/" + rel(sk, p)) for p in core],
          ["chmod +x .pi/skills/osb-to-camel/scripts/*.py 2>/dev/null || true"], "skill osb-to-camel: SKILL.md, scripts, references")
+    rs = KIT / "skills" / "osb-research"
+    emit("8_install_skill_osb_research.sh", "Skill osb-research (shareable research pack) under .pi/skills/ + researcher role + pi runner.",
+         [(p, ".pi/skills/osb-research/" + rel(rs, p)) for p in files_under(rs, ["SKILL.md", "scripts/*.py", "references/*", "assets/*"])]
+         + [(KIT / "agents/researcher.md", "agents/researcher.md"), (KIT / "pi/run_research.sh", "pi/run_research.sh"),
+            (KIT / "pi/prompts/osb-research.md", ".pi/prompts/osb-research.md")],
+         ["chmod +x .pi/skills/osb-research/scripts/*.py pi/run_research.sh 2>/dev/null || true"], "skill osb-research")
     emit("4_install_skill_osb_templates.sh", "Skill osb-to-camel: assets/templates (Java, XQuery shim, mocks) under .pi/skills/.",
          [(p, ".pi/skills/osb-to-camel/" + rel(sk, p)) for p in tpl],
          ["chmod +x .pi/skills/osb-to-camel/assets/templates/mocks/*.sh 2>/dev/null || true"], "skill osb-to-camel: assets/templates")
@@ -90,7 +96,7 @@ def main() -> None:
          [(p, "log-replay/" + rel(REPLAY, p)) for p in lr], ["chmod +x log-replay/tools/*.py log-replay/*.sh log-replay/mock/*.sh 2>/dev/null || true"],
          "log replay tools")
     # 7 this workflow -> bin/ + RUNBOOK.md
-    wf = files_under(VDI, ["bin/*", "RUNBOOK.md", "TASKS.md", "LOGS_END_TO_END.md", "ALL_FLOWS.md"])
+    wf = files_under(VDI, ["bin/*", "RUNBOOK.md", "TASKS.md", "LOGS_END_TO_END.md", "ALL_FLOWS.md", "RESEARCH_PACK.md"])
     emit("7_install_vdi_workflow.sh", "VDI workflow: bin/start_flow.sh (one entry point per flow), preflight, replay-config generator, RUNBOOK.md.",
          [(p, rel(VDI, p)) for p in wf], ["chmod +x bin/*.sh bin/*.py 2>/dev/null || true",
                                           'echo "next: bash bin/preflight_vdi.sh, then read RUNBOOK.md"'], "VDI workflow")

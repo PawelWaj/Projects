@@ -7,7 +7,7 @@ Two separate tracks: **A** migrates the OSB code to a Camel K route in YAML DSL 
 Work in a workspace folder, e.g. `~/work/osb-migration`. Tools: `~/Projects/P1` (`git clone git@github.com:PawelWaj/Projects.git ~/Projects`).
 Nothing unmasked leaves the VDI. Send only reports and file lists, never CSVs or payloads.
 
-**Step-by-step with the Splunk searches (index `ameen_e2e`): [LOGS_END_TO_END.md](LOGS_END_TO_END.md). All flows in one run: [ALL_FLOWS.md](ALL_FLOWS.md).**
+**Step-by-step with the Splunk searches (index `ameen_e2e`): [LOGS_END_TO_END.md](LOGS_END_TO_END.md). All flows in one run: [ALL_FLOWS.md](ALL_FLOWS.md). Source cannot leave the VDI: [RESEARCH_PACK.md](RESEARCH_PACK.md).**
 
 ---
 

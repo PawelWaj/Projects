@@ -44,6 +44,7 @@ Camel on Spring Boot modules that replace Oracle Service Bus flows, one Maven mo
 
 | Purpose | Command |
 |---|---|
+| Research pack (source stays, knowledge travels) | `pi/run_research.sh osb-src/<project> <proxy> [task1-dir]` → `research/<proxy>/` (shared only after `research_check.py` PASS) |
 | Inventory an export | `python3 skills/osb-to-camel/scripts/osb_inventory.py osb-src/<project> -o migration/osb-inventory` |
 | Scaffold a card | `python3 skills/osb-to-camel/scripts/scaffold_flow.py migration/osb-inventory/flows/<flow>.json -o migration/<flow>/` |
 | Build + tests | `mvn -q -f <module>/pom.xml verify` |

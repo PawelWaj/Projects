@@ -401,6 +401,12 @@ def main() -> None:
     emit("3_install_skill_osb_core.sh", "Skill osb-to-camel: SKILL.md, scripts, references under .pi/skills/.",
          [(p, ".pi/skills/osb-to-camel/" + rel(sk, p)) for p in core],
          ["chmod +x .pi/skills/osb-to-camel/scripts/*.py 2>/dev/null || true"], "skill osb-to-camel: SKILL.md, scripts, references")
+    rs = KIT / "skills" / "osb-research"
+    emit("8_install_skill_osb_research.sh", "Skill osb-research (shareable research pack) under .pi/skills/ + researcher role + pi runner.",
+         [(p, ".pi/skills/osb-research/" + rel(rs, p)) for p in files_under(rs, ["SKILL.md", "scripts/*.py", "references/*", "assets/*"])]
+         + [(KIT / "agents/researcher.md", "agents/researcher.md"), (KIT / "pi/run_research.sh", "pi/run_research.sh"),
+            (KIT / "pi/prompts/osb-research.md", ".pi/prompts/osb-research.md")],
+         ["chmod +x .pi/skills/osb-research/scripts/*.py pi/run_research.sh 2>/dev/null || true"], "skill osb-research")
     emit("4_install_skill_osb_templates.sh", "Skill osb-to-camel: assets/templates (Java, XQuery shim, mocks) under .pi/skills/.",
          [(p, ".pi/skills/osb-to-camel/" + rel(sk, p)) for p in tpl],
          ["chmod +x .pi/skills/osb-to-camel/assets/templates/mocks/*.sh 2>/dev/null || true"], "skill osb-to-camel: assets/templates")
@@ -416,7 +422,7 @@ def main() -> None:
          [(p, "log-replay/" + rel(REPLAY, p)) for p in lr], ["chmod +x log-replay/tools/*.py log-replay/*.sh log-replay/mock/*.sh 2>/dev/null || true"],
          "log replay tools")
     # 7 this workflow -> bin/ + RUNBOOK.md
-    wf = files_under(VDI, ["bin/*", "RUNBOOK.md", "TASKS.md", "LOGS_END_TO_END.md", "ALL_FLOWS.md"])
+    wf = files_under(VDI, ["bin/*", "RUNBOOK.md", "TASKS.md", "LOGS_END_TO_END.md", "ALL_FLOWS.md", "RESEARCH_PACK.md"])
     emit("7_install_vdi_workflow.sh", "VDI workflow: bin/start_flow.sh (one entry point per flow), preflight, replay-config generator, RUNBOOK.md.",
          [(p, rel(VDI, p)) for p in wf], ["chmod +x bin/*.sh bin/*.py 2>/dev/null || true",
                                           'echo "next: bash bin/preflight_vdi.sh, then read RUNBOOK.md"'], "VDI workflow")
@@ -1146,7 +1152,7 @@ Two separate tracks: **A** migrates the OSB code to a Camel K route in YAML DSL 
 Work in a workspace folder, e.g. `~/work/osb-migration`. Tools: `~/Projects/P1` (`git clone git@github.com:PawelWaj/Projects.git ~/Projects`).
 Nothing unmasked leaves the VDI. Send only reports and file lists, never CSVs or payloads.
 
-**Step-by-step with the Splunk searches (index `ameen_e2e`): [LOGS_END_TO_END.md](LOGS_END_TO_END.md). All flows in one run: [ALL_FLOWS.md](ALL_FLOWS.md).**
+**Step-by-step with the Splunk searches (index `ameen_e2e`): [LOGS_END_TO_END.md](LOGS_END_TO_END.md). All flows in one run: [ALL_FLOWS.md](ALL_FLOWS.md). Source cannot leave the VDI: [RESEARCH_PACK.md](RESEARCH_PACK.md).**
 
 ---
 
@@ -1510,6 +1516,45 @@ Per flow it prints `OK` / `CHECK` / `FAIL` with its scenarios and test cases. Ou
 
 Next per flow: Task 2 (OSB source → expected outputs, selector, backends), as in TASKS.md.
 KIT_EOF_ALL_FLOWS_MD
+mkdir -p "$(dirname "RESEARCH_PACK.md")"
+cat > 'RESEARCH_PACK.md' <<'KIT_EOF_RESEARCH_PACK_MD'
+# Research pack — when the OSB source cannot leave the VDI
+
+The OSB source stays on the VDI. pi reads it and writes a **research pack**: facts plus answers to a fixed
+questionnaire, in plain language and mapping tables, with **no code, no hosts, no credentials, no data**. A check
+blocks the pack until it is clean. Only the pack is sent out; from it the Camel K route and the tests are designed.
+
+## Once
+- pi installed and logged in (`P1/skills/osb-camel-agent-kit/pi/PI_SETUP.md`), Python 3, Git Bash.
+- Kit: the repo (`~/Projects/P1/skills/osb-camel-agent-kit`) or bootstrap script `8_install_skill_osb_research.sh`.
+- Check: `bash $P1/skills/osb-camel-agent-kit/pi/preflight.sh` shows `skill osb-research discoverable`.
+
+## Per proxy (pilot: maintain-adjustment)
+1. OSB project on the VDI, the version deployed in E2E: `~/work/osb-migration/osb-src/beneficiary-engagement-change-prj/`
+   (plus shared projects it references).
+2. Run, in `~/work/osb-migration`:
+   ```
+   bash $P1/skills/osb-camel-agent-kit/pi/run_research.sh osb-src/beneficiary-engagement-change-prj maintain-adjustment /e/Pawel/maintain-adjustment/task1
+   ```
+   The third argument (task 1 output) lets the pack map the 15 Splunk scenarios to branches.
+   - `== 1 facts`: script, sanitised inventory of the proxy (`facts.json`, `SOURCES.txt`).
+   - `== 2 questionnaire`: pi answers Q1–Q12 (entry, format, flow, branches, scenario mapping, outputs, transforms,
+     backends, errors, logging, dependencies, open questions) into `RESEARCH.md` + `research.json`.
+   - `== 3 share check`: must end with `PASS`. On `FAIL` the flagged lines are listed (rule + 3-character preview):
+     rerun step 2, or fix the lines by hand (describe instead of quoting, remove the value), then
+     `python $P1/skills/osb-camel-agent-kit/skills/osb-research/scripts/research_check.py research/maintain-adjustment`.
+3. Read `RESEARCH.md` yourself once: is anything in it that must not leave? The check is a safety net, not a licence.
+4. Send: `research/maintain-adjustment/RESEARCH.md`, `research.json`, `facts.json`, `SHARE_CHECK.json`.
+   Never send `SOURCES.txt`-listed files, `research/*.agent-logs` (they may quote source) or anything from `osb-src/`.
+
+## What comes back
+From the pack: the flow card, the Camel K YAML route (replacing the stand-in block in `P1/pilot/maintain-adjustment`),
+the selector/branch/error tests, and the WireMock/Artemis mocks. Expected output bodies are still computed ON the VDI
+by running the original XQuery on the masked inputs (task 2, `golden_runner.py`); they never leave the VDI either.
+
+## Interactive alternative
+In pi: `/osb-research osb-src/beneficiary-engagement-change-prj maintain-adjustment /e/Pawel/maintain-adjustment/task1`
+KIT_EOF_RESEARCH_PACK_MD
 chmod +x bin/*.sh bin/*.py 2>/dev/null || true
 echo "next: bash bin/preflight_vdi.sh, then read RUNBOOK.md"
-echo "installed: 11 files (VDI workflow)"
+echo "installed: 12 files (VDI workflow)"

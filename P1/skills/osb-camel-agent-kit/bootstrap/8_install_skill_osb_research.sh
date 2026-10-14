@@ -1,0 +1,477 @@
+#!/usr/bin/env bash
+# Paste into the migration workspace root on the VDI and run: bash 8_install_skill_osb_research.sh
+# Skill osb-research (shareable research pack) under .pi/skills/ + researcher role + pi runner.
+set -euo pipefail
+mkdir -p "$(dirname ".pi/skills/osb-research/SKILL.md")"
+cat > '.pi/skills/osb-research/SKILL.md' <<'KIT_EOF__PI_SKILLS_OSB_RESEARCH_SKILL_MD'
+---
+name: osb-research
+description: "Research one Oracle Service Bus proxy from its source on the client machine and produce a SHAREABLE research pack (no source code, no hosts, no credentials, no personal data) that someone without access to the source can turn into a Camel K route and tests. Use when asked to research, analyse, describe or explain an OSB proxy, pipeline, business service or XQuery for migration and the result must leave the client network, or when the user says osb-research."
+---
+
+# OSB research pack: the source stays, the knowledge travels
+
+The OSB source cannot leave the client network. The people who design the Camel K route and the tests work outside it.
+This skill turns one proxy into a research pack that carries everything they need and nothing they must not have:
+facts extracted by a script, plus answers to a fixed questionnaire written in plain language and mapping tables.
+A check script blocks the pack if it still contains code, hosts, credentials or personal data.
+
+## Rules (apply to every line you write into the pack)
+
+1. **No source code.** Never paste XQuery, XSLT, XSD, WSDL or OSB XML. Describe it: what it does, which fields it reads
+   and writes (as paths), which functions it calls. A short XPath *condition* (one line, at most 200 characters) may be
+   quoted when a branch depends on it.
+2. **No infrastructure.** No host names, IP addresses, ports, credentials, service accounts or key material.
+   Destinations by name only (queue/topic JNDI name, HTTP path, SOAP operation).
+3. **No data.** No values from payloads, logs or test files. Field names, codes and enum values defined in the code
+   (for example `businessTransaction = 'MANAGE_WAGE'`) are allowed; personal values never.
+4. **Evidence for every answer.** Each answer names the file (path relative to the export) and the stage/action it
+   comes from. If something cannot be determined from the source, write `UNKNOWN` and add it to open questions.
+   Never guess.
+5. Namespaces are referred to by prefix; their URIs are already in `facts.json`.
+
+## Steps
+
+1. **Facts (script, no judgement):**
+   `python <skill>/scripts/research_pack.py <osb-export> <proxy> -o research/<proxy> [--scenarios task1/traces/scenarios.json]`
+   Writes `facts.json` (sanitised inventory of the proxy) and `SOURCES.txt` (the files to read). Read `facts.json` first.
+2. **Read the sources** listed in `SOURCES.txt`, plus every resource they reference (shared XQuery, DVM, schemas,
+   Java callouts). Anything referenced but missing goes to open questions.
+3. **Answer the questionnaire** in `references/questions.md`: write `research/<proxy>/RESEARCH.md` using
+   `assets/RESEARCH_TEMPLATE.md` (same headings, same tables), and `research/<proxy>/research.json` following
+   `assets/research.schema.json`. The two must agree.
+4. **Check before sharing:**
+   `python <skill>/scripts/research_check.py research/<proxy>`
+   It must print `PASS`. On `FAIL`, rewrite the flagged lines (describe instead of quoting, drop the value) and rerun.
+   Never delete a finding by weakening the check.
+5. **Report**: five lines: proxy, tier, number of branches/backends/transforms, number of open questions, check result.
+   The human shares only `RESEARCH.md`, `research.json`, `facts.json`, `SHARE_CHECK.json`.
+
+## What the pack is used for (so you know what matters)
+
+- **Selector, subscription, outputs** → the Camel K route's endpoints and the broker filter.
+- **Branches with their conditions and the scenario values that trigger them** → one test group per branch; the
+  scenarios from the Splunk logs (`log_scenarios` in `facts.json`) must each map to a branch.
+- **Transform mappings (source path → target path → rule)** → the route's transformation and the reviewer's checklist;
+  the expected outputs themselves are still computed on the client machine by running the original XQuery.
+- **Backends with request/response use, retries, timeouts** → WireMock stubs and Artemis mocks.
+- **Error handling per scope** → the error tests (what is caught, where it goes, which headers).
+- **Log actions** → the same log lines in Camel so the existing Splunk searches keep working.
+KIT_EOF__PI_SKILLS_OSB_RESEARCH_SKILL_MD
+mkdir -p "$(dirname ".pi/skills/osb-research/scripts/research_check.py")"
+cat > '.pi/skills/osb-research/scripts/research_check.py' <<'KIT_EOF__PI_SKILLS_OSB_RESEARCH_SCRIPTS_RESEARCH_CHECK_PY'
+#!/usr/bin/env python3
+"""Gate before a research pack leaves the VDI: nothing sensitive and no verbatim source code.
+
+    research_check.py research/<proxy> [--allow-host example.com]...
+
+Scans every .md/.json/.txt/.csv in the folder. Fails (exit 1) on:
+  host    URLs with a host that is not an XML namespace of the flow or an allowed public host; name.domain:port; IPv4
+  secret  password/secret/token/api key assignments, private keys
+  pii     numbers with 9+ digits, e-mail addresses, Arabic script
+  code    verbatim OSB source: XQuery/XSLT/XSD/WSDL/OSB XML markers, or a fenced code block longer than 12 lines
+Prints findings as file:line + rule + a 3-character preview (never the full value) and writes SHARE_CHECK.json
+(pass/fail, counts per rule, sha256 per file) into the folder. Share the folder only when it passes. Stdlib only."""
+import argparse
+import hashlib
+import json
+import re
+import sys
+from pathlib import Path
+
+PUBLIC = {"www.w3.org", "w3.org", "xmlns.oracle.com", "www.bea.com", "schemas.xmlsoap.org", "camel.apache.org",
+          "docs.oracle.com", "example.com", "www.example.com", "json-schema.org"}
+RULES = [
+    ("host", re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")),
+    ("host", re.compile(r"\b[A-Za-z][\w-]*(?:\.[\w-]+)+:\d{2,5}\b")),
+    ("secret", re.compile(r"(?i)\b(?:password|passwd|pwd|secret|token|api[_-]?key|client[_-]?secret)\b\s*[\"']?\s*[:=]\s*[\"']?[^\s\"',}]{3,}")),
+    ("secret", re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----")),
+    ("pii", re.compile(r"(?<![\w.-])\d{9,}(?![\w-])")),
+    ("pii", re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")),
+    ("pii", re.compile(r"[\u0600-\u06FF]")),
+    ("code", re.compile(r"(?i)xquery\s+version|declare\s+(?:function|variable|namespace)\s|<xsl:|<xsd?:(?:schema|element|complexType)"
+                        r"|<(?:con|ser|tran|jms|http|wsdl|soapenv|env):[A-Za-z]")),
+]
+URL = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://([^/\s\"'<>)|]+)")
+
+
+def namespace_hosts(folder: Path) -> set[str]:
+    hosts = set()
+    for f in folder.glob("*.json"):
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        stack = [data]
+        while stack:
+            o = stack.pop()
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    if k == "namespaces" and isinstance(v, list):
+                        hosts |= {m.group(1).lower() for n in v if isinstance(n, dict) and (m := URL.match(str(n.get("uri", ""))))}
+                    else:
+                        stack.append(v)
+            elif isinstance(o, list):
+                stack.extend(o)
+    return hosts
+
+
+def scan(f: Path, allowed: set[str]) -> list[tuple[str, int, str]]:
+    found, fence, fence_start = [], False, 0
+    for n, line in enumerate(f.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        if line.strip().startswith("```"):
+            if fence and n - fence_start - 1 > 12:
+                found.append(("code", fence_start, "fenced block of %d lines" % (n - fence_start - 1)))
+            fence, fence_start = (not fence), n
+        for m in URL.finditer(line):
+            host = m.group(1).split("@")[-1].split(":")[0].lower()
+            if host and host not in allowed and not any(host.endswith("." + p) for p in PUBLIC):
+                found.append(("host", n, m.group(0)[:3] + "***"))
+        for rule, rx in RULES:
+            for m in rx.finditer(line):
+                found.append((rule, n, m.group(0)[:3] + "***"))
+    return found
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("folder", type=Path)
+    ap.add_argument("--allow-host", action="append", default=[])
+    a = ap.parse_args()
+    allowed = PUBLIC | {h.lower() for h in a.allow_host} | namespace_hosts(a.folder)
+    files = sorted(p for p in a.folder.rglob("*") if p.is_file() and p.suffix.lower() in (".md", ".json", ".txt", ".csv")
+                   and p.name != "SHARE_CHECK.json")
+    findings = []
+    for f in files:
+        findings += [(f.relative_to(a.folder).as_posix(), *x) for x in scan(f, allowed)]
+    counts = {}
+    for _, rule, _, _ in findings:
+        counts[rule] = counts.get(rule, 0) + 1
+    result = {"pass": not findings, "files": {f.relative_to(a.folder).as_posix(): hashlib.sha256(f.read_bytes()).hexdigest()
+                                              for f in files},
+              "findings_per_rule": counts, "namespace_hosts_allowed": sorted(namespace_hosts(a.folder))}
+    (a.folder / "SHARE_CHECK.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    for path, rule, line, preview in findings[:200]:
+        print(f"{path}:{line}: {rule}: {preview}")
+    print(f"{'PASS' if not findings else 'FAIL'}: {len(files)} files, {len(findings)} findings {counts or ''}")
+    return 0 if not findings else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+KIT_EOF__PI_SKILLS_OSB_RESEARCH_SCRIPTS_RESEARCH_CHECK_PY
+mkdir -p "$(dirname ".pi/skills/osb-research/scripts/research_pack.py")"
+cat > '.pi/skills/osb-research/scripts/research_pack.py' <<'KIT_EOF__PI_SKILLS_OSB_RESEARCH_SCRIPTS_RESEARCH_PACK_PY'
+#!/usr/bin/env python3
+"""Deterministic half of the OSB research: facts about ONE proxy, safe to share outside the client network.
+
+    research_pack.py <osb-project-dir> <proxy> -o research/<proxy> [--scenarios task1/traces/scenarios.json]
+
+Runs the osb-to-camel inventory on the export and keeps only facts that describe behaviour: transports, selector,
+subscription, retries, timeouts, stage/action structure, error-handler scopes, business services, transforms by name
+with their fn-bea functions, missing references, triage. It never copies code, hosts, ports, credentials or
+payloads: URIs keep scheme + destination name (jms://<host>/jndi.X -> jms:jndi.X; http://h:p/a/b -> http:/a/b),
+inline XQuery is reduced to the functions it calls. Writes:
+  facts.json         the sanitised facts (input for RESEARCH.md and for the Camel side)
+  SOURCES.txt        the files of this proxy the agent must read (paths relative to the export), for the questionnaire
+Stdlib only."""
+import argparse
+import json
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+INVENTORY = next((p for p in (HERE.parents[1] / "osb-to-camel/scripts/osb_inventory.py",
+                              HERE.parents[2] / ".pi/skills/osb-to-camel/scripts/osb_inventory.py") if p.is_file()), None)
+FUNC = re.compile(r"\b([A-Za-z][\w-]*:[A-Za-z][\w.-]*)\s*\(")
+
+
+def safe_uri(uri: str) -> str:
+    """Scheme + destination only: no host, port or credentials."""
+    m = re.match(r"^(\w+)://[^/]*(/.*)?$", uri or "")
+    if not m:
+        return re.sub(r"//[^/]*", "//<host>", uri or "")
+    scheme, path = m.group(1), (m.group(2) or "")
+    if scheme in ("jms", "t3", "t3s"):
+        dest = path.rstrip("/").split("/")[-1] if path else ""
+        return f"{scheme}:{dest}"
+    return f"{scheme}:{re.sub(r'[?;].*$', '', path)}"
+
+
+def service(s: dict) -> dict:
+    keep = ("ref", "kind", "transport", "binding", "soap12", "retry_count", "retry_interval", "timeout", "load_balancing",
+            "throttling", "result_caching", "ws_policies")
+    props = {k: v for k, v in (s.get("transport_props") or {}).items() if not re.search(r"pass|secret|cred|user|key", k, re.I)}
+    return {**{k: s.get(k) for k in keep}, "destinations": [safe_uri(u) for u in s.get("uris") or []],
+            "wsdl": Path(s["wsdl"]).name if s.get("wsdl") else None, "transport_props": props,
+            "service_account": "set" if s.get("service_account") else None}
+
+
+def pipeline(p: dict) -> dict:
+    inline = p.get("inline_xquery") or []
+    return {"ref": p.get("ref"), "stages": p.get("stages"), "branches": p.get("branches"),
+            "error_handler_scopes": p.get("error_handler_scopes"), "action_counts": p.get("action_counts"),
+            "unknown_actions": p.get("unknown_actions"), "routes_to": p.get("routes_to"), "callouts_to": p.get("callouts_to"),
+            "publishes_to": p.get("publishes_to"), "java_callouts": p.get("java_callouts"), "operations": p.get("operations"),
+            "context_vars": p.get("context_vars"), "alert_destinations": p.get("alert_destinations"),
+            "transform_refs": {"xquery": p.get("xquery_refs"), "xslt": p.get("xslt_refs"), "xsd": p.get("xsd_refs")},
+            "inline_expressions": {"count": len(inline),
+                                   "functions": sorted({f for e in inline for f in FUNC.findall(e or "")})},
+            "fn_bea_functions": p.get("fn_bea_inline")}
+
+
+TRANSFORM_EXT = {".xqy", ".xq", ".xquery", ".xsl", ".xslt"}
+
+
+def transform_files(project: Path, transforms: list[dict]) -> list[str]:
+    """Paths (relative to the export) of the transforms this proxy uses: matched by the ref's last segment."""
+    names = {(t.get("ref") or "").split("/")[-1].lower() for t in transforms}
+    out = []
+    for p in project.rglob("*"):
+        if p.is_file() and (p.suffix.lower() in TRANSFORM_EXT or p.name.lower().endswith(".xquery")) \
+                and p.stem.split(".")[0].lower() in names:
+            out.append(p.relative_to(project).as_posix())
+    return out
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("project", type=Path, help="OSB export directory (unzipped sbconfig.jar or JDeveloper project)")
+    ap.add_argument("proxy", help="proxy service name, e.g. maintain-adjustment")
+    ap.add_argument("-o", "--out", type=Path, required=True)
+    ap.add_argument("--scenarios", type=Path, help="task1/traces/scenarios.json: scenario values to map to branches")
+    a = ap.parse_args()
+    if not INVENTORY:
+        sys.exit("osb-to-camel skill not found next to osb-research (scripts/osb_inventory.py)")
+    with tempfile.TemporaryDirectory() as tmp:
+        r = subprocess.run([sys.executable, str(INVENTORY), str(a.project), "-o", tmp], capture_output=True, text=True)
+        if r.returncode:
+            sys.exit("inventory failed: " + r.stderr[-400:])
+        flows = sorted(Path(tmp, "flows").glob("*.json"))
+        hits = [f for f in flows if f.stem.split("__")[-1] == a.proxy] or [f for f in flows if a.proxy in f.stem]
+        if len(hits) != 1:
+            names = [f.stem.split("__")[-1] for f in flows]
+            sys.exit(f"proxy '{a.proxy}' found {len(hits)} times; proxies in the export: {', '.join(names) or 'none'}")
+        flow = json.loads(hits[0].read_text(encoding="utf-8"))
+    px, pl = flow["proxy"], flow.get("pipeline") or {}
+    facts = {
+        "proxy": a.proxy, "source": "osb_inventory.py (deterministic), sanitised by research_pack.py",
+        "entry": service(px), "pipeline": pipeline(pl),
+        "business_services": [service(b) for b in flow.get("business") or []],
+        "transforms": [{"ref": t.get("ref"), "kind": t.get("kind"), "lines": t.get("lines"),
+                        "xquery_version": t.get("xquery_version"), "fn_bea_functions": t.get("fn_bea"),
+                        "external_params": t.get("external_params"), "uses_doc": t.get("uses_doc"),
+                        "namespaces": [{"prefix": k, "uri": v} for k, v in (t.get("namespaces") or {}).items()]}
+                       for t in flow.get("transforms") or []],
+        "chained_proxies": flow.get("chained_proxies"), "missing_refs": flow.get("missing_refs"),
+        "triage": flow.get("triage"),
+    }
+    if a.scenarios and a.scenarios.is_file():
+        facts["log_scenarios"] = [{"scenario": s["scenario"].split("|", 2)[-1], "count": s["count"]}
+                                  for s in json.loads(a.scenarios.read_text(encoding="utf-8"))]
+    a.out.mkdir(parents=True, exist_ok=True)
+    (a.out / "facts.json").write_text(json.dumps(facts, indent=2, ensure_ascii=False), encoding="utf-8")
+    files = sorted(({px.get("path")} | {pl.get("path")} | {b.get("path") for b in flow.get("business") or []}
+                    | set(transform_files(a.project, flow.get("transforms") or []))) - {None})
+    (a.out / "SOURCES.txt").write_text("\n".join(files) + "\n", encoding="utf-8")
+    print(json.dumps({"proxy": a.proxy, "tier": (flow.get("triage") or {}).get("tier"), "files": len(files),
+                      "missing_refs": len(flow.get("missing_refs") or []), "out": str(a.out)}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+KIT_EOF__PI_SKILLS_OSB_RESEARCH_SCRIPTS_RESEARCH_PACK_PY
+mkdir -p "$(dirname ".pi/skills/osb-research/references/questions.md")"
+cat > '.pi/skills/osb-research/references/questions.md' <<'KIT_EOF__PI_SKILLS_OSB_RESEARCH_REFERENCES_QUESTIONS_MD'
+# Research questionnaire (one proxy)
+
+Answer every question. Evidence column: file (relative path) + stage/action name. `UNKNOWN` + open question if the
+source does not say. No code, no hosts, no data (see SKILL.md rules).
+
+| # | Question | Answer as |
+|---|---|---|
+| Q1 | **Entry.** Transport, destination name, queue or topic, durable subscription and its name, message selector (verbatim, it is configuration), message type (text/bytes/XML/JSON), encoding, XA, response required, concurrency/dispatch policy | table |
+| Q2 | **Message format.** What arrives (JSON or XML; root element or top-level keys), is there an nXSD/JSON-to-XML translation (which one, is the file in the export), what `$body` contains after it | short text + field list |
+| Q3 | **Flow overview.** The pipeline in order: stage → action type → what it does in one sentence. Include route nodes, branches, publish, service callouts, Java callouts, reply/resume | numbered list |
+| Q4 | **Branches.** For each branch/if-then: condition in plain words, the condition expression (one line), which values lead to which path, what happens on each path, default path | table per branch |
+| Q5 | **Scenario mapping.** For each scenario in `facts.json` → `log_scenarios` (e.g. businessTransaction=MANAGE_WAGE): which branch/path it takes and what output it produces. Scenarios the code handles that never appeared in the logs: list them too | table |
+| Q6 | **Outputs.** Every destination the flow writes to (business service → queue/topic/HTTP path/operation): on which path, which body (built by which transform), which JMS properties / transport headers / HTTP headers are set and from where | table |
+| Q7 | **Transforms.** For each XQuery/XSLT/assign/replace that builds a message: purpose, inputs (external params), output root, field mapping `source path → target path → rule` (copy, constant, format, lookup, condition), fn-bea functions used, constants | table per transform |
+| Q8 | **Backends.** Each business service / service callout: type, operation, when it is called, request built from, how the response is used, retry count/interval, timeout, load balancing, result caching, what happens on fault | table |
+| Q9 | **Errors.** Each error handler scope (stage, pipeline, service): what it catches, what it logs, where the message goes (error queue, reply, resume, re-raise), headers/fields set (errorCode, errorMessage, traceId ...), redelivery/retry behaviour of the transport | table |
+| Q10 | **Logging.** Each Log action: stage, level, the message template with placeholders (e.g. `Request Received to Project {project} :: for PS {proxy} ... TraceID - {uuid} ::{body}`), what `{...}` are | table |
+| Q11 | **Dependencies.** Shared resources from other projects, DVM lookups (name, columns used), Java callouts (class, method, what for), customisation/env properties used (names only), alerts, reporting, throttling, SLA | table |
+| Q12 | **Open questions.** Everything UNKNOWN, ambiguous or missing from the export, each with why it matters for the migration | numbered list |
+KIT_EOF__PI_SKILLS_OSB_RESEARCH_REFERENCES_QUESTIONS_MD
+mkdir -p "$(dirname ".pi/skills/osb-research/assets/RESEARCH_TEMPLATE.md")"
+cat > '.pi/skills/osb-research/assets/RESEARCH_TEMPLATE.md' <<'KIT_EOF__PI_SKILLS_OSB_RESEARCH_ASSETS_RESEARCH_TEMPLATE_MD'
+# Research — <proxy>
+
+| | |
+|---|---|
+| **Proxy** | <proxy> |
+| **Project** | <project> |
+| **Export version** | <branch / tag / commit or export date> |
+| **Researched by / on** | pi osb-research / <date> |
+| **Tier (facts.json)** | <tier> |
+| **Check** | see SHARE_CHECK.json |
+
+## Q1 Entry
+| Item | Value | Evidence |
+|---|---|---|
+
+## Q2 Message format
+
+## Q3 Flow overview
+1.
+
+## Q4 Branches
+### Branch <name>
+| Path | Condition (plain) | Expression | Actions | Evidence |
+|---|---|---|---|---|
+
+## Q5 Scenario mapping
+| Scenario (from logs) | Count | Branch / path | Output | Evidence |
+|---|---|---|---|---|
+
+## Q6 Outputs
+| Destination | Path / branch | Body built by | Headers / properties set (name ← source) | Evidence |
+|---|---|---|---|---|
+
+## Q7 Transforms
+### <transform>
+Purpose: … Inputs: … Output root: … fn-bea: …
+| Source path | Target path | Rule | Evidence |
+|---|---|---|---|
+
+## Q8 Backends
+| Service | Type / operation | Called when | Request from | Response used for | Retry / timeout | On fault | Evidence |
+|---|---|---|---|---|---|---|---|
+
+## Q9 Errors
+| Scope | Catches | Logs | Goes to | Headers / fields set | Redelivery | Evidence |
+|---|---|---|---|---|---|---|
+
+## Q10 Logging
+| Stage | Level | Template | Placeholders | Evidence |
+|---|---|---|---|---|
+
+## Q11 Dependencies
+| Kind | Name | Used for | In export? | Evidence |
+|---|---|---|---|---|
+
+## Q12 Open questions
+1.
+KIT_EOF__PI_SKILLS_OSB_RESEARCH_ASSETS_RESEARCH_TEMPLATE_MD
+mkdir -p "$(dirname ".pi/skills/osb-research/assets/research.schema.json")"
+cat > '.pi/skills/osb-research/assets/research.schema.json' <<'KIT_EOF__PI_SKILLS_OSB_RESEARCH_ASSETS_RESEARCH_SCHEMA_JSON'
+{
+  "$comment": "Machine-readable twin of RESEARCH.md. Same content, no code, no hosts, no data.",
+  "type": "object",
+  "required": ["proxy", "entry", "branches", "outputs", "transforms", "backends", "errors", "logs", "open_questions"],
+  "properties": {
+    "proxy": {"type": "string"},
+    "project": {"type": "string"},
+    "export_version": {"type": "string"},
+    "entry": {"type": "object", "properties": {
+      "transport": {"type": "string"}, "destination": {"type": "string"}, "is_topic": {"type": "boolean"},
+      "durable_subscription": {"type": "string"}, "selector": {"type": "string"}, "message_type": {"type": "string"},
+      "payload_format": {"enum": ["json", "xml", "text", "binary", "UNKNOWN"]}, "nxsd": {"type": "string"}}},
+    "branches": {"type": "array", "items": {"type": "object", "required": ["name", "paths"], "properties": {
+      "name": {"type": "string"}, "stage": {"type": "string"},
+      "paths": {"type": "array", "items": {"type": "object", "properties": {
+        "label": {"type": "string"}, "condition_plain": {"type": "string"}, "condition_expr": {"type": "string"},
+        "actions": {"type": "array", "items": {"type": "string"}}, "outputs": {"type": "array", "items": {"type": "string"}}}}}}}},
+    "scenario_mapping": {"type": "array", "items": {"type": "object", "properties": {
+      "scenario": {"type": "string"}, "branch": {"type": "string"}, "path": {"type": "string"}, "output": {"type": "string"}}}},
+    "outputs": {"type": "array", "items": {"type": "object", "properties": {
+      "name": {"type": "string"}, "destination": {"type": "string"}, "on_path": {"type": "string"}, "body_from": {"type": "string"},
+      "headers": {"type": "array", "items": {"type": "object", "properties": {"name": {"type": "string"}, "source": {"type": "string"}}}}}}},
+    "transforms": {"type": "array", "items": {"type": "object", "properties": {
+      "name": {"type": "string"}, "purpose": {"type": "string"}, "inputs": {"type": "array", "items": {"type": "string"}},
+      "output_root": {"type": "string"}, "fn_bea": {"type": "array", "items": {"type": "string"}},
+      "mappings": {"type": "array", "items": {"type": "object", "properties": {
+        "from": {"type": "string"}, "to": {"type": "string"}, "rule": {"type": "string"}}}}}}},
+    "backends": {"type": "array", "items": {"type": "object", "properties": {
+      "name": {"type": "string"}, "type": {"type": "string"}, "operation": {"type": "string"}, "called_when": {"type": "string"},
+      "request_from": {"type": "string"}, "response_use": {"type": "string"}, "retry": {"type": "string"},
+      "timeout": {"type": "string"}, "on_fault": {"type": "string"}}}},
+    "errors": {"type": "array", "items": {"type": "object", "properties": {
+      "scope": {"type": "string"}, "catches": {"type": "string"}, "logs": {"type": "string"}, "goes_to": {"type": "string"},
+      "headers": {"type": "array", "items": {"type": "string"}}, "redelivery": {"type": "string"}}}},
+    "logs": {"type": "array", "items": {"type": "object", "properties": {
+      "stage": {"type": "string"}, "level": {"type": "string"}, "template": {"type": "string"}}}},
+    "dependencies": {"type": "array", "items": {"type": "object", "properties": {
+      "kind": {"type": "string"}, "name": {"type": "string"}, "used_for": {"type": "string"}, "in_export": {"type": "boolean"}}}},
+    "open_questions": {"type": "array", "items": {"type": "string"}}
+  }
+}
+KIT_EOF__PI_SKILLS_OSB_RESEARCH_ASSETS_RESEARCH_SCHEMA_JSON
+mkdir -p "$(dirname "agents/researcher.md")"
+cat > 'agents/researcher.md' <<'KIT_EOF_AGENTS_RESEARCHER_MD'
+# Role: researcher (OSB research pack)
+
+You research ONE OSB proxy from its source and write a research pack that will leave the client network.
+Follow skill `osb-research` exactly. You never change the OSB export or any module: you only write into
+`research/<proxy>/`. You never paste code, hosts, credentials or data into the pack; you describe and give evidence.
+If the source does not answer a question, write UNKNOWN and add an open question; never guess.
+Finish only when `research_check.py` prints PASS, then give the five-line report.
+KIT_EOF_AGENTS_RESEARCHER_MD
+mkdir -p "$(dirname "pi/run_research.sh")"
+cat > 'pi/run_research.sh' <<'KIT_EOF_PI_RUN_RESEARCH_SH'
+#!/usr/bin/env bash
+# Research pack for ONE proxy on the pi coding agent: facts (script) -> questionnaire (pi) -> share check (script).
+# The OSB source never leaves the machine; only research/<proxy>/ is shared, and only after the check passes.
+#
+# Usage: pi/run_research.sh <osb-project-dir> <proxy> [task1-dir]
+# Env:   OSB_PI_MODEL (model pattern for `pi --model`), PI_THINKING (default high), KIT, PYTHON
+set -euo pipefail
+PROJECT=${1:?usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]}
+PROXY=${2:?proxy name}
+TASK1=${3:-}
+KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
+OUT="research/$PROXY"
+LOG="$OUT/agent-logs"
+skill_dir() { if [ -d "$KIT/skills/$1" ]; then echo "$KIT/skills/$1"; elif [ -d "$KIT/.pi/skills/$1" ]; then echo "$KIT/.pi/skills/$1"; fi; }
+SK=$(skill_dir osb-research); [ -n "$SK" ] || { echo "skill osb-research not found under $KIT"; exit 1; }
+mkdir -p "$LOG"
+
+echo "== 1 facts"
+"$PY" "$SK/scripts/research_pack.py" "$PROJECT" "$PROXY" -o "$OUT" ${TASK1:+--scenarios "$TASK1/traces/scenarios.json"}
+
+SHA=$(command -v sha1sum || command -v shasum)
+fp() { find "$1" -type f -print0 | sort -z | xargs -0 "$SHA" 2>/dev/null | "$SHA" | cut -c1-16; }
+before=$(fp "$PROJECT")
+
+echo "== 2 questionnaire (pi)"
+PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,write"
+    --append-system-prompt "$KIT/agents/researcher.md")
+[ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
+"${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." \
+  > "$LOG/research.out" 2> "$LOG/research.err" || true
+[ "$(fp "$PROJECT")" = "$before" ] || { echo "VIOLATION: the OSB export was changed during research"; exit 1; }
+
+echo "== 3 share check"
+for f in RESEARCH.md research.json; do [ -s "$OUT/$f" ] || { echo "missing $OUT/$f (see $LOG/research.err)"; exit 1; }; done
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); m=[k for k in ('proxy','entry','branches','outputs','transforms','backends','errors','logs','open_questions') if k not in d]; sys.exit('research.json misses: '+', '.join(m) if m else 0)" "$OUT/research.json"
+rm -rf "$OUT.agent-logs"; mv "$LOG" "$OUT.agent-logs"     # agent logs may quote source: they stay on the machine, outside the shared folder
+"$PY" "$SK/scripts/research_check.py" "$OUT" || { echo "NOT shareable yet: fix the lines above (logs: $OUT.agent-logs)"; exit 1; }
+echo "share: $OUT/RESEARCH.md research.json facts.json SHARE_CHECK.json"
+KIT_EOF_PI_RUN_RESEARCH_SH
+mkdir -p "$(dirname ".pi/prompts/osb-research.md")"
+cat > '.pi/prompts/osb-research.md' <<'KIT_EOF__PI_PROMPTS_OSB_RESEARCH_MD'
+---
+description: "OSB proxy -> shareable research pack (no code, no hosts, no data)"
+argument-hint: "<osb-project-dir> <proxy> [task1-dir]"
+---
+Act as the researcher defined in agents/researcher.md and follow AGENTS.md.
+Use skill osb-research on the OSB export $1 for proxy $2 (scenarios from $3/traces/scenarios.json if given).
+Write research/$2/RESEARCH.md and research/$2/research.json, run the share check until it passes, then give the five-line report.
+KIT_EOF__PI_PROMPTS_OSB_RESEARCH_MD
+chmod +x .pi/skills/osb-research/scripts/*.py pi/run_research.sh 2>/dev/null || true
+echo "installed: 9 files (skill osb-research)"

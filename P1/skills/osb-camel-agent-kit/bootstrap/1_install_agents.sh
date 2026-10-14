@@ -50,6 +50,7 @@ Camel on Spring Boot modules that replace Oracle Service Bus flows, one Maven mo
 
 | Purpose | Command |
 |---|---|
+| Research pack (source stays, knowledge travels) | `pi/run_research.sh osb-src/<project> <proxy> [task1-dir]` → `research/<proxy>/` (shared only after `research_check.py` PASS) |
 | Inventory an export | `python3 skills/osb-to-camel/scripts/osb_inventory.py osb-src/<project> -o migration/osb-inventory` |
 | Scaffold a card | `python3 skills/osb-to-camel/scripts/scaffold_flow.py migration/osb-inventory/flows/<flow>.json -o migration/<flow>/` |
 | Build + tests | `mvn -q -f <module>/pom.xml verify` |
@@ -470,6 +471,16 @@ gate output, and decide the next state. Repository rules: `AGENTS.md`.
 
 Keep `migration/STATUS.md`: one row per flow with state, tier, loop count, gates summary, blocking items, owner.
 KIT_EOF_AGENTS_ORCHESTRATOR_MD
+mkdir -p "$(dirname "agents/researcher.md")"
+cat > 'agents/researcher.md' <<'KIT_EOF_AGENTS_RESEARCHER_MD'
+# Role: researcher (OSB research pack)
+
+You research ONE OSB proxy from its source and write a research pack that will leave the client network.
+Follow skill `osb-research` exactly. You never change the OSB export or any module: you only write into
+`research/<proxy>/`. You never paste code, hosts, credentials or data into the pack; you describe and give evidence.
+If the source does not answer a question, write UNKNOWN and add an open question; never guess.
+Finish only when `research_check.py` prints PASS, then give the five-line report.
+KIT_EOF_AGENTS_RESEARCHER_MD
 mkdir -p "$(dirname "agents/reviewer.md")"
 cat > 'agents/reviewer.md' <<'KIT_EOF_AGENTS_REVIEWER_MD'
 # Role: reviewer (evidence only, read-only)
@@ -576,6 +587,8 @@ echo "Kit layout (run from the migration repository root)"
 for p in AGENTS.md agents/analyst.md tools/verify_flow.sh pi/run_flow.sh; do [ -e "$p" ] && pass "$p" || bad "$p missing"; done
 sk=0; for d in .pi/skills "$HOME/.pi/agent/skills" .agents/skills; do [ -f "$d/osb-to-camel/SKILL.md" ] && sk=1; done
 [ $sk = 1 ] && pass "skill osb-to-camel discoverable" || bad "skill osb-to-camel not in .pi/skills, ~/.pi/agent/skills or .agents/skills"
+sr=0; for d in .pi/skills "$HOME/.pi/agent/skills" .agents/skills skills; do [ -f "$d/osb-research/SKILL.md" ] && sr=1; done
+[ $sr = 1 ] && pass "skill osb-research discoverable" || bad "skill osb-research not found (needed for research packs: pi/run_research.sh)"
 # pi skips a SKILL.md whose front matter is not valid YAML, without an error: check the usual traps
 for f in .pi/skills/*/SKILL.md "$HOME/.pi/agent/skills"/*/SKILL.md .agents/skills/*/SKILL.md; do
   [ -f "$f" ] || continue
@@ -712,6 +725,48 @@ fi
 
 echo "DONE for $FLOW: gates green, review without BLOCKER. Next: human sign-off (gate B), then the UAT shadow run (TESTING.md L6)."
 KIT_EOF_PI_RUN_FLOW_SH
+mkdir -p "$(dirname "pi/run_research.sh")"
+cat > 'pi/run_research.sh' <<'KIT_EOF_PI_RUN_RESEARCH_SH'
+#!/usr/bin/env bash
+# Research pack for ONE proxy on the pi coding agent: facts (script) -> questionnaire (pi) -> share check (script).
+# The OSB source never leaves the machine; only research/<proxy>/ is shared, and only after the check passes.
+#
+# Usage: pi/run_research.sh <osb-project-dir> <proxy> [task1-dir]
+# Env:   OSB_PI_MODEL (model pattern for `pi --model`), PI_THINKING (default high), KIT, PYTHON
+set -euo pipefail
+PROJECT=${1:?usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]}
+PROXY=${2:?proxy name}
+TASK1=${3:-}
+KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
+OUT="research/$PROXY"
+LOG="$OUT/agent-logs"
+skill_dir() { if [ -d "$KIT/skills/$1" ]; then echo "$KIT/skills/$1"; elif [ -d "$KIT/.pi/skills/$1" ]; then echo "$KIT/.pi/skills/$1"; fi; }
+SK=$(skill_dir osb-research); [ -n "$SK" ] || { echo "skill osb-research not found under $KIT"; exit 1; }
+mkdir -p "$LOG"
+
+echo "== 1 facts"
+"$PY" "$SK/scripts/research_pack.py" "$PROJECT" "$PROXY" -o "$OUT" ${TASK1:+--scenarios "$TASK1/traces/scenarios.json"}
+
+SHA=$(command -v sha1sum || command -v shasum)
+fp() { find "$1" -type f -print0 | sort -z | xargs -0 "$SHA" 2>/dev/null | "$SHA" | cut -c1-16; }
+before=$(fp "$PROJECT")
+
+echo "== 2 questionnaire (pi)"
+PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,write"
+    --append-system-prompt "$KIT/agents/researcher.md")
+[ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
+"${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." \
+  > "$LOG/research.out" 2> "$LOG/research.err" || true
+[ "$(fp "$PROJECT")" = "$before" ] || { echo "VIOLATION: the OSB export was changed during research"; exit 1; }
+
+echo "== 3 share check"
+for f in RESEARCH.md research.json; do [ -s "$OUT/$f" ] || { echo "missing $OUT/$f (see $LOG/research.err)"; exit 1; }; done
+"$PY" -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); m=[k for k in ('proxy','entry','branches','outputs','transforms','backends','errors','logs','open_questions') if k not in d]; sys.exit('research.json misses: '+', '.join(m) if m else 0)" "$OUT/research.json"
+rm -rf "$OUT.agent-logs"; mv "$LOG" "$OUT.agent-logs"     # agent logs may quote source: they stay on the machine, outside the shared folder
+"$PY" "$SK/scripts/research_check.py" "$OUT" || { echo "NOT shareable yet: fix the lines above (logs: $OUT.agent-logs)"; exit 1; }
+echo "share: $OUT/RESEARCH.md research.json facts.json SHARE_CHECK.json"
+KIT_EOF_PI_RUN_RESEARCH_SH
 mkdir -p "$(dirname "pi/PI_SETUP.md")"
 cat > 'pi/PI_SETUP.md' <<'KIT_EOF_PI_PI_SETUP_MD'
 # Running the kit on the pi coding agent
@@ -938,6 +993,16 @@ Refuse unless migration/$1/FLOW_CARD.md says Status approved with an approver.
 Implement it with skill osb-to-camel Step 2 into Maven module $2. Never touch $2/src/test.
 Finish when `mvn -q -DskipTests -f $2/pom.xml package` passes.
 KIT_EOF_PI_PROMPTS_OSB_IMPLEMENT_MD
+mkdir -p "$(dirname "pi/prompts/osb-research.md")"
+cat > 'pi/prompts/osb-research.md' <<'KIT_EOF_PI_PROMPTS_OSB_RESEARCH_MD'
+---
+description: "OSB proxy -> shareable research pack (no code, no hosts, no data)"
+argument-hint: "<osb-project-dir> <proxy> [task1-dir]"
+---
+Act as the researcher defined in agents/researcher.md and follow AGENTS.md.
+Use skill osb-research on the OSB export $1 for proxy $2 (scenarios from $3/traces/scenarios.json if given).
+Write research/$2/RESEARCH.md and research/$2/research.json, run the share check until it passes, then give the five-line report.
+KIT_EOF_PI_PROMPTS_OSB_RESEARCH_MD
 mkdir -p "$(dirname "pi/prompts/osb-review.md")"
 cat > 'pi/prompts/osb-review.md' <<'KIT_EOF_PI_PROMPTS_OSB_REVIEW_MD'
 ---
@@ -989,6 +1054,16 @@ Refuse unless migration/$1/FLOW_CARD.md says Status approved with an approver.
 Implement it with skill osb-to-camel Step 2 into Maven module $2. Never touch $2/src/test.
 Finish when `mvn -q -DskipTests -f $2/pom.xml package` passes.
 KIT_EOF__PI_PROMPTS_OSB_IMPLEMENT_MD
+mkdir -p "$(dirname ".pi/prompts/osb-research.md")"
+cat > '.pi/prompts/osb-research.md' <<'KIT_EOF__PI_PROMPTS_OSB_RESEARCH_MD'
+---
+description: "OSB proxy -> shareable research pack (no code, no hosts, no data)"
+argument-hint: "<osb-project-dir> <proxy> [task1-dir]"
+---
+Act as the researcher defined in agents/researcher.md and follow AGENTS.md.
+Use skill osb-research on the OSB export $1 for proxy $2 (scenarios from $3/traces/scenarios.json if given).
+Write research/$2/RESEARCH.md and research/$2/research.json, run the share check until it passes, then give the five-line report.
+KIT_EOF__PI_PROMPTS_OSB_RESEARCH_MD
 mkdir -p "$(dirname ".pi/prompts/osb-review.md")"
 cat > '.pi/prompts/osb-review.md' <<'KIT_EOF__PI_PROMPTS_OSB_REVIEW_MD'
 ---
@@ -1021,4 +1096,4 @@ For each red gate, name the owner role per skill camel-migration-verification St
 KIT_EOF__PI_PROMPTS_OSB_VERIFY_MD
 chmod +x pi/*.sh 2>/dev/null || true
 echo "commands /osb-* installed in .pi/prompts: start pi in this folder and trust the project (or pi --approve)"
-echo "installed: 24 files (agent layer)"
+echo "installed: 28 files (agent layer)"

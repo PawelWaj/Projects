@@ -213,3 +213,31 @@ class BatchTask1Tests(unittest.TestCase):
             dims = json.loads((Path(d) / "out/flows/a-prj-a/dims.json").read_text(encoding="utf-8"))["chosen"]
             self.assertIn("body:data.businessTransaction", dims)
             self.assertTrue((Path(d) / "out/SUMMARY.md").is_file())
+
+
+class ResearchPackTests(unittest.TestCase):
+    SK = ROOT / "skills/osb-camel-agent-kit/skills/osb-research/scripts"
+    FIX = ROOT / "skills/osb-camel-agent-kit/skills/osb-to-camel/evals/fixtures/osb-export"
+
+    def test_facts_are_sanitised_and_pass_the_share_check(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "r"
+            subprocess.run([sys.executable, str(self.SK / "research_pack.py"), str(self.FIX), "ContributorEnquiryPS", "-o", str(out)],
+                           check=True, capture_output=True, text=True)
+            facts = (out / "facts.json").read_text(encoding="utf-8")
+            self.assertNotIn("://", json.dumps([s["destinations"] for s in json.loads(facts)["business_services"]]))
+            self.assertIn("ContributorIntegration/Transform/MemberToContributor.xqy", (out / "SOURCES.txt").read_text())
+            ok = subprocess.run([sys.executable, str(self.SK / "research_check.py"), str(out)], capture_output=True, text=True)
+            self.assertEqual(ok.returncode, 0, ok.stdout)
+            self.assertTrue(json.loads((out / "SHARE_CHECK.json").read_text())["pass"])
+
+    def test_share_check_blocks_code_hosts_secrets_and_data(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "RESEARCH.md").write_text(
+                "host http://osb01.client.internal:7001/sbconsole\npassword = hunter22\nid 1234567890\n"
+                "```\nxquery version \"1.0\";\n```\n", encoding="utf-8")
+            r = subprocess.run([sys.executable, str(self.SK / "research_check.py"), d], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1)
+            rules = json.loads((Path(d) / "SHARE_CHECK.json").read_text())["findings_per_rule"]
+            self.assertEqual(set(rules), {"host", "secret", "pii", "code"})
+            self.assertNotIn("hunter22", r.stdout)                      # findings never print the value
