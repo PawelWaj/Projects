@@ -2,10 +2,10 @@
   "proxy": "maintain-adjustment",
   "project": "beneficiary-engagement-change-prj",
   "package": "osb.beneficiaryengagementchangeprj.maintainadjustment",
-  "research_sha256": "581bca6b076ccc3997577f037fd8574d391756a5ec2d2a2f18780244538e77de",
+  "research_sha256": "0226950a57c549ab2a78f766bb1eb27c6c94df03794f6bed7b0b25f2b2ad5e5a",
   "generated": {
     "src/test/java/osb/beneficiaryengagementchangeprj/maintainadjustment/FlowParityTest.java": "db36f4ba3fa0c705d5be499d02aae114f10af11cef78f8b70a2038d26b6bde71",
-    "src/test/resources/flow-test.json": "e16a68168535f1f9fa51b5f87f4808a6fd466d93d4b7e79d870ae1afc2f8f858"
+    "src/test/resources/flow-test.json": "071ef25b8337e15d7158db6c738cfe7729a7408a223cb8f74c119c9733949aca"
   },
   "route_ids": [
     "branch-hasgosiengagement-check",

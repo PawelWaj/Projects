@@ -32,6 +32,7 @@ and resolving or accepting each open question. The implementer does not start be
 
 | Scenario | Messages in export | Branch / path | Output |
 |---|---|---|---|
+| businessTransaction=?/hasPPAEngagement=?/hasGOSIEngagement=? | 3 | error handler / payload not JSON | out-maintain-adjustment-error-queue |
 | hasPPAEngagement=true/hasGOSIEngagement=true | 0 | both / PPA + GOSI | out-ppa-engagement, out-maintain-adjustment |
 | hasPPAEngagement=true/hasGOSIEngagement!=true | 0 | hasPPAEngagement check / PPA path | out-ppa-engagement |
 | hasPPAEngagement!=true/hasGOSIEngagement=true | 0 | hasGOSIEngagement check / GOSI path | out-maintain-adjustment |
@@ -73,6 +74,8 @@ Error output: `out-maintain-adjustment-error-queue`.
 | errorhandler-stage | INFO | Error captured for Project beneficiary-engagement-change-prj :: for PS maintain-adjustment with TraceID: {traceId} :: fault - {fault} |
 
 ## 9 Open questions (each: answered, or accepted with a reason, before approval)
+
+- [ ] 3 messages in 28 days start with `{[[` (raw log, not our masking) and have no resource header, so they were probably sent by hand: assumed OSB's nXSD fails on them -> error queue, as the Camel route does. Confirm once on the OSB test console.
 
 - [ ] route vs publish: if both flags are true, does OSB send to both queues or only the first?
 - [ ] errorCode values the error-queue consumer relies on
