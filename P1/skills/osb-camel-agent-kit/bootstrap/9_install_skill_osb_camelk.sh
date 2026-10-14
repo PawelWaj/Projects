@@ -905,6 +905,18 @@ cat > '.pi/skills/osb-camelk-route/assets/templates/pom.xml' <<'KIT_EOF__PI_SKIL
 
   <build>
     <plugins>
+      <!-- pinned: older Maven installs default to compiler 3.1, which ignores maven.compiler.release and compiles as Java 1.5 -->
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-compiler-plugin</artifactId>
+        <version>3.13.0</version>
+        <configuration><release>21</release></configuration>
+      </plugin>
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-resources-plugin</artifactId>
+        <version>3.3.1</version>
+      </plugin>
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
