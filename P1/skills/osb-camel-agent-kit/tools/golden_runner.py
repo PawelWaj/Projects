@@ -33,6 +33,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
+
 FN_BEA_NS = "http://www.bea.com/xquery/xquery-functions"
 LOCK = "ORACLE.lock"
 MANIFEST_COLS = ["file", "source", "flow", "captured_by", "date", "sha256", "key_id", "source_ref", "reason", "approved_by"]

@@ -426,3 +426,26 @@ class ScenarioDimsTests(unittest.TestCase):
         self.assertEqual(trmod.dim_value(f, "body:data.missing"), "?")
         self.assertEqual(trmod.dim_value(f, "body:data.list"), "?")          # containers never split scenarios
         self.assertEqual(trmod.dim_value({"body": "<xml/>"}, "body:a"), "?")  # non-JSON payload
+
+
+class PayloadFinderTests(unittest.TestCase):
+    def test_states(self):
+        p = "Request Received to Project p :: for PS x with TraceID - 1 ::"
+        self.assertEqual(trmod.find_payload(p + '{"a":"b"}')[1], "json")
+        self.assertEqual(trmod.find_payload(p + '{"a":"b\tc"}')[1], "json-lenient")      # raw tab inside a string
+        self.assertEqual(trmod.find_payload(p + '{"a":"b"} end')[1], "json-trailing")
+        self.assertEqual(trmod.find_payload(p + '{"a":"b"')[1], "unparsed")              # cut off: still the payload
+        self.assertEqual(trmod.find_payload(p)[1], "none")
+        self.assertEqual(trmod.find_payload(p + '{"a":"b"}')[0], len(p))
+
+    def test_error_names_key_not_value(self):
+        err = trmod.payload_error('x ::{"secretName":"Ahmad", "n": }')
+        self.assertIn("after key 'n'", err)
+        self.assertNotIn("Ahmad", err)
+
+    def test_lenient_dimension_and_large_csv_field(self):
+        self.assertEqual(trmod.dim_value({"body": '{"data":{"t":"A\tB","k":"V"}}'}, "body:data.k"), "V")
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "e.csv"
+            f.write_text('"_time","_raw"\n"t","' + "x" * 200000 + '"\n', encoding="utf-8")
+            self.assertEqual(len(trmod.load_events(f, "csv")[0]["raw"]), 200000)

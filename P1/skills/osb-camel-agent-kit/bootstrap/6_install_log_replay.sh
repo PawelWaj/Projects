@@ -44,7 +44,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from osb_log_traces import DEFAULT_JSON_KEYS, DEFAULT_KEY_PATTERNS, DEFAULT_MASKS, Masker  # noqa: E402
+from osb_log_traces import DEFAULT_JSON_KEYS, DEFAULT_KEY_PATTERNS, DEFAULT_MASKS, Masker, find_payload, osb_message, payload_error  # noqa: E402
 
 csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 _KEY_VAL = re.compile(r'"([A-Za-z0-9_.\-]+)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null|\{|\[)')
@@ -102,6 +102,16 @@ def main() -> int:
 
     a.out.parent.mkdir(parents=True, exist_ok=True)
     events = 0
+    states, errors = {"before": Counter(), "after": Counter()}, Counter()
+
+    def payload_state(raw: str, masked: str) -> None:       # value-free: only states, decoder messages and key names
+        states["before"][find_payload(osb_message(raw)[0])[1]] += 1
+        msg = osb_message(masked)[0]
+        st = find_payload(msg)[1]
+        states["after"][st] += 1
+        if st not in ("json", "xml", "none"):
+            errors[payload_error(msg)] += 1
+
     if a.input.suffix.lower() == ".csv":
         fields, rows = read_csv(a.input)
         with a.out.open("w", encoding="utf-8", newline="") as fh:
@@ -111,6 +121,7 @@ def main() -> int:
                 raw = r.get("_raw") or ""
                 inventory(raw, inv, masker)
                 r["_raw"] = masker(raw)
+                payload_state(raw, r["_raw"])
                 for col in fields:                      # any other text column (e.g. extracted fields) is masked too
                     if col not in ("_raw", "_time") and r.get(col):
                         r[col] = masker(r[col])
@@ -120,7 +131,9 @@ def main() -> int:
         with a.input.open(encoding="utf-8", errors="replace") as src, a.out.open("w", encoding="utf-8") as dst:
             for line in src:
                 inventory(line, inv, masker)
-                dst.write(masker(line))
+                masked = masker(line)
+                payload_state(line, masked)
+                dst.write(masked)
                 events += 1
 
     residue = subprocess.run([sys.executable, str(Path(__file__).with_name("mask_residue_check.py")), str(a.out)]
@@ -134,6 +147,10 @@ def main() -> int:
                     "extra_patterns": a.mask_key_pattern},
         "residue_check": {"findings": len(findings), "where": [l.split(": ", 1)[0].rsplit("/", 1)[-1] + ": " + l.split(": ", 1)[1]
                                                                for l in findings][:50]},
+        "payloads": {"before_masking": dict(states["before"]), "after_masking": dict(states["after"]),
+                     "not_strict_json": [{"reason": k, "events": v} for k, v in errors.most_common(10)],
+                     "legend": "json = valid; json-lenient = raw tabs/newlines inside strings; json-trailing = text after "
+                               "the closing brace; unparsed = starts after '::' but does not parse; none = no payload"},
         "key_inventory": {k: {"count": v["count"], "types": dict(v["types"]), "masked": v["masked_by_rule"]}
                           for k, v in sorted(inv.items())},
         "review_hint": "masked=true means the key rule masks the value. Numbers with 9+ digits are masked anywhere, whatever "
@@ -145,6 +162,8 @@ def main() -> int:
     unmasked = sum(1 for v in report["key_inventory"].values() if not v["masked"])
     print(f"{events} events -> {a.out}; {masker.count} values masked (key {masker.key_id}); "
           f"residue findings {len(findings)}; {len(inv)} JSON keys seen, {unmasked} not masked by rule -> review {rp}")
+    print("payloads before masking " + json.dumps(dict(states["before"])) + ", after " + json.dumps(dict(states["after"]))
+          + (f"; not strict JSON: {errors.most_common(1)[0][0]}" if errors else ""))
     if findings:
         return 1
     if a.delete_input:
@@ -229,6 +248,8 @@ import re
 import sys
 from collections import defaultdict
 from pathlib import Path
+
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 
 
 def slug(s: str) -> str:
@@ -659,17 +680,61 @@ DEFAULT_MASKS = [r"(?<![\w-])\d{9,}(?![\w-])",                   # national / ac
                  r"(?<![A-Z0-9])SA\d{22}(?![0-9])"]                # Saudi IBAN
 
 
+_LENIENT = json.JSONDecoder(strict=False)       # OSB often logs raw tabs/newlines inside JSON strings
+
+
+def find_payload(msg: str) -> tuple[int | None, str]:
+    """Where the logged payload starts in an OSB message, and its state, without returning any value:
+    'json' (strict), 'json-lenient' (control characters in strings), 'json-trailing' (text after the closing brace),
+    'xml', 'unparsed' (starts after '::' but does not parse), or 'none'."""
+    for m in re.finditer(r"[{<]", msg):
+        rest = msg[m.start():].rstrip()
+        if rest.startswith("{"):
+            try:
+                json.loads(rest)
+                return m.start(), "json"
+            except ValueError:
+                pass
+            try:
+                _, end = _LENIENT.raw_decode(rest)
+                return m.start(), "json-lenient" if end == len(rest) else "json-trailing"
+            except ValueError:
+                continue
+        elif re.match(r"<[A-Za-z_][\w:.-]*[\s>/]", rest) and rest.endswith(">"):
+            return m.start(), "xml"
+    m = re.search(r"::\s*([{<])", msg)                  # OSB Log convention '... ::$body': take it even if broken
+    return (m.start(1), "unparsed") if m else (None, "none")
+
+
+def payload_error(msg: str) -> str:
+    """Why a payload does not parse: decoder message, position and the nearest JSON key before it (no values)."""
+    start, _ = find_payload(msg)
+    if start is None:
+        return "no payload"
+    rest = msg[start:].rstrip()
+    try:
+        _LENIENT.raw_decode(rest)
+        return "ok"
+    except ValueError as e:
+        pos = getattr(e, "pos", 0) or 0
+        keys = re.findall(r'"([A-Za-z0-9_.\-]+)"\s*:', rest[:pos])
+        return f"{getattr(e, 'msg', str(e))} at char {pos} of {len(rest)} (after key '{keys[-1] if keys else '-'}')"
+
+
 def dim_value(fields: dict, dim: str) -> str:
     """A scenario dimension: a captured field, or body:<a.b.c> = a field of the JSON payload ('?' when absent)."""
     if not dim.startswith("body:"):
         return fields.get(dim, "?")
     try:
-        node = json.loads(fields.get("body") or "")
+        node = _LENIENT.raw_decode((fields.get("body") or "").strip())[0]
     except ValueError:
         return "?"
     for part in dim[5:].split("."):
         node = node.get(part) if isinstance(node, dict) else None
     return "?" if node is None or isinstance(node, (dict, list)) else str(node)
+
+
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))   # large payloads: Python's default CSV field limit is 128 KB
 
 
 # ------------------------------------------------------------------ loading
@@ -1227,7 +1292,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from osb_log_traces import osb_message  # noqa: E402
+from osb_log_traces import find_payload, osb_message, payload_error  # noqa: E402
 
 csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -1243,18 +1308,7 @@ def example_lines(path: Path) -> list[str]:
 
 
 def payload_start(msg: str) -> int | None:
-    """Earliest position from which the rest of the message parses as JSON (or looks like an XML document)."""
-    for m in re.finditer(r"[{<]", msg):
-        rest = msg[m.start():].strip()
-        if rest.startswith("{"):
-            try:
-                json.loads(rest)
-                return m.start()
-            except ValueError:
-                continue
-        elif re.match(r"<[A-Za-z_][\w:.-]*[\s>/]", rest) and rest.rstrip().endswith(">"):
-            return m.start()
-    return None
+    return find_payload(msg)[0]
 
 
 def to_regex(literal: str) -> str:
@@ -1327,7 +1381,8 @@ def build(raw: str, flow: str | None, fields: dict[str, str]) -> dict:
         "roles": {"correlation": [n for n in names if n == "traceId"], "payload": ["body"] if has_body else [],
                   "fault": ["body"] if ptype == "error" and has_body else [],
                   "headers": [n for n in names if n.startswith("hdr_")], "business_keys": []},
-        "warnings": [] if "traceId" in names else ["no UUID in the line: traces will be grouped by the ODL ecid"],
+        "warnings": ([] if "traceId" in names else ["no UUID in the line: traces will be grouped by the ODL ecid"])
+                    + ([f"payload is {find_payload(msg)[1]}: {payload_error(msg)}"] if find_payload(msg)[1] not in ("json", "xml", "none") else []),
     }
 
 
@@ -1923,7 +1978,7 @@ class Forward(stomp.ConnectionListener):
     def on_message(self, frame):
         out, extra = self.fc["outputs"]["success"], {}
         try:
-            json.loads(frame.body)
+            json.loads(frame.body, strict=False)   # OSB logs may carry raw tabs/newlines inside strings
         except ValueError as exc:
             out = self.fc["outputs"]["error"]
             extra = {"errorCode": "STUB-PARSE", "errorMessage": str(exc)[:200], "debugInfo": "stub"}

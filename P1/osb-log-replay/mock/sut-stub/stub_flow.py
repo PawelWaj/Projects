@@ -20,7 +20,7 @@ class Forward(stomp.ConnectionListener):
     def on_message(self, frame):
         out, extra = self.fc["outputs"]["success"], {}
         try:
-            json.loads(frame.body)
+            json.loads(frame.body, strict=False)   # OSB logs may carry raw tabs/newlines inside strings
         except ValueError as exc:
             out = self.fc["outputs"]["error"]
             extra = {"errorCode": "STUB-PARSE", "errorMessage": str(exc)[:200], "debugInfo": "stub"}

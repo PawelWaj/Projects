@@ -185,6 +185,8 @@ import json
 import sys
 from pathlib import Path
 
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
+
 ALLOWED = {"osb-recording", "original-transform", "osb-test-console", "card-rule", "source-derived"}
 NEEDS_APPROVAL = {"card-rule", "source-derived"}        # not observed in OSB: a reason and a named approver are mandatory
 FIXTURE_DIRS = ("golden", "parity")
@@ -421,6 +423,8 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 
 FN_BEA_NS = "http://www.bea.com/xquery/xquery-functions"
 LOCK = "ORACLE.lock"

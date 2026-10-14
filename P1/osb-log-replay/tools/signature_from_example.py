@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from osb_log_traces import osb_message  # noqa: E402
+from osb_log_traces import find_payload, osb_message, payload_error  # noqa: E402
 
 csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
@@ -40,18 +40,7 @@ def example_lines(path: Path) -> list[str]:
 
 
 def payload_start(msg: str) -> int | None:
-    """Earliest position from which the rest of the message parses as JSON (or looks like an XML document)."""
-    for m in re.finditer(r"[{<]", msg):
-        rest = msg[m.start():].strip()
-        if rest.startswith("{"):
-            try:
-                json.loads(rest)
-                return m.start()
-            except ValueError:
-                continue
-        elif re.match(r"<[A-Za-z_][\w:.-]*[\s>/]", rest) and rest.rstrip().endswith(">"):
-            return m.start()
-    return None
+    return find_payload(msg)[0]
 
 
 def to_regex(literal: str) -> str:
@@ -124,7 +113,8 @@ def build(raw: str, flow: str | None, fields: dict[str, str]) -> dict:
         "roles": {"correlation": [n for n in names if n == "traceId"], "payload": ["body"] if has_body else [],
                   "fault": ["body"] if ptype == "error" and has_body else [],
                   "headers": [n for n in names if n.startswith("hdr_")], "business_keys": []},
-        "warnings": [] if "traceId" in names else ["no UUID in the line: traces will be grouped by the ODL ecid"],
+        "warnings": ([] if "traceId" in names else ["no UUID in the line: traces will be grouped by the ODL ecid"])
+                    + ([f"payload is {find_payload(msg)[1]}: {payload_error(msg)}"] if find_payload(msg)[1] not in ("json", "xml", "none") else []),
     }
 
 

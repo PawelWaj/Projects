@@ -35,6 +35,7 @@ echo "== 3 traces"
 echo "== 4 replay-config draft + fixtures"
 "$PY" - "$WORK/signatures.json" "$WORK/events.masked.csv" "$WORK/replay-config.json" <<'PY'
 import csv, io, json, re, sys
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 sig = json.load(open(sys.argv[1]))["signatures"][0]
 text = open(sys.argv[2], encoding="utf-8").read()
 raw = next(r["_raw"] for r in csv.DictReader(io.StringIO(text, newline="")))

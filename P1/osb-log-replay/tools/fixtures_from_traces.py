@@ -23,6 +23,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
+
 
 def slug(s: str) -> str:
     return re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()[:80]

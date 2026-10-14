@@ -52,17 +52,61 @@ DEFAULT_MASKS = [r"(?<![\w-])\d{9,}(?![\w-])",                   # national / ac
                  r"(?<![A-Z0-9])SA\d{22}(?![0-9])"]                # Saudi IBAN
 
 
+_LENIENT = json.JSONDecoder(strict=False)       # OSB often logs raw tabs/newlines inside JSON strings
+
+
+def find_payload(msg: str) -> tuple[int | None, str]:
+    """Where the logged payload starts in an OSB message, and its state, without returning any value:
+    'json' (strict), 'json-lenient' (control characters in strings), 'json-trailing' (text after the closing brace),
+    'xml', 'unparsed' (starts after '::' but does not parse), or 'none'."""
+    for m in re.finditer(r"[{<]", msg):
+        rest = msg[m.start():].rstrip()
+        if rest.startswith("{"):
+            try:
+                json.loads(rest)
+                return m.start(), "json"
+            except ValueError:
+                pass
+            try:
+                _, end = _LENIENT.raw_decode(rest)
+                return m.start(), "json-lenient" if end == len(rest) else "json-trailing"
+            except ValueError:
+                continue
+        elif re.match(r"<[A-Za-z_][\w:.-]*[\s>/]", rest) and rest.endswith(">"):
+            return m.start(), "xml"
+    m = re.search(r"::\s*([{<])", msg)                  # OSB Log convention '... ::$body': take it even if broken
+    return (m.start(1), "unparsed") if m else (None, "none")
+
+
+def payload_error(msg: str) -> str:
+    """Why a payload does not parse: decoder message, position and the nearest JSON key before it (no values)."""
+    start, _ = find_payload(msg)
+    if start is None:
+        return "no payload"
+    rest = msg[start:].rstrip()
+    try:
+        _LENIENT.raw_decode(rest)
+        return "ok"
+    except ValueError as e:
+        pos = getattr(e, "pos", 0) or 0
+        keys = re.findall(r'"([A-Za-z0-9_.\-]+)"\s*:', rest[:pos])
+        return f"{getattr(e, 'msg', str(e))} at char {pos} of {len(rest)} (after key '{keys[-1] if keys else '-'}')"
+
+
 def dim_value(fields: dict, dim: str) -> str:
     """A scenario dimension: a captured field, or body:<a.b.c> = a field of the JSON payload ('?' when absent)."""
     if not dim.startswith("body:"):
         return fields.get(dim, "?")
     try:
-        node = json.loads(fields.get("body") or "")
+        node = _LENIENT.raw_decode((fields.get("body") or "").strip())[0]
     except ValueError:
         return "?"
     for part in dim[5:].split("."):
         node = node.get(part) if isinstance(node, dict) else None
     return "?" if node is None or isinstance(node, (dict, list)) else str(node)
+
+
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))   # large payloads: Python's default CSV field limit is 128 KB
 
 
 # ------------------------------------------------------------------ loading

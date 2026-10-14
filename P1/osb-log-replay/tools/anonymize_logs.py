@@ -38,7 +38,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from osb_log_traces import DEFAULT_JSON_KEYS, DEFAULT_KEY_PATTERNS, DEFAULT_MASKS, Masker  # noqa: E402
+from osb_log_traces import DEFAULT_JSON_KEYS, DEFAULT_KEY_PATTERNS, DEFAULT_MASKS, Masker, find_payload, osb_message, payload_error  # noqa: E402
 
 csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 _KEY_VAL = re.compile(r'"([A-Za-z0-9_.\-]+)"\s*:\s*("(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null|\{|\[)')
@@ -96,6 +96,16 @@ def main() -> int:
 
     a.out.parent.mkdir(parents=True, exist_ok=True)
     events = 0
+    states, errors = {"before": Counter(), "after": Counter()}, Counter()
+
+    def payload_state(raw: str, masked: str) -> None:       # value-free: only states, decoder messages and key names
+        states["before"][find_payload(osb_message(raw)[0])[1]] += 1
+        msg = osb_message(masked)[0]
+        st = find_payload(msg)[1]
+        states["after"][st] += 1
+        if st not in ("json", "xml", "none"):
+            errors[payload_error(msg)] += 1
+
     if a.input.suffix.lower() == ".csv":
         fields, rows = read_csv(a.input)
         with a.out.open("w", encoding="utf-8", newline="") as fh:
@@ -105,6 +115,7 @@ def main() -> int:
                 raw = r.get("_raw") or ""
                 inventory(raw, inv, masker)
                 r["_raw"] = masker(raw)
+                payload_state(raw, r["_raw"])
                 for col in fields:                      # any other text column (e.g. extracted fields) is masked too
                     if col not in ("_raw", "_time") and r.get(col):
                         r[col] = masker(r[col])
@@ -114,7 +125,9 @@ def main() -> int:
         with a.input.open(encoding="utf-8", errors="replace") as src, a.out.open("w", encoding="utf-8") as dst:
             for line in src:
                 inventory(line, inv, masker)
-                dst.write(masker(line))
+                masked = masker(line)
+                payload_state(line, masked)
+                dst.write(masked)
                 events += 1
 
     residue = subprocess.run([sys.executable, str(Path(__file__).with_name("mask_residue_check.py")), str(a.out)]
@@ -128,6 +141,10 @@ def main() -> int:
                     "extra_patterns": a.mask_key_pattern},
         "residue_check": {"findings": len(findings), "where": [l.split(": ", 1)[0].rsplit("/", 1)[-1] + ": " + l.split(": ", 1)[1]
                                                                for l in findings][:50]},
+        "payloads": {"before_masking": dict(states["before"]), "after_masking": dict(states["after"]),
+                     "not_strict_json": [{"reason": k, "events": v} for k, v in errors.most_common(10)],
+                     "legend": "json = valid; json-lenient = raw tabs/newlines inside strings; json-trailing = text after "
+                               "the closing brace; unparsed = starts after '::' but does not parse; none = no payload"},
         "key_inventory": {k: {"count": v["count"], "types": dict(v["types"]), "masked": v["masked_by_rule"]}
                           for k, v in sorted(inv.items())},
         "review_hint": "masked=true means the key rule masks the value. Numbers with 9+ digits are masked anywhere, whatever "
@@ -139,6 +156,8 @@ def main() -> int:
     unmasked = sum(1 for v in report["key_inventory"].values() if not v["masked"])
     print(f"{events} events -> {a.out}; {masker.count} values masked (key {masker.key_id}); "
           f"residue findings {len(findings)}; {len(inv)} JSON keys seen, {unmasked} not masked by rule -> review {rp}")
+    print("payloads before masking " + json.dumps(dict(states["before"])) + ", after " + json.dumps(dict(states["after"]))
+          + (f"; not strict JSON: {errors.most_common(1)[0][0]}" if errors else ""))
     if findings:
         return 1
     if a.delete_input:

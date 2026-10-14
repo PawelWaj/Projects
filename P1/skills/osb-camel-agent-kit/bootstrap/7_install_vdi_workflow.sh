@@ -440,6 +440,7 @@ echo "== 3 traces"
 echo "== 4 replay-config draft + fixtures"
 "$PY" - "$WORK/signatures.json" "$WORK/events.masked.csv" "$WORK/replay-config.json" <<'PY'
 import csv, io, json, re, sys
+csv.field_size_limit(min(sys.maxsize, 2**31 - 1))
 sig = json.load(open(sys.argv[1]))["signatures"][0]
 text = open(sys.argv[2], encoding="utf-8").read()
 raw = next(r["_raw"] for r in csv.DictReader(io.StringIO(text, newline="")))
@@ -916,7 +917,7 @@ Stop afterwards: `cd ~/Projects/P1/osb-log-replay/mock && docker compose down -v
 ## Step 6 — send back (no data inside these files)
 
 - table 1a, 1c, 1d (counts)
-- `task1/events.masked.csv.report.json`
+- `task1/events.masked.csv.report.json` (incl. its `payloads` block: how many payloads are strict JSON, before and after masking)
 - `task1/traces/scenarios.json`
 - `task1/report/report.json` (if step 5 ran)
 - fields you added to the masking
@@ -945,10 +946,12 @@ What the logs cannot give (known for this flow): backend responses and error cas
 |---|---|
 | `export MASK_KEY=<key> first` | `export MASK_KEY=…` |
 | `residue found` | open `events.masked.csv.report.json`, add the listed field with `--mask-json-key`, rerun |
-| `matches_in_file` below N/N | lines of another format in the export; send the count, try `EXAMPLE_LINE=2` |
+| `matches_in_file` 1/N, no `body` in `groups` | payload not recognised: update the repo (fixed 2026-10-14); then send the `payloads` block of the report |
+| `matches_in_file` below N/N (but more than 1) | lines of another format in the export; send the count, try `EXAMPLE_LINE=2` |
+| warning `payload is json-lenient` / `json-trailing` / `unparsed` | OSB logged JSON that is not strictly valid (raw tabs/newlines, text after `}`, or cut off). Tests still build; send the `payloads` block of the report: Camel's JSON parser must be configured to accept the same input |
 | `cannot derive the flow id` | `FLOW=beneficiary-engagement-change-prj/maintain-adjustment` before the command |
 | 1 scenario only | `SCENARIO_DIMS` not exported in this shell |
-| `_csv.Error: field larger than field limit` | old repo version: `cd ~/Projects && git pull` |
+| `_csv.Error: field larger than field limit` | old repo version: `git pull`, or download the ZIP again (fixed 2026-10-14) |
 | Docker errors in step 5 | skip step 5; replay can run on a Jenkins agent with Docker |
 KIT_EOF_LOGS_END_TO_END_MD
 chmod +x bin/*.sh bin/*.py 2>/dev/null || true
