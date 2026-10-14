@@ -8,6 +8,9 @@ set -euo pipefail
 PROJECT=${1:?usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]}
 PROXY=${2:?proxy name}
 TASK1=${3:-}
+case "$PROJECT" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && PROJECT=$(cygpath -u "$PROJECT");; esac   # Windows path (quoted) -> /e/...
+case "$PROXY" in */*|*\\*) echo "2nd argument must be the proxy name (e.g. maintain-adjustment), not a path. usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]"; exit 2;; esac
+[ -e "$PROJECT" ] || { echo "OSB project not found: $PROJECT  (Git Bash: write /e/folder/project, not E:\\folder\\project)"; exit 2; }
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
 PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
 OUT="research/$PROXY"
