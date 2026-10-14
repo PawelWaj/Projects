@@ -171,8 +171,12 @@ class FlowParityTest {
     void reachesTheSameOutputAsOsb(String name, Path c) throws Exception {
         JsonNode expected = JSON.readTree(c.resolve("expected.json").toFile());
         String corr = CFG.path("correlation_header").asText("traceId");
-        for (Message out : send(c, expectedOutputs(c, expected))) {
-            assertEquals(expected.path("correlation").asText(), out.getHeader(corr, String.class), corr + " must be carried through");
+        try {
+            for (Message out : send(c, expectedOutputs(c, expected))) {
+                assertEquals(expected.path("correlation").asText(), out.getHeader(corr, String.class), corr + " must be carried through");
+            }
+        } catch (AssertionError e) {
+            throw new AssertionError("case " + name + ": " + e.getMessage(), e);   // surefire reports show only [n]
         }
     }
 
