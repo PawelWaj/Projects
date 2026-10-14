@@ -118,6 +118,27 @@ ls fixtures/parity/*/
 
 ---
 
+## Step 4b — test catalogue (what will be tested)
+
+Task 1 already writes `task1/TEST_CATALOG.md` (+ `test-catalog.csv`). For the pilot, add the selector negatives and the fan-out seen in Splunk:
+```
+python $P1/vdi-osb-migration/bin/test_catalog.py task1 \
+  --negative-resource "Transfer Value - PPA to GOSI" --negative-resource "Bulk Termination Request" \
+  --negative-resource "Cancel Rpa First Scheme" --negative-resource "Initiate Delay Transaction" \
+  --negative-resource "Modify coverage details" --fanout-peer record-contribution
+```
+| Group | Cases | Input from | Expected from |
+|---|---|---|---|
+| P parity | one per scenario (businessTransaction × decision) | real masked messages (Splunk) | original XQuery (task 2) |
+| S selector | consumed / NOT consumed per resource | headers (`negative-cases.json`) | OSB proxy selector (task 2) |
+| F fan-out | the other subscriber still gets the event | any P case | — |
+| E errors | invalid JSON, text after JSON, backend timeout / fault, missing field | P cases + WireMock faults | OSB error handler (task 2) |
+| D delivery | same message twice | any P case | OSB behaviour |
+
+The command also checks every case folder (payload parses, `traceId` header, `expected.json` complete): `case_folders_with_problems` must be 0.
+
+---
+
 ## Step 5 — replay through the mocks (optional, needs Docker/Podman)
 
 ```
@@ -133,6 +154,7 @@ Stop afterwards: `cd ~/Projects/P1/osb-log-replay/mock && docker compose down -v
 - table 1a, 1c, 1d (counts)
 - `task1/events.masked.csv.report.json` (incl. its `payloads` block: how many payloads are strict JSON, before and after masking)
 - `task1/traces/scenarios.json`
+- `task1/TEST_CATALOG.md` (no values in it)
 - `task1/report/report.json` (if step 5 ran)
 - fields you added to the masking
 - any error message

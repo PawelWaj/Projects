@@ -60,6 +60,8 @@ PY
 rm -rf "$WORK/fixtures"
 "$PY" "$T/fixtures_from_traces.py" "$WORK/traces/traces.jsonl" "$WORK/replay-config.json" -o "$WORK/fixtures" --per-scenario "${PER_SCENARIO:-3}"
 "$PY" "$T/mask_residue_check.py" "$WORK/fixtures" | tail -1
+echo "== 4b test catalogue"
+"$PY" "$HERE/test_catalog.py" "$WORK" || echo "some case folders have problems: see $WORK/TEST_CATALOG.md"
 echo "Scenarios:"; "$PY" -c "import json,sys; [print(f\"  {s['count']:4d}  payload {s['with_payload']:3d}  {s['scenario']}\") for s in json.load(open(sys.argv[1]))]" "$WORK/traces/scenarios.json"
 
 if [ "$DO_REPLAY" = 1 ]; then

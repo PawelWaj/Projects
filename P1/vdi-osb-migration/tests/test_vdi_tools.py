@@ -159,3 +159,26 @@ class KitGateScriptTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCatalogTests(unittest.TestCase):
+    def test_task1_output_becomes_catalogue(self):
+        if not shutil.which("bash"):
+            self.skipTest("bash not available")
+        with tempfile.TemporaryDirectory() as d:
+            env = dict(os.environ, MASK_KEY="k", PYTHON=sys.executable,
+                       SCENARIO_DIMS="hdr_resource,body:data.businessTransaction")
+            sample = ROOT / "osb-log-replay" / "samples" / "splunk-export-synthetic.csv"
+            r = subprocess.run(["bash", str(BIN / "task1_log_only.sh"), str(sample), str(Path(d) / "t")],
+                               capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            out = subprocess.run([sys.executable, str(BIN / "test_catalog.py"), str(Path(d) / "t"),
+                                  "--negative-resource", "Other Resource", "--fanout-peer", "peer"],
+                                 capture_output=True, text=True, check=True)
+            info = json.loads(out.stdout)
+            self.assertEqual((info["parity"], info["case_folders_with_problems"]), (1, 0))
+            md = (Path(d) / "t" / "TEST_CATALOG.md").read_text(encoding="utf-8")
+            for tid in ("P01", "S01", "S02", "F01", "E01", "D01"):
+                self.assertIn(f"| {tid} |", md)
+            neg = json.loads((Path(d) / "t" / "negative-cases.json").read_text(encoding="utf-8"))
+            self.assertEqual(neg[0]["headers"], {"resource": "Other Resource"})
