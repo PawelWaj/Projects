@@ -20,7 +20,9 @@
 #                          (routes: approve the cards, then build and matrix)
 #                status    only rewrite <ws>/domain/STATUS.md + status.csv
 #   workspace    default: current folder
-# Env: PROJECTS (regex on project names, e.g. 'beneficiary|cancel-'), EXPORT (one Splunk CSV export with all flows of
+# Env: PI_PAUSE (seconds between two flows in a pi stage, default 30: keeps under the model's rate limit),
+#      PI_RETRIES / PI_BACKOFF (retries after a 429, see pi_call.sh),
+#      PROJECTS (regex on project names, e.g. 'beneficiary|cancel-'), EXPORT (one Splunk CSV export with all flows of
 #      the domain, raw or *.masked.csv), MASK_KEY, MVN_ARGS (e.g. "-s ~/.m2/settings.xml"), MUTATE=0 to skip mutations,
 #      plus the env of run_research.sh / run_camelk.sh (OSB_PI_MODEL, ...).
 set -uo pipefail
@@ -79,6 +81,7 @@ do_research() {
     echo "=== research $p/$x"
     t1=$(task1_of "$p" "$x")
     (cd "$WS" && OUT="research/$p/$x" bash "$KIT/pi/run_research.sh" "$APP/$p" "$x" ${t1:+"$t1"}) < /dev/null || echo "FAILED research $p/$x (continuing)"
+    sleep "${PI_PAUSE:-30}"
   done
 }
 
@@ -110,7 +113,8 @@ do_tests() {
     r="$WS/research/$p/$x"; [ -s "$r/research.json" ] || continue
     echo "=== tests $p/$x"
     t1=$(task1_of "$p" "$x")
-    OSB_SRC="$APP/$p" bash "$KIT/pi/run_tests.sh" "$r" "$WS/modules/$p/$x" "$p" ${t1:+"$t1"} < /dev/null | tail -1 || echo "INCOMPLETE tests $p/$x (continuing)"
+    OSB_SRC="$APP/$p" bash "$KIT/pi/run_tests.sh" "$r" "$WS/modules/$p/$x" "$p" ${t1:+"$t1"} < /dev/null | grep -E "rate limit|^\{" || echo "INCOMPLETE tests $p/$x (continuing)"
+    sleep "${PI_PAUSE:-30}"
   done
   "$PY" "$SK/test_matrix.py" --domain "$WS/modules" -o "$WS/domain" > /dev/null || true
 }
@@ -123,6 +127,7 @@ do_build() {
     echo "=== build $p/$x"
     t1=$(task1_of "$p" "$x")
     OSB_SRC="$APP/$p" bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
+    sleep "${PI_PAUSE:-30}"
   done
 }
 

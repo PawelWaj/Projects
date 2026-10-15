@@ -58,6 +58,10 @@ Payload table for 0b (Splunk, export as CSV): `index=ameen_e2e sourcetype="gosi:
 | rex "Project (?<project>\S+) :: for PS (?<proxy>\S+)" | eval payload=case(match(_raw, "::\s*\{"), "json", match(_raw, "::\s*<"), "xml", true(), "none") | stats count by project, proxy, payload`
 What was tested and how: [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
 
+Rate limit: the model endpoint answers `429 Too Many Requests` when calls come too fast. The runners wait and retry
+(`PI_RETRIES`, default 5; `PI_BACKOFF`, first pause 60 s, doubled) and pause between flows (`PI_PAUSE`, default 30 s;
+raise it, e.g. `PI_PAUSE=120`, if 429s keep coming). A pi stage with more than 10 proxies needs `ALL=1`.
+
 Options: `PROJECTS='beneficiary|cancel-'` limits the run to matching project names (start with 2–3 projects).
 `TASK1_ROOT=/e/Pawel` uses `/e/Pawel/<proxy>/task1` (the masked Splunk cases) for research and as test inputs.
 `MVN_ARGS='-s <GOSI settings.xml>'` for the Nexus mirror. One flow only: `pi/run_research.sh`, `pi/run_camelk.sh`.

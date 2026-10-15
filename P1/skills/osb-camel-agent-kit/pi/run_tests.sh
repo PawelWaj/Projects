@@ -12,6 +12,7 @@ MOD=${2:?module dir}
 PRJ=${3:?osb project name}
 TASK1=${4:-}
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+. "$KIT/pi/pi_call.sh"
 PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
 SK=$(for d in "$KIT/skills/osb-camelk-route" "$KIT/.pi/skills/osb-camelk-route"; do [ -d "$d" ] && echo "$d" && break; done)
 [ -n "$SK" ] || { echo "skill osb-camelk-route not found under $KIT"; exit 1; }
@@ -27,8 +28,7 @@ UNCOV=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['gates
 if [ "$UNCOV" != 0 ]; then
   PT=(pi --print --no-session --thinking "${PI_THINKING:-high}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
   [ -n "${OSB_PI_MODEL:-}" ] && PT+=(--model "$OSB_PI_MODEL")
-  "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." \
-    > "$LOG/tester.out" 2> "$LOG/tester.err" || true
+  pi_call "$LOG/tester.out" "$LOG/tester.err" "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." || true
 else
   echo "   every scenario already has a real Splunk case"
 fi

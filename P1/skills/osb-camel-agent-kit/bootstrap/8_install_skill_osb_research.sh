@@ -733,6 +733,7 @@ case "$PROJECT" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && PROJECT=$(c
 case "$PROXY" in */*|*\\*) echo "2nd argument must be the proxy name (e.g. maintain-adjustment), not a path. usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]"; exit 2;; esac
 [ -e "$PROJECT" ] || { echo "OSB project not found: $PROJECT  (Git Bash: write /e/folder/project, not E:\\folder\\project)"; exit 2; }
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+. "$KIT/pi/pi_call.sh"
 PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
 OUT=${OUT:-research/$PROXY}
 LOG="$OUT/agent-logs"
@@ -751,14 +752,12 @@ echo "== 2 questionnaire (pi)"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,write"
     --append-system-prompt "$KIT/agents/researcher.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
-"${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." \
-  > "$LOG/research.out" 2> "$LOG/research.err" || true
+pi_call "$LOG/research.out" "$LOG/research.err" "${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." || true
 for try in 2; do   # pi sometimes ends without writing the files: one more attempt, logs kept per attempt
   [ -s "$OUT/RESEARCH.md" ] && [ -s "$OUT/research.json" ] && break
   echo "   pi wrote no answer files, attempt $try (see $LOG/research.err)"
   cp "$LOG/research.err" "$LOG/research.attempt1.err" 2>/dev/null || true
-  "${PI[@]}" "Use skill osb-research. A previous attempt ended without writing RESEARCH.md and research.json: write both files. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." \
-  > "$LOG/research.out" 2> "$LOG/research.err" || true
+  pi_call "$LOG/research.out" "$LOG/research.err" "${PI[@]}" "Use skill osb-research. A previous attempt ended without writing RESEARCH.md and research.json: write both files. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." || true
 done
 
 [ "$(fp "$PROJECT")" = "$before" ] || { echo "VIOLATION: the OSB export was changed during research"; exit 1; }
@@ -770,6 +769,29 @@ rm -rf "$OUT.agent-logs"; mv "$LOG" "$OUT.agent-logs"     # agent logs may quote
 "$PY" "$SK/scripts/research_check.py" "$OUT" || { echo "NOT shareable yet: fix the lines above (logs: $OUT.agent-logs)"; exit 1; }
 echo "share: $OUT/RESEARCH.md research.json facts.json SHARE_CHECK.json"
 KIT_EOF_PI_RUN_RESEARCH_SH
+mkdir -p "$(dirname "pi/pi_call.sh")"
+cat > 'pi/pi_call.sh' <<'KIT_EOF_PI_PI_CALL_SH'
+#!/usr/bin/env bash
+# Sourced by the pi runners. pi_call <out-file> <err-file> <pi args...>
+# Runs pi; when the model endpoint answers 429 / rate limit / overloaded, waits and retries with a growing pause.
+# Env: PI_RETRIES (default 5), PI_BACKOFF (first pause in seconds, default 60, doubled each time, max 15 min).
+pi_call() {
+  local out=$1 err=$2; shift 2
+  local n=0 wait=${PI_BACKOFF:-60}
+  while :; do
+    "$@" > "$out" 2> "$err" && return 0
+    if grep -qiE '(^|[^0-9])429([^0-9]|$)|too many requests|rate.?limit|overloaded|503 service unavailable' "$err" 2>/dev/null \
+       && [ "$n" -lt "${PI_RETRIES:-5}" ]; then
+      n=$((n + 1))
+      echo "   model endpoint busy (rate limit), waiting ${wait}s, retry $n/${PI_RETRIES:-5}"
+      sleep "$wait"
+      wait=$((wait * 2)); [ "$wait" -gt 900 ] && wait=900
+      continue
+    fi
+    return 1
+  done
+}
+KIT_EOF_PI_PI_CALL_SH
 mkdir -p "$(dirname ".pi/prompts/osb-research.md")"
 cat > '.pi/prompts/osb-research.md' <<'KIT_EOF__PI_PROMPTS_OSB_RESEARCH_MD'
 ---
@@ -781,4 +803,4 @@ Use skill osb-research on the OSB export $1 for proxy $2 (scenarios from $3/trac
 Write research/$2/RESEARCH.md and research/$2/research.json, run the share check until it passes, then give the five-line report.
 KIT_EOF__PI_PROMPTS_OSB_RESEARCH_MD
 chmod +x .pi/skills/osb-research/scripts/*.py pi/run_research.sh 2>/dev/null || true
-echo "installed: 9 files (skill osb-research)"
+echo "installed: 10 files (skill osb-research)"

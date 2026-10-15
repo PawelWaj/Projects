@@ -1320,6 +1320,7 @@ MOD=${2:?module dir}
 PRJ=${3:?osb project name}
 TASK1=${4:-}
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+. "$KIT/pi/pi_call.sh"
 PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
 skill_dir() { if [ -d "$KIT/skills/$1" ]; then echo "$KIT/skills/$1"; elif [ -d "$KIT/.pi/skills/$1" ]; then echo "$KIT/.pi/skills/$1"; fi; }
 SK=$(skill_dir osb-camelk-route); [ -n "$SK" ] || { echo "skill osb-camelk-route not found under $KIT"; exit 1; }
@@ -1340,8 +1341,7 @@ echo "== 3 implement (pi)"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,edit,write"
     --append-system-prompt "$KIT/agents/implementer-camelk.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
-"${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/RESEARCH.md and $RES/research.json. ${OSB_SRC:+OSB source (read only): $OSB_SRC.} Do steps 3-6 of the skill: fill every TODO(flow-card) in the route, write FlowErrorTest (one test per error scope at least) and the backend stubs, run 'mvn -B ${MVN_ARGS:-} -f $MOD/pom.xml test' and '$PY $SK/scripts/check_camelk.py $MOD' until it prints PASS. Never edit FlowParityTest.java or flow-test.json. Write nothing outside $MOD." \
-  > "$LOG/implement.out" 2> "$LOG/implement.err" || true
+pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/RESEARCH.md and $RES/research.json. ${OSB_SRC:+OSB source (read only): $OSB_SRC.} Do steps 3-6 of the skill: fill every TODO(flow-card) in the route, write FlowErrorTest (one test per error scope at least) and the backend stubs, run 'mvn -B ${MVN_ARGS:-} -f $MOD/pom.xml test' and '$PY $SK/scripts/check_camelk.py $MOD' until it prints PASS. Never edit FlowParityTest.java or flow-test.json. Write nothing outside $MOD." || true
 
 echo "== 4 verify"
 mvn -B -q ${MVN_ARGS:-} -f "$MOD/pom.xml" test > "$LOG/mvn.out" 2>&1 || true
@@ -1372,7 +1372,9 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 #                          (routes: approve the cards, then build and matrix)
 #                status    only rewrite <ws>/domain/STATUS.md + status.csv
 #   workspace    default: current folder
-# Env: PROJECTS (regex on project names, e.g. 'beneficiary|cancel-'), EXPORT (one Splunk CSV export with all flows of
+# Env: PI_PAUSE (seconds between two flows in a pi stage, default 30: keeps under the model's rate limit),
+#      PI_RETRIES / PI_BACKOFF (retries after a 429, see pi_call.sh),
+#      PROJECTS (regex on project names, e.g. 'beneficiary|cancel-'), EXPORT (one Splunk CSV export with all flows of
 #      the domain, raw or *.masked.csv), MASK_KEY, MVN_ARGS (e.g. "-s ~/.m2/settings.xml"), MUTATE=0 to skip mutations,
 #      plus the env of run_research.sh / run_camelk.sh (OSB_PI_MODEL, ...).
 set -uo pipefail
@@ -1431,6 +1433,7 @@ do_research() {
     echo "=== research $p/$x"
     t1=$(task1_of "$p" "$x")
     (cd "$WS" && OUT="research/$p/$x" bash "$KIT/pi/run_research.sh" "$APP/$p" "$x" ${t1:+"$t1"}) < /dev/null || echo "FAILED research $p/$x (continuing)"
+    sleep "${PI_PAUSE:-30}"
   done
 }
 
@@ -1462,7 +1465,8 @@ do_tests() {
     r="$WS/research/$p/$x"; [ -s "$r/research.json" ] || continue
     echo "=== tests $p/$x"
     t1=$(task1_of "$p" "$x")
-    OSB_SRC="$APP/$p" bash "$KIT/pi/run_tests.sh" "$r" "$WS/modules/$p/$x" "$p" ${t1:+"$t1"} < /dev/null | tail -1 || echo "INCOMPLETE tests $p/$x (continuing)"
+    OSB_SRC="$APP/$p" bash "$KIT/pi/run_tests.sh" "$r" "$WS/modules/$p/$x" "$p" ${t1:+"$t1"} < /dev/null | grep -E "rate limit|^\{" || echo "INCOMPLETE tests $p/$x (continuing)"
+    sleep "${PI_PAUSE:-30}"
   done
   "$PY" "$SK/test_matrix.py" --domain "$WS/modules" -o "$WS/domain" > /dev/null || true
 }
@@ -1475,6 +1479,7 @@ do_build() {
     echo "=== build $p/$x"
     t1=$(task1_of "$p" "$x")
     OSB_SRC="$APP/$p" bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
+    sleep "${PI_PAUSE:-30}"
   done
 }
 
@@ -1531,6 +1536,7 @@ MOD=${2:?module dir}
 PRJ=${3:?osb project name}
 TASK1=${4:-}
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+. "$KIT/pi/pi_call.sh"
 PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
 SK=$(for d in "$KIT/skills/osb-camelk-route" "$KIT/.pi/skills/osb-camelk-route"; do [ -d "$d" ] && echo "$d" && break; done)
 [ -n "$SK" ] || { echo "skill osb-camelk-route not found under $KIT"; exit 1; }
@@ -1546,8 +1552,7 @@ UNCOV=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['gates
 if [ "$UNCOV" != 0 ]; then
   PT=(pi --print --no-session --thinking "${PI_THINKING:-high}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
   [ -n "${OSB_PI_MODEL:-}" ] && PT+=(--model "$OSB_PI_MODEL")
-  "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." \
-    > "$LOG/tester.out" 2> "$LOG/tester.err" || true
+  pi_call "$LOG/tester.out" "$LOG/tester.err" "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." || true
 else
   echo "   every scenario already has a real Splunk case"
 fi
@@ -1569,6 +1574,29 @@ print(json.dumps({"scenarios": len(cfg["scenario_mapping"]), "real_cases": real,
 sys.exit(0 if g["ok"] else 1)
 PY
 KIT_EOF_PI_RUN_TESTS_SH
+mkdir -p "$(dirname "pi/pi_call.sh")"
+cat > 'pi/pi_call.sh' <<'KIT_EOF_PI_PI_CALL_SH'
+#!/usr/bin/env bash
+# Sourced by the pi runners. pi_call <out-file> <err-file> <pi args...>
+# Runs pi; when the model endpoint answers 429 / rate limit / overloaded, waits and retries with a growing pause.
+# Env: PI_RETRIES (default 5), PI_BACKOFF (first pause in seconds, default 60, doubled each time, max 15 min).
+pi_call() {
+  local out=$1 err=$2; shift 2
+  local n=0 wait=${PI_BACKOFF:-60}
+  while :; do
+    "$@" > "$out" 2> "$err" && return 0
+    if grep -qiE '(^|[^0-9])429([^0-9]|$)|too many requests|rate.?limit|overloaded|503 service unavailable' "$err" 2>/dev/null \
+       && [ "$n" -lt "${PI_RETRIES:-5}" ]; then
+      n=$((n + 1))
+      echo "   model endpoint busy (rate limit), waiting ${wait}s, retry $n/${PI_RETRIES:-5}"
+      sleep "$wait"
+      wait=$((wait * 2)); [ "$wait" -gt 900 ] && wait=900
+      continue
+    fi
+    return 1
+  done
+}
+KIT_EOF_PI_PI_CALL_SH
 mkdir -p "$(dirname "pi/run_research.sh")"
 cat > 'pi/run_research.sh' <<'KIT_EOF_PI_RUN_RESEARCH_SH'
 #!/usr/bin/env bash
@@ -1586,6 +1614,7 @@ case "$PROJECT" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && PROJECT=$(c
 case "$PROXY" in */*|*\\*) echo "2nd argument must be the proxy name (e.g. maintain-adjustment), not a path. usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]"; exit 2;; esac
 [ -e "$PROJECT" ] || { echo "OSB project not found: $PROJECT  (Git Bash: write /e/folder/project, not E:\\folder\\project)"; exit 2; }
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+. "$KIT/pi/pi_call.sh"
 PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
 OUT=${OUT:-research/$PROXY}
 LOG="$OUT/agent-logs"
@@ -1604,14 +1633,12 @@ echo "== 2 questionnaire (pi)"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,write"
     --append-system-prompt "$KIT/agents/researcher.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
-"${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." \
-  > "$LOG/research.out" 2> "$LOG/research.err" || true
+pi_call "$LOG/research.out" "$LOG/research.err" "${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." || true
 for try in 2; do   # pi sometimes ends without writing the files: one more attempt, logs kept per attempt
   [ -s "$OUT/RESEARCH.md" ] && [ -s "$OUT/research.json" ] && break
   echo "   pi wrote no answer files, attempt $try (see $LOG/research.err)"
   cp "$LOG/research.err" "$LOG/research.attempt1.err" 2>/dev/null || true
-  "${PI[@]}" "Use skill osb-research. A previous attempt ended without writing RESEARCH.md and research.json: write both files. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." \
-  > "$LOG/research.out" 2> "$LOG/research.err" || true
+  pi_call "$LOG/research.out" "$LOG/research.err" "${PI[@]}" "Use skill osb-research. A previous attempt ended without writing RESEARCH.md and research.json: write both files. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." || true
 done
 
 [ "$(fp "$PROJECT")" = "$before" ] || { echo "VIOLATION: the OSB export was changed during research"; exit 1; }
@@ -2208,4 +2235,4 @@ cat > '.pi/skills/osb-research/assets/research.schema.json' <<'KIT_EOF__PI_SKILL
 }
 KIT_EOF__PI_SKILLS_OSB_RESEARCH_ASSETS_RESEARCH_SCHEMA_JSON
 chmod +x .pi/skills/osb-camelk-route/scripts/*.py pi/*.sh 2>/dev/null || true
-echo "installed: 21 files (skill osb-camelk-route + domain runner)"
+echo "installed: 22 files (skill osb-camelk-route + domain runner)"
