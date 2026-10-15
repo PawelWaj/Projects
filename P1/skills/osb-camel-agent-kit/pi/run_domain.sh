@@ -25,6 +25,7 @@
 #      PI_RETRIES / PI_BACKOFF (retries after a 429, see pi_call.sh),
 #      PROJECTS (regex on project names, e.g. 'beneficiary|cancel-'), EXPORT (one Splunk CSV export with all flows of
 #      the domain, raw or *.masked.csv), MASK_KEY, MVN_ARGS (e.g. "-s ~/.m2/settings.xml"), MUTATE=0 to skip mutations,
+#      MASK_JSON_KEYS ('fieldA fieldB': extra JSON/XML fields to mask in task1, when the residue check finds one),
 #      plus the env of run_research.sh / run_camelk.sh (OSB_PI_MODEL, ...).
 set -uo pipefail
 APP=${1:?usage: run_domain.sh <osb-app-dir> <list|research|scaffold|build|status> [workspace]}
@@ -97,7 +98,11 @@ do_task1() {   # one batch over the whole export; scenario fields per flow = wha
       echo "$p/$x,$(basename "$APP"),$d"
     done; } > "$WS/task1/flows.csv"
   case "$EXPORT" in *.masked.csv) am=--already-masked;; *) am=;; esac
-  "$PY" "$BATCH" "$EXPORT" -o "$WS/task1" --flows "$WS/task1/flows.csv" $am || echo "some flows need a look: $WS/task1/SUMMARY.md"
+  mk=(); for k in ${MASK_JSON_KEYS:-}; do mk+=(--mask-json-key "$k"); done      # extra fields to mask, space separated
+  "$PY" "$BATCH" "$EXPORT" -o "$WS/task1" --flows "$WS/task1/flows.csv" $am "${mk[@]}" || {
+    echo "some flows need a look: $WS/task1/SUMMARY.md"
+    [ -f "$WS/task1/events.masked.csv.report.json" ] && "$PY" -c "import json,sys; r=json.load(open(sys.argv[1], encoding='utf-8'))['residue_check']; [print('   residue:', w) for w in r['where']]" "$WS/task1/events.masked.csv.report.json"
+    echo "   fix: MASK_JSON_KEYS='<field> <field>' on the same line, then rerun task1 (arabic-script = Arabic text in a field not masked by name)"; }
 }
 
 do_scaffold() {

@@ -2,7 +2,12 @@
 
 You write test INPUTS for ONE flow, before any route exists, so the implementer cannot shape them to its code.
 For every scenario_mapping row in `src/test/resources/flow-test.json` that has no case yet, write one case folder under
-`src/test/resources/parity/<project>-<proxy>-synthetic/<row-slug>/<case-id>/`:
+`src/test/resources/parity/<project>-<proxy>-synthetic/<row-slug>/<case-id>/`, i.e. THREE folder levels below parity:
+```
+parity/transfer-value-prj-transfer-value-synthetic/all/SCENARIO.txt
+parity/transfer-value-prj-transfer-value-synthetic/all/case1/input.payload   (+ headers.json, expected.json)
+```
+(scenario `*` = every message: SCENARIO.txt is then `<project>/<proxy>|success` with no keys)
 - `input.payload`: a message the OSB proxy accepts, built from the message schema in the OSB source (XSD, nXSD, WSDL,
   JSON sample in the export), with FAKE values only (masked_..., 1000000001 ...). The fields the row's key names must
   have exactly the row's values (k=v), or a different value / be absent (k!=v).

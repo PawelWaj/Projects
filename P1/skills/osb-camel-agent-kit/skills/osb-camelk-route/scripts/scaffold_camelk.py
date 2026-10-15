@@ -285,7 +285,20 @@ def main() -> int:
                     help="only record hashes of the tester's synthetic cases (parity/*-synthetic/**) so gate K5 protects them")
     a = ap.parse_args()
     if a.freeze_synthetic:
+        moved = []
+        # a case folder sits BELOW its scenario folder (SCENARIO.txt); move cases written next to SCENARIO.txt into case1/
+        for scen in (a.out / "src/test/resources/parity").glob("*-synthetic/**/SCENARIO.txt"):
+            loose = [p for p in scen.parent.iterdir() if p.is_file() and p.name != "SCENARIO.txt"]
+            if any(p.name == "input.payload" for p in loose):
+                case = scen.parent / "case1"
+                case.mkdir(exist_ok=True)
+                for p in loose:
+                    p.rename(case / p.name)
+                    moved.append(p.relative_to(a.out).as_posix())
         meta = json.loads((a.out / ".scaffold.json").read_text(encoding="utf-8"))
+        for k in moved:                     # a hash frozen at the old place moves with the file (it was not edited)
+            if k in meta["generated"]:
+                meta["generated"][k.rsplit("/", 1)[0] + "/case1/" + k.rsplit("/", 1)[1]] = meta["generated"].pop(k)
         syn = sorted(p for p in (a.out / "src/test/resources/parity").glob("*-synthetic/**/*") if p.is_file())
         for p in syn:                       # first freeze wins: a later change shows up in gate K5, it is never re-blessed
             meta["generated"].setdefault(p.relative_to(a.out).as_posix(), sha(p))

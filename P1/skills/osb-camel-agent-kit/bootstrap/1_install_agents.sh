@@ -529,7 +529,12 @@ cat > 'agents/tester-camelk.md' <<'KIT_EOF_AGENTS_TESTER_CAMELK_MD'
 
 You write test INPUTS for ONE flow, before any route exists, so the implementer cannot shape them to its code.
 For every scenario_mapping row in `src/test/resources/flow-test.json` that has no case yet, write one case folder under
-`src/test/resources/parity/<project>-<proxy>-synthetic/<row-slug>/<case-id>/`:
+`src/test/resources/parity/<project>-<proxy>-synthetic/<row-slug>/<case-id>/`, i.e. THREE folder levels below parity:
+```
+parity/transfer-value-prj-transfer-value-synthetic/all/SCENARIO.txt
+parity/transfer-value-prj-transfer-value-synthetic/all/case1/input.payload   (+ headers.json, expected.json)
+```
+(scenario `*` = every message: SCENARIO.txt is then `<project>/<proxy>|success` with no keys)
 - `input.payload`: a message the OSB proxy accepts, built from the message schema in the OSB source (XSD, nXSD, WSDL,
   JSON sample in the export), with FAKE values only (masked_..., 1000000001 ...). The fields the row's key names must
   have exactly the row's values (k=v), or a different value / be absent (k!=v).
@@ -753,6 +758,7 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 #      PI_RETRIES / PI_BACKOFF (retries after a 429, see pi_call.sh),
 #      PROJECTS (regex on project names, e.g. 'beneficiary|cancel-'), EXPORT (one Splunk CSV export with all flows of
 #      the domain, raw or *.masked.csv), MASK_KEY, MVN_ARGS (e.g. "-s ~/.m2/settings.xml"), MUTATE=0 to skip mutations,
+#      MASK_JSON_KEYS ('fieldA fieldB': extra JSON/XML fields to mask in task1, when the residue check finds one),
 #      plus the env of run_research.sh / run_camelk.sh (OSB_PI_MODEL, ...).
 set -uo pipefail
 APP=${1:?usage: run_domain.sh <osb-app-dir> <list|research|scaffold|build|status> [workspace]}
@@ -825,7 +831,11 @@ do_task1() {   # one batch over the whole export; scenario fields per flow = wha
       echo "$p/$x,$(basename "$APP"),$d"
     done; } > "$WS/task1/flows.csv"
   case "$EXPORT" in *.masked.csv) am=--already-masked;; *) am=;; esac
-  "$PY" "$BATCH" "$EXPORT" -o "$WS/task1" --flows "$WS/task1/flows.csv" $am || echo "some flows need a look: $WS/task1/SUMMARY.md"
+  mk=(); for k in ${MASK_JSON_KEYS:-}; do mk+=(--mask-json-key "$k"); done      # extra fields to mask, space separated
+  "$PY" "$BATCH" "$EXPORT" -o "$WS/task1" --flows "$WS/task1/flows.csv" $am "${mk[@]}" || {
+    echo "some flows need a look: $WS/task1/SUMMARY.md"
+    [ -f "$WS/task1/events.masked.csv.report.json" ] && "$PY" -c "import json,sys; r=json.load(open(sys.argv[1], encoding='utf-8'))['residue_check']; [print('   residue:', w) for w in r['where']]" "$WS/task1/events.masked.csv.report.json"
+    echo "   fix: MASK_JSON_KEYS='<field> <field>' on the same line, then rerun task1 (arabic-script = Arabic text in a field not masked by name)"; }
 }
 
 do_scaffold() {
