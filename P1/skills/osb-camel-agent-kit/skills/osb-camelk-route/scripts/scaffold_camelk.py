@@ -72,6 +72,14 @@ def model(r: dict, facts: dict, corr: str) -> dict:
         for a in (o.get("name"), dest, owner.get("name") if owner else None, key):
             if a:
                 alias[slug(a)] = key
+    entry = r.get("entry") or {}
+    wants_reply = (str(entry.get("transport") or "").lower().startswith(("http", "local", "sb"))
+                   or str(entry.get("response_required") or "").lower() == "true"
+                   or any(str(o).lower() == "reply" for x in r.get("scenario_mapping") or [] for o in (x.get("outputs") or [])))
+    if wants_reply:
+        outputs["reply"] = {"name": "reply to the caller", "destination": "caller", "on_path": "end of the request pipeline",
+                            "headers": [], "backend": None}
+        alias["reply"] = "reply"
     resolve = lambda x: alias.get(slug(x), slug(x))  # noqa: E731
     err = next((k for k, o in outputs.items() if re.search(r"error", f"{o['on_path']} {o['name']} {o['destination']}", re.I)), None)
     for e in r.get("errors") or []:
@@ -135,11 +143,15 @@ def route_yaml(proxy: str, project: str, pkg: str, m: dict) -> str:
                   f"{ind}        steps:"]
             outs = p["outputs"] or []
             for o in outs:
+                if o == "reply":
+                    L += [f"{ind}          - log:", f"{ind}              message: {q(TODO + ' build the reply to the caller here (body at the end of the route)')}"]
+                    placed.add(o)
+                    continue
                 L += [f"{ind}          - to:", f"{ind}              id: out-{o}", f'{ind}              uri: "{{{{out.{o}}}}}"']
                 placed.add(o)
             if not outs:
                 L += [f"{ind}          - log:", f"{ind}              message: {q(TODO + ' path ' + p['label'] + ': no output in research')}"]
-    rest = [o for o in m["outputs"] if o not in placed and o != m["error"]]
+    rest = [o for o in m["outputs"] if o not in placed and o not in (m["error"], "reply")]
     if rest and not by_branch:
         for o in rest:
             L += [f"{ind}- to:", f"{ind}    id: out-{o}", f'{ind}    uri: "{{{{out.{o}}}}}"']
@@ -175,14 +187,14 @@ def properties(proxy: str, m: dict) -> str:
          "# credentials here: HTTP hosts come from env, broker connection from the platform config.",
          "# Durable topic subscription = subscription queue consumed by FQQN <address>::<subscription> (AGENTS.md).",
          f"camel.main.name={proxy}", "camel.main.routes-include-pattern=classpath:routes/*.camel.yaml", f"flow.input={inp}"]
-    L += [f"out.{k}={endpoint(o['destination'], k)}" for k, o in m["outputs"].items()]
+    L += [f"out.{k}={endpoint(o['destination'], k)}" for k, o in m["outputs"].items() if k != "reply"]
     L += [f"backend.{k}={endpoint(b.get('operation') if (b.get('type') or '').lower().startswith('http') else b.get('name'), k)}"
           for k, b in m["backends"].items()]
     return "\n".join(L) + "\n"
 
 
 def test_props(m: dict) -> list[str]:
-    return (["flow.input=direct:in"] + [f"out.{k}=mock:out-{k}" for k in m["outputs"]]
+    return (["flow.input=direct:in"] + [f"out.{k}=mock:out-{k}" for k in m["outputs"] if k != "reply"]
             + [f"backend.{k}=mock:backend-{k}" for k in m["backends"]])
 
 
@@ -268,7 +280,17 @@ def main() -> int:
     ap.add_argument("--parity", type=Path, help="task1/fixtures/parity (masked cases; copied, never committed)")
     ap.add_argument("--correlation-header", default="traceId")
     ap.add_argument("--force", action="store_true", help="also overwrite route, properties and card")
+    ap.add_argument("--freeze-synthetic", action="store_true",
+                    help="only record hashes of the tester's synthetic cases (parity/*-synthetic/**) so gate K5 protects them")
     a = ap.parse_args()
+    if a.freeze_synthetic:
+        meta = json.loads((a.out / ".scaffold.json").read_text(encoding="utf-8"))
+        syn = sorted(p for p in (a.out / "src/test/resources/parity").glob("*-synthetic/**/*") if p.is_file())
+        for p in syn:                       # first freeze wins: a later change shows up in gate K5, it is never re-blessed
+            meta["generated"].setdefault(p.relative_to(a.out).as_posix(), sha(p))
+        (a.out / ".scaffold.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps({"frozen_synthetic_files": len(syn)}))
+        return 0
     rp = a.research / "research.json"
     if not rp.is_file():
         sys.exit(f"missing {rp}: run pi/run_research.sh first")
@@ -309,7 +331,7 @@ def main() -> int:
     test = (TPL / "FlowParityTest.java.tpl").read_text(encoding="utf-8").replace("@@PACKAGE@@", pkg).replace(
         "@@PROJECT@@", a.project).replace("@@PROXY@@", proxy).replace("@@INPUT@@", "direct:in").replace(
         "@@TEST_PROPERTIES@@", ", ".join(q(p) for p in test_props(m)))
-    cfg = {"outputs": {k: f"mock:out-{k}" for k in m["outputs"]}, "error_output": m["error"],
+    cfg = {"outputs": {k: ("reply" if k == "reply" else f"mock:out-{k}") for k in m["outputs"]}, "error_output": m["error"],
            "backends": {k: {"mock": f"mock:backend-{k}", "response_use": b.get("response_use", "")} for k, b in m["backends"].items()},
            "scenario_mapping": [{"scenario": x["scenario"], "outputs": x["outputs"]} for x in m["mapping"]],
            "correlation_header": m["corr"], "payload_format": m["format"]}
@@ -332,9 +354,10 @@ def main() -> int:
                 copied += sum(1 for _ in (dst / flow_dir.name).glob("*/*/input.payload"))
     old_meta = json.loads((o / ".scaffold.json").read_text(encoding="utf-8")) if (o / ".scaffold.json").is_file() else {}
     ids = ([f"branch-{b}" for b in {p["branch"] for p in m["paths"]}] + [p["id"] for p in m["paths"]]
-           + [f"out-{k}" for k in m["outputs"]] + [f"backend-{k}" for k in m["backends"]])
+           + [f"out-{k}" for k in m["outputs"] if k != "reply"] + [f"backend-{k}" for k in m["backends"]])
     meta = {"proxy": proxy, "project": a.project, "package": pkg, "research_sha256": sha(rp),
-            "generated": {tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp)},
+            "generated": {**{k: v for k, v in (old_meta.get("generated") or {}).items() if "-synthetic/" in k},
+                          tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp)},
             "route_ids": sorted(ids), "errors": len(r.get("errors") or []),
             "task1": str(a.parity.parent.parent.resolve()) if a.parity and a.parity.is_dir() else (old_meta.get("task1") or ""),
             "backends_with_response": [k for k, b in m["backends"].items()

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Research pack -> Camel K module for ONE proxy: scaffold (script) -> approval gate -> implement (pi) -> mvn test -> gates.
+# Research pack -> Camel K module for ONE proxy: scaffold (script) -> approval gate -> synthetic inputs where Splunk has
+# none (pi tester) -> implement (pi) -> mvn test -> gates.
 #
 # Usage: pi/run_camelk.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]
 #   research-dir   research/<project>/<proxy> with research.json (+ facts.json), check PASS
@@ -29,15 +30,26 @@ if ! grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$MOD/FLOW_CARD.md" |
   exit 3
 fi
 
-echo "== 3 implement (pi)"
 LOG="$MOD/.agent-logs"; mkdir -p "$LOG"
+echo "== 3 test inputs: scenarios without a real Splunk message get synthetic ones (pi tester, before the route)"
+"$PY" "$SK/scripts/check_camelk.py" "$MOD" --no-surefire > /dev/null || true
+UNCOV=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['gates']['K9_scenarios_covered']['uncovered']))" "$MOD/GATES.json")
+if [ "$UNCOV" != 0 ]; then
+  PT=(pi --print --no-session --thinking "${PI_THINKING:-high}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
+  [ -n "${OSB_PI_MODEL:-}" ] && PT+=(--model "$OSB_PI_MODEL")
+  "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." \
+    > "$LOG/tester.out" 2> "$LOG/tester.err" || true
+fi
+"$PY" "$SK/scripts/scaffold_camelk.py" "$RES" -o "$MOD" --project "$PRJ" --freeze-synthetic
+
+echo "== 4 implement (pi)"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,edit,write"
     --append-system-prompt "$KIT/agents/implementer-camelk.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
 "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/RESEARCH.md and $RES/research.json. ${OSB_SRC:+OSB source (read only): $OSB_SRC.} Do steps 3-6 of the skill: fill every TODO(flow-card) in the route, write FlowErrorTest (one test per error scope at least) and the backend stubs, run 'mvn -B ${MVN_ARGS:-} -f $MOD/pom.xml test' and '$PY $SK/scripts/check_camelk.py $MOD' until it prints PASS. Never edit FlowParityTest.java or flow-test.json. Write nothing outside $MOD." \
   > "$LOG/implement.out" 2> "$LOG/implement.err" || true
 
-echo "== 4 verify"
+echo "== 5 verify"
 mvn -B -q ${MVN_ARGS:-} -f "$MOD/pom.xml" test > "$LOG/mvn.out" 2>&1 || true
 grep -h "Tests run:" "$LOG/mvn.out" | tail -1 || true
 "$PY" "$SK/scripts/check_camelk.py" "$MOD"

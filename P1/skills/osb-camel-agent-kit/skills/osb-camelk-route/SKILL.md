@@ -33,6 +33,11 @@ masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module a
    follow research.json.
 2. **Approval (human):** a person checks the card against `RESEARCH.md`, resolves or accepts each open question, sets
    `Status: approved`, `Approver:`, `Date:`.
+2b. **Test inputs where Splunk has none (pi tester, before the route):** every `scenario_mapping` row needs a case
+   (gate K9). Rows without a real Splunk message get a synthetic case written by the tester role
+   (`agents/tester-camelk.md`): fake values, built from the message schema in the OSB source, under
+   `src/test/resources/parity/<project>-<proxy>-synthetic/`. Then
+   `scaffold_camelk.py … --freeze-synthetic` records their hashes, so gate K5 also protects them from the implementer.
 3. **Implement the route:** replace every `TODO(flow-card)` from the card. Keep the ids. Log templates become simple
    expressions with the same literal text. Conditions use the headers the helper bean sets (`${header.x}`).
 4. **Error tests:** `src/test/java/<pkg>/FlowErrorTest.java`, at least one test per error scope on the card: invalid
@@ -43,7 +48,8 @@ masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module a
    shape from research Q8, fake values only.
 6. **Run until green:** `mvn -B test` then `python <skill>/scripts/check_camelk.py modules/<project>/<proxy>`. Gates:
    K1 card approved · K2 no TODO(flow-card) in src/main · K3 every route id present · K4 no infrastructure ·
-   K5 generated tests untouched, nothing disabled · K6 stubs · K7 error tests ≥ error scopes · K8 tests green.
+   K5 generated tests and frozen synthetic cases untouched, nothing disabled · K6 stubs · K7 error tests ≥ error scopes ·
+   K8 tests green · K9 every scenario_mapping row has a case.
 7. **Prove the tests bite:** `python <skill>/scripts/mutate_route.py modules/<project>/<proxy> --mvn "mvn -B -q -s ~/.m2/settings.xml"`
    breaks the route on purpose (conditions negated, outputs swapped or dropped, retries removed); every mutation must
    make a test fail. A survivor means a missing test: add it to FlowErrorTest, never weaken the route to pass.
@@ -54,6 +60,8 @@ masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module a
 
 ## What the generated parity test proves
 
+Each case is sent to `direct:in` as request/reply. Request-response proxies (HTTP, local) have an output `reply`:
+the answer to the caller, checked like a queue (present, no exception, body = golden where one exists).
 Each real masked case is sent to `direct:in`. Its `SCENARIO.txt` is matched against `scenario_mapping` in research.json
 (`k=v` equal, `k!=v` different or missing, first row wins) and must reach exactly those outputs, no others, with the
 correlation header. Where `expected-output.json|xml` exists (the original XQuery run by golden_runner), the body must

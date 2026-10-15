@@ -3,6 +3,8 @@ package osb.beneficiaryengagementchangeprj.maintainadjustment;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.camel.CamelContext;
+import org.apache.camel.Exchange;
+import org.apache.camel.ExchangePattern;
 import org.apache.camel.Message;
 import org.apache.camel.Produce;
 import org.apache.camel.ProducerTemplate;
@@ -30,6 +32,7 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -43,6 +46,8 @@ import static org.junit.jupiter.api.Assertions.fail;
  *   - no other output receives anything; the correlation header is carried through;
  *   - if expected-output.json/.xml exists (original XQuery result, golden_runner), the body must equal it.
  * Backends are mock endpoints answering with src/test/resources/stubs/<backend>.* (shape from research Q8).
+ * Cases come from Splunk (parity/<flow>/) or, where the flow logs no payload, are synthetic (parity/<flow>-synthetic/,
+ * fake values from the message schema, written by the tester before the route and frozen like this file).
  */
 @CamelMainTest(properties = {"flow.input=direct:in", "out.maintain-adjustment=mock:out-maintain-adjustment", "out.ppa-engagement=mock:out-ppa-engagement", "out.maintain-adjustment-error-queue=mock:out-maintain-adjustment-error-queue"})
 class FlowParityTest {
@@ -51,6 +56,7 @@ class FlowParityTest {
     static final Path STUBS = Path.of("src/test/resources/stubs");
     static final ObjectMapper JSON = new ObjectMapper();
     static final JsonNode CFG = load();
+    static final String REPLY = "reply";
 
     @Produce("direct:in")
     ProducerTemplate in;
@@ -147,18 +153,31 @@ class FlowParityTest {
         return true;
     }
 
-    /** Sends the case; every output in targets receives exactly one message, every other output none. */
+    /** Sends the case (request/reply, so request-response flows return their reply); every output in targets
+     *  receives exactly one message, every other output none. Output "reply" = the answer to the caller. */
     List<Message> send(Path c, List<String> targets) throws Exception {
         for (var it = CFG.path("outputs").fields(); it.hasNext(); ) {
             var o = it.next();
-            mock(o.getValue().asText()).expectedMessageCount(targets.contains(o.getKey()) ? 1 : 0);
+            if (!REPLY.equals(o.getKey())) {
+                mock(o.getValue().asText()).expectedMessageCount(targets.contains(o.getKey()) ? 1 : 0);
+            }
         }
         @SuppressWarnings("unchecked")
         Map<String, Object> headers = JSON.readValue(c.resolve("headers.json").toFile(), Map.class);
-        in.sendBodyAndHeaders(Files.readString(c.resolve("input.payload")), headers);
+        String body = Files.readString(c.resolve("input.payload"));
+        Exchange ex = in.send(e -> {
+            e.setPattern(ExchangePattern.InOut);
+            e.getMessage().setBody(body);
+            e.getMessage().setHeaders(new HashMap<>(headers));
+        });
         MockEndpoint.assertIsSatisfied(ctx());
         List<Message> out = new ArrayList<>();
         for (String t : targets) {
+            if (REPLY.equals(t)) {
+                assertNull(ex.getException(), "the caller must get a reply, not an exception");
+                out.add(ex.getMessage());
+                continue;
+            }
             String uri = CFG.path("outputs").path(t).asText("");
             assertFalse(uri.isEmpty(), "scenario_mapping names output '" + t + "' that is not in outputs");
             out.add(mock(uri).getExchanges().get(0).getMessage());
@@ -203,7 +222,9 @@ class FlowParityTest {
         Assumptions.assumeTrue("json".equals(CFG.path("payload_format").asText()) && !err.isEmpty(), "not a JSON flow or no error output");
         for (var it = CFG.path("outputs").fields(); it.hasNext(); ) {
             var o = it.next();
-            mock(o.getValue().asText()).expectedMessageCount(o.getKey().equals(err) ? 1 : 0);
+            if (!REPLY.equals(o.getKey())) {
+                mock(o.getValue().asText()).expectedMessageCount(o.getKey().equals(err) ? 1 : 0);
+            }
         }
         String corr = CFG.path("correlation_header").asText("traceId");
         in.sendBodyAndHeaders("not json at all", Map.of(corr, "t-invalid"));

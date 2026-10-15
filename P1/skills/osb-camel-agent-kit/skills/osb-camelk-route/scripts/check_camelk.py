@@ -11,6 +11,7 @@ K5 tests untouched     FlowParityTest.java and flow-test.json equal their scaffo
 K6 backend stubs       a stub file per backend whose response is used
 K7 error tests         FlowErrorTest has at least one test per error scope in research.json
 K8 tests green         surefire reports: tests > 0, failures 0, errors 0 (skipped = golden pending, reported)
+K9 scenarios covered   every scenario_mapping row has at least one case (real from Splunk or synthetic)
 Writes GATES.json next to the module's pom; exit 1 if any gate fails."""
 import argparse
 import hashlib
@@ -73,6 +74,24 @@ def main() -> int:
         err_tests += len(re.findall(r"@(Test|ParameterizedTest)\b", p.read_text(encoding="utf-8")))
     gates["K7_error_tests"] = {"ok": err_tests >= meta.get("errors", 0) and (err_tests > 0 or meta.get("errors", 0) == 0),
                                "tests": err_tests, "error_scopes": meta.get("errors", 0)}
+
+    cfg = json.loads((mod / "src/test/resources/flow-test.json").read_text(encoding="utf-8"))
+    scen = [dict(p.split("=", 1) for p in sc.read_text(encoding="utf-8").strip().split("|") if "=" in p)
+            for sc in (mod / "src/test/resources/parity").glob("*/*/SCENARIO.txt")]
+
+    def hit(key: str, v: dict) -> bool:
+        for p in key.split("|"):
+            if "!=" in p:
+                k, x = p.split("!=", 1)
+                if v.get(k) == x:
+                    return False
+            elif "=" in p:
+                k, x = p.split("=", 1)
+                if v.get(k) != x:
+                    return False
+        return bool(key)
+    uncovered = [m["scenario"] for m in cfg.get("scenario_mapping", []) if not any(hit(m["scenario"], v) for v in scen)]
+    gates["K9_scenarios_covered"] = {"ok": not uncovered, "uncovered": uncovered}
 
     if not a.no_surefire:
         t = f = e = s = 0

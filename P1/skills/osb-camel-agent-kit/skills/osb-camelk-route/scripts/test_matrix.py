@@ -8,6 +8,7 @@ Per flow it joins: flow-test.json (expected outputs per scenario, from the resea
 (SCENARIO.txt: which real masked messages were used), the surefire XML reports (display name "route <case>" /
 "body <case>" per message), GATES.json (K1-K8) and MUTATION.json (route mutations the tests caught). Rows:
   P<n>  one per scenario seen in the logs: messages in the export, cases tested, expected outputs, passed/failed
+  S<n>  one per scenario covered only by synthetic messages (flows that log no payload)
   E<n>  every other test method (error handler, retries, headers, invalid payload)
   K<n>  the gates;  M<n>  the mutations
 No payload values are read or written: only folder names, scenario keys and counts."""
@@ -64,7 +65,7 @@ def flow_matrix(mod: Path) -> tuple[list[dict], dict]:
                     k, v = p.split("=", 1)
                     ok &= vals.get(k) == v
             if ok and m["scenario"]:
-                return ", ".join("out-" + o for o in m["outputs"]) or "nothing sent"
+                return ", ".join(o if o == "reply" else "out-" + o for o in m["outputs"]) or "nothing sent"
         return "NOT MAPPED"
 
     rows, used = [], set()
@@ -75,8 +76,12 @@ def flow_matrix(mod: Path) -> tuple[list[dict], dict]:
         used.update(f"FlowParityTest::reachesTheSameOutputAsOsb(String, Path) route {r}" for r in rel)
         used.update(f"FlowParityTest::bodyEqualsOriginalXQueryResult(String, Path) body {r}" for r in rel)
         scen = "|".join(p for p in key.split("|")[2:])
-        rows.append({"id": f"P{i:02d}", "kind": "parity (real masked messages)", "what": scen or key,
-                     "inputs": f"{len(cases)} of {counts.get(key, '?')} in export", "expected": expected(key),
+        synthetic = all("-synthetic/" in r for r in rel)
+        rows.append({"id": f"{'S' if synthetic else 'P'}{i:02d}",
+                     "kind": "synthetic (fake values, from the schema)" if synthetic else "parity (real masked messages)",
+                     "what": scen or key,
+                     "inputs": f"{len(cases)} synthetic" if synthetic else f"{len(cases)} of {counts.get(key, '?')} in export",
+                     "expected": expected(key),
                      "passed": st.count("pass"), "failed": st.count("fail"), "not_run": st.count(None),
                      "body_check": "pass" if body and all(b == "pass" for b in body) else
                                    ("pending (no golden)" if body and all(b == "skip" for b in body) else
@@ -98,7 +103,7 @@ def flow_matrix(mod: Path) -> tuple[list[dict], dict]:
         rows.append({"id": f"M{n:02d}", "kind": "mutation (route broken on purpose)", "what": m["what"], "inputs": "all tests",
                      "expected": "tests fail", "passed": int(m["killed"]), "failed": int(not m["killed"]), "not_run": 0,
                      "body_check": "-", "result": "CAUGHT" if m["killed"] else "MISSED"})
-    p = [r for r in rows if r["id"].startswith("P")]
+    p = [r for r in rows if r["id"][0] in "PS" and r["kind"] != "gate"]
     summary = {"flow": f"{meta.get('project', '?')}/{meta.get('proxy', mod.name)}",
                "scenarios": len(p), "scenarios_pass": sum(r["result"] == "PASS" for r in p),
                "unmapped": sum(r["expected"] == "NOT MAPPED" for r in p),

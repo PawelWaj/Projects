@@ -39,6 +39,11 @@ masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module a
    follow research.json.
 2. **Approval (human):** a person checks the card against `RESEARCH.md`, resolves or accepts each open question, sets
    `Status: approved`, `Approver:`, `Date:`.
+2b. **Test inputs where Splunk has none (pi tester, before the route):** every `scenario_mapping` row needs a case
+   (gate K9). Rows without a real Splunk message get a synthetic case written by the tester role
+   (`agents/tester-camelk.md`): fake values, built from the message schema in the OSB source, under
+   `src/test/resources/parity/<project>-<proxy>-synthetic/`. Then
+   `scaffold_camelk.py … --freeze-synthetic` records their hashes, so gate K5 also protects them from the implementer.
 3. **Implement the route:** replace every `TODO(flow-card)` from the card. Keep the ids. Log templates become simple
    expressions with the same literal text. Conditions use the headers the helper bean sets (`${header.x}`).
 4. **Error tests:** `src/test/java/<pkg>/FlowErrorTest.java`, at least one test per error scope on the card: invalid
@@ -49,7 +54,8 @@ masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module a
    shape from research Q8, fake values only.
 6. **Run until green:** `mvn -B test` then `python <skill>/scripts/check_camelk.py modules/<project>/<proxy>`. Gates:
    K1 card approved · K2 no TODO(flow-card) in src/main · K3 every route id present · K4 no infrastructure ·
-   K5 generated tests untouched, nothing disabled · K6 stubs · K7 error tests ≥ error scopes · K8 tests green.
+   K5 generated tests and frozen synthetic cases untouched, nothing disabled · K6 stubs · K7 error tests ≥ error scopes ·
+   K8 tests green · K9 every scenario_mapping row has a case.
 7. **Prove the tests bite:** `python <skill>/scripts/mutate_route.py modules/<project>/<proxy> --mvn "mvn -B -q -s ~/.m2/settings.xml"`
    breaks the route on purpose (conditions negated, outputs swapped or dropped, retries removed); every mutation must
    make a test fail. A survivor means a missing test: add it to FlowErrorTest, never weaken the route to pass.
@@ -60,6 +66,8 @@ masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module a
 
 ## What the generated parity test proves
 
+Each case is sent to `direct:in` as request/reply. Request-response proxies (HTTP, local) have an output `reply`:
+the answer to the caller, checked like a queue (present, no exception, body = golden where one exists).
 Each real masked case is sent to `direct:in`. Its `SCENARIO.txt` is matched against `scenario_mapping` in research.json
 (`k=v` equal, `k!=v` different or missing, first row wins) and must reach exactly those outputs, no others, with the
 correlation header. Where `expected-output.json|xml` exists (the original XQuery run by golden_runner), the body must
@@ -81,6 +89,7 @@ K5 tests untouched     FlowParityTest.java and flow-test.json equal their scaffo
 K6 backend stubs       a stub file per backend whose response is used
 K7 error tests         FlowErrorTest has at least one test per error scope in research.json
 K8 tests green         surefire reports: tests > 0, failures 0, errors 0 (skipped = golden pending, reported)
+K9 scenarios covered   every scenario_mapping row has at least one case (real from Splunk or synthetic)
 Writes GATES.json next to the module's pom; exit 1 if any gate fails."""
 import argparse
 import hashlib
@@ -143,6 +152,24 @@ def main() -> int:
         err_tests += len(re.findall(r"@(Test|ParameterizedTest)\b", p.read_text(encoding="utf-8")))
     gates["K7_error_tests"] = {"ok": err_tests >= meta.get("errors", 0) and (err_tests > 0 or meta.get("errors", 0) == 0),
                                "tests": err_tests, "error_scopes": meta.get("errors", 0)}
+
+    cfg = json.loads((mod / "src/test/resources/flow-test.json").read_text(encoding="utf-8"))
+    scen = [dict(p.split("=", 1) for p in sc.read_text(encoding="utf-8").strip().split("|") if "=" in p)
+            for sc in (mod / "src/test/resources/parity").glob("*/*/SCENARIO.txt")]
+
+    def hit(key: str, v: dict) -> bool:
+        for p in key.split("|"):
+            if "!=" in p:
+                k, x = p.split("!=", 1)
+                if v.get(k) == x:
+                    return False
+            elif "=" in p:
+                k, x = p.split("=", 1)
+                if v.get(k) != x:
+                    return False
+        return bool(key)
+    uncovered = [m["scenario"] for m in cfg.get("scenario_mapping", []) if not any(hit(m["scenario"], v) for v in scen)]
+    gates["K9_scenarios_covered"] = {"ok": not uncovered, "uncovered": uncovered}
 
     if not a.no_surefire:
         t = f = e = s = 0
@@ -329,6 +356,14 @@ def model(r: dict, facts: dict, corr: str) -> dict:
         for a in (o.get("name"), dest, owner.get("name") if owner else None, key):
             if a:
                 alias[slug(a)] = key
+    entry = r.get("entry") or {}
+    wants_reply = (str(entry.get("transport") or "").lower().startswith(("http", "local", "sb"))
+                   or str(entry.get("response_required") or "").lower() == "true"
+                   or any(str(o).lower() == "reply" for x in r.get("scenario_mapping") or [] for o in (x.get("outputs") or [])))
+    if wants_reply:
+        outputs["reply"] = {"name": "reply to the caller", "destination": "caller", "on_path": "end of the request pipeline",
+                            "headers": [], "backend": None}
+        alias["reply"] = "reply"
     resolve = lambda x: alias.get(slug(x), slug(x))  # noqa: E731
     err = next((k for k, o in outputs.items() if re.search(r"error", f"{o['on_path']} {o['name']} {o['destination']}", re.I)), None)
     for e in r.get("errors") or []:
@@ -392,11 +427,15 @@ def route_yaml(proxy: str, project: str, pkg: str, m: dict) -> str:
                   f"{ind}        steps:"]
             outs = p["outputs"] or []
             for o in outs:
+                if o == "reply":
+                    L += [f"{ind}          - log:", f"{ind}              message: {q(TODO + ' build the reply to the caller here (body at the end of the route)')}"]
+                    placed.add(o)
+                    continue
                 L += [f"{ind}          - to:", f"{ind}              id: out-{o}", f'{ind}              uri: "{{{{out.{o}}}}}"']
                 placed.add(o)
             if not outs:
                 L += [f"{ind}          - log:", f"{ind}              message: {q(TODO + ' path ' + p['label'] + ': no output in research')}"]
-    rest = [o for o in m["outputs"] if o not in placed and o != m["error"]]
+    rest = [o for o in m["outputs"] if o not in placed and o not in (m["error"], "reply")]
     if rest and not by_branch:
         for o in rest:
             L += [f"{ind}- to:", f"{ind}    id: out-{o}", f'{ind}    uri: "{{{{out.{o}}}}}"']
@@ -432,14 +471,14 @@ def properties(proxy: str, m: dict) -> str:
          "# credentials here: HTTP hosts come from env, broker connection from the platform config.",
          "# Durable topic subscription = subscription queue consumed by FQQN <address>::<subscription> (AGENTS.md).",
          f"camel.main.name={proxy}", "camel.main.routes-include-pattern=classpath:routes/*.camel.yaml", f"flow.input={inp}"]
-    L += [f"out.{k}={endpoint(o['destination'], k)}" for k, o in m["outputs"].items()]
+    L += [f"out.{k}={endpoint(o['destination'], k)}" for k, o in m["outputs"].items() if k != "reply"]
     L += [f"backend.{k}={endpoint(b.get('operation') if (b.get('type') or '').lower().startswith('http') else b.get('name'), k)}"
           for k, b in m["backends"].items()]
     return "\n".join(L) + "\n"
 
 
 def test_props(m: dict) -> list[str]:
-    return (["flow.input=direct:in"] + [f"out.{k}=mock:out-{k}" for k in m["outputs"]]
+    return (["flow.input=direct:in"] + [f"out.{k}=mock:out-{k}" for k in m["outputs"] if k != "reply"]
             + [f"backend.{k}=mock:backend-{k}" for k in m["backends"]])
 
 
@@ -525,7 +564,17 @@ def main() -> int:
     ap.add_argument("--parity", type=Path, help="task1/fixtures/parity (masked cases; copied, never committed)")
     ap.add_argument("--correlation-header", default="traceId")
     ap.add_argument("--force", action="store_true", help="also overwrite route, properties and card")
+    ap.add_argument("--freeze-synthetic", action="store_true",
+                    help="only record hashes of the tester's synthetic cases (parity/*-synthetic/**) so gate K5 protects them")
     a = ap.parse_args()
+    if a.freeze_synthetic:
+        meta = json.loads((a.out / ".scaffold.json").read_text(encoding="utf-8"))
+        syn = sorted(p for p in (a.out / "src/test/resources/parity").glob("*-synthetic/**/*") if p.is_file())
+        for p in syn:                       # first freeze wins: a later change shows up in gate K5, it is never re-blessed
+            meta["generated"].setdefault(p.relative_to(a.out).as_posix(), sha(p))
+        (a.out / ".scaffold.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+        print(json.dumps({"frozen_synthetic_files": len(syn)}))
+        return 0
     rp = a.research / "research.json"
     if not rp.is_file():
         sys.exit(f"missing {rp}: run pi/run_research.sh first")
@@ -566,7 +615,7 @@ def main() -> int:
     test = (TPL / "FlowParityTest.java.tpl").read_text(encoding="utf-8").replace("@@PACKAGE@@", pkg).replace(
         "@@PROJECT@@", a.project).replace("@@PROXY@@", proxy).replace("@@INPUT@@", "direct:in").replace(
         "@@TEST_PROPERTIES@@", ", ".join(q(p) for p in test_props(m)))
-    cfg = {"outputs": {k: f"mock:out-{k}" for k in m["outputs"]}, "error_output": m["error"],
+    cfg = {"outputs": {k: ("reply" if k == "reply" else f"mock:out-{k}") for k in m["outputs"]}, "error_output": m["error"],
            "backends": {k: {"mock": f"mock:backend-{k}", "response_use": b.get("response_use", "")} for k, b in m["backends"].items()},
            "scenario_mapping": [{"scenario": x["scenario"], "outputs": x["outputs"]} for x in m["mapping"]],
            "correlation_header": m["corr"], "payload_format": m["format"]}
@@ -589,9 +638,10 @@ def main() -> int:
                 copied += sum(1 for _ in (dst / flow_dir.name).glob("*/*/input.payload"))
     old_meta = json.loads((o / ".scaffold.json").read_text(encoding="utf-8")) if (o / ".scaffold.json").is_file() else {}
     ids = ([f"branch-{b}" for b in {p["branch"] for p in m["paths"]}] + [p["id"] for p in m["paths"]]
-           + [f"out-{k}" for k in m["outputs"]] + [f"backend-{k}" for k in m["backends"]])
+           + [f"out-{k}" for k in m["outputs"] if k != "reply"] + [f"backend-{k}" for k in m["backends"]])
     meta = {"proxy": proxy, "project": a.project, "package": pkg, "research_sha256": sha(rp),
-            "generated": {tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp)},
+            "generated": {**{k: v for k, v in (old_meta.get("generated") or {}).items() if "-synthetic/" in k},
+                          tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp)},
             "route_ids": sorted(ids), "errors": len(r.get("errors") or []),
             "task1": str(a.parity.parent.parent.resolve()) if a.parity and a.parity.is_dir() else (old_meta.get("task1") or ""),
             "backends_with_response": [k for k, b in m["backends"].items()
@@ -618,6 +668,7 @@ Per flow it joins: flow-test.json (expected outputs per scenario, from the resea
 (SCENARIO.txt: which real masked messages were used), the surefire XML reports (display name "route <case>" /
 "body <case>" per message), GATES.json (K1-K8) and MUTATION.json (route mutations the tests caught). Rows:
   P<n>  one per scenario seen in the logs: messages in the export, cases tested, expected outputs, passed/failed
+  S<n>  one per scenario covered only by synthetic messages (flows that log no payload)
   E<n>  every other test method (error handler, retries, headers, invalid payload)
   K<n>  the gates;  M<n>  the mutations
 No payload values are read or written: only folder names, scenario keys and counts."""
@@ -674,7 +725,7 @@ def flow_matrix(mod: Path) -> tuple[list[dict], dict]:
                     k, v = p.split("=", 1)
                     ok &= vals.get(k) == v
             if ok and m["scenario"]:
-                return ", ".join("out-" + o for o in m["outputs"]) or "nothing sent"
+                return ", ".join(o if o == "reply" else "out-" + o for o in m["outputs"]) or "nothing sent"
         return "NOT MAPPED"
 
     rows, used = [], set()
@@ -685,8 +736,12 @@ def flow_matrix(mod: Path) -> tuple[list[dict], dict]:
         used.update(f"FlowParityTest::reachesTheSameOutputAsOsb(String, Path) route {r}" for r in rel)
         used.update(f"FlowParityTest::bodyEqualsOriginalXQueryResult(String, Path) body {r}" for r in rel)
         scen = "|".join(p for p in key.split("|")[2:])
-        rows.append({"id": f"P{i:02d}", "kind": "parity (real masked messages)", "what": scen or key,
-                     "inputs": f"{len(cases)} of {counts.get(key, '?')} in export", "expected": expected(key),
+        synthetic = all("-synthetic/" in r for r in rel)
+        rows.append({"id": f"{'S' if synthetic else 'P'}{i:02d}",
+                     "kind": "synthetic (fake values, from the schema)" if synthetic else "parity (real masked messages)",
+                     "what": scen or key,
+                     "inputs": f"{len(cases)} synthetic" if synthetic else f"{len(cases)} of {counts.get(key, '?')} in export",
+                     "expected": expected(key),
                      "passed": st.count("pass"), "failed": st.count("fail"), "not_run": st.count(None),
                      "body_check": "pass" if body and all(b == "pass" for b in body) else
                                    ("pending (no golden)" if body and all(b == "skip" for b in body) else
@@ -708,7 +763,7 @@ def flow_matrix(mod: Path) -> tuple[list[dict], dict]:
         rows.append({"id": f"M{n:02d}", "kind": "mutation (route broken on purpose)", "what": m["what"], "inputs": "all tests",
                      "expected": "tests fail", "passed": int(m["killed"]), "failed": int(not m["killed"]), "not_run": 0,
                      "body_check": "-", "result": "CAUGHT" if m["killed"] else "MISSED"})
-    p = [r for r in rows if r["id"].startswith("P")]
+    p = [r for r in rows if r["id"][0] in "PS" and r["kind"] != "gate"]
     summary = {"flow": f"{meta.get('project', '?')}/{meta.get('proxy', mod.name)}",
                "scenarios": len(p), "scenarios_pass": sum(r["result"] == "PASS" for r in p),
                "unmapped": sum(r["expected"] == "NOT MAPPED" for r in p),
@@ -809,6 +864,8 @@ package @@PACKAGE@@;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.camel.CamelContext;
+import org.apache.camel.Exchange;
+import org.apache.camel.ExchangePattern;
 import org.apache.camel.Message;
 import org.apache.camel.Produce;
 import org.apache.camel.ProducerTemplate;
@@ -836,6 +893,7 @@ import java.util.stream.Stream;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -849,6 +907,8 @@ import static org.junit.jupiter.api.Assertions.fail;
  *   - no other output receives anything; the correlation header is carried through;
  *   - if expected-output.json/.xml exists (original XQuery result, golden_runner), the body must equal it.
  * Backends are mock endpoints answering with src/test/resources/stubs/<backend>.* (shape from research Q8).
+ * Cases come from Splunk (parity/<flow>/) or, where the flow logs no payload, are synthetic (parity/<flow>-synthetic/,
+ * fake values from the message schema, written by the tester before the route and frozen like this file).
  */
 @CamelMainTest(properties = {@@TEST_PROPERTIES@@})
 class FlowParityTest {
@@ -857,6 +917,7 @@ class FlowParityTest {
     static final Path STUBS = Path.of("src/test/resources/stubs");
     static final ObjectMapper JSON = new ObjectMapper();
     static final JsonNode CFG = load();
+    static final String REPLY = "reply";
 
     @Produce("@@INPUT@@")
     ProducerTemplate in;
@@ -953,18 +1014,31 @@ class FlowParityTest {
         return true;
     }
 
-    /** Sends the case; every output in targets receives exactly one message, every other output none. */
+    /** Sends the case (request/reply, so request-response flows return their reply); every output in targets
+     *  receives exactly one message, every other output none. Output "reply" = the answer to the caller. */
     List<Message> send(Path c, List<String> targets) throws Exception {
         for (var it = CFG.path("outputs").fields(); it.hasNext(); ) {
             var o = it.next();
-            mock(o.getValue().asText()).expectedMessageCount(targets.contains(o.getKey()) ? 1 : 0);
+            if (!REPLY.equals(o.getKey())) {
+                mock(o.getValue().asText()).expectedMessageCount(targets.contains(o.getKey()) ? 1 : 0);
+            }
         }
         @SuppressWarnings("unchecked")
         Map<String, Object> headers = JSON.readValue(c.resolve("headers.json").toFile(), Map.class);
-        in.sendBodyAndHeaders(Files.readString(c.resolve("input.payload")), headers);
+        String body = Files.readString(c.resolve("input.payload"));
+        Exchange ex = in.send(e -> {
+            e.setPattern(ExchangePattern.InOut);
+            e.getMessage().setBody(body);
+            e.getMessage().setHeaders(new HashMap<>(headers));
+        });
         MockEndpoint.assertIsSatisfied(ctx());
         List<Message> out = new ArrayList<>();
         for (String t : targets) {
+            if (REPLY.equals(t)) {
+                assertNull(ex.getException(), "the caller must get a reply, not an exception");
+                out.add(ex.getMessage());
+                continue;
+            }
             String uri = CFG.path("outputs").path(t).asText("");
             assertFalse(uri.isEmpty(), "scenario_mapping names output '" + t + "' that is not in outputs");
             out.add(mock(uri).getExchanges().get(0).getMessage());
@@ -1009,7 +1083,9 @@ class FlowParityTest {
         Assumptions.assumeTrue("json".equals(CFG.path("payload_format").asText()) && !err.isEmpty(), "not a JSON flow or no error output");
         for (var it = CFG.path("outputs").fields(); it.hasNext(); ) {
             var o = it.next();
-            mock(o.getValue().asText()).expectedMessageCount(o.getKey().equals(err) ? 1 : 0);
+            if (!REPLY.equals(o.getKey())) {
+                mock(o.getValue().asText()).expectedMessageCount(o.getKey().equals(err) ? 1 : 0);
+            }
         }
         String corr = CFG.path("correlation_header").asText("traceId");
         in.sendBodyAndHeaders("not json at all", Map.of(corr, "t-invalid"));
@@ -1204,15 +1280,32 @@ cat > 'agents/implementer-camelk.md' <<'KIT_EOF_AGENTS_IMPLEMENTER_CAMELK_MD'
 # Role: implementer (Camel K YAML route from an approved card)
 
 You implement ONE flow in `modules/<project>/<proxy>/` with skill `osb-camelk-route`, from its approved FLOW_CARD.md and
-research pack. You never change the OSB source, the research pack, FlowParityTest.java or flow-test.json, and you never
+research pack. You never change the OSB source, the research pack, FlowParityTest.java, flow-test.json or any test case folder (real or synthetic), and you never
 disable or weaken a test. You may copy original XQuery/XSLT/XSD files from the OSB source into the module.
 Behaviour that is not on the card is not implemented: record it as an open question in MIGRATION_NOTES.md.
 Finish only when check_camelk.py prints PASS, or stop and report which gate fails and why it cannot pass.
 KIT_EOF_AGENTS_IMPLEMENTER_CAMELK_MD
+mkdir -p "$(dirname "agents/tester-camelk.md")"
+cat > 'agents/tester-camelk.md' <<'KIT_EOF_AGENTS_TESTER_CAMELK_MD'
+# Role: tester (synthetic test messages for scenarios Splunk cannot supply)
+
+You write test INPUTS for ONE flow, before any route exists, so the implementer cannot shape them to its code.
+For every scenario_mapping row in `src/test/resources/flow-test.json` that has no case yet, write one case folder under
+`src/test/resources/parity/<project>-<proxy>-synthetic/<row-slug>/<case-id>/`:
+- `input.payload`: a message the OSB proxy accepts, built from the message schema in the OSB source (XSD, nXSD, WSDL,
+  JSON sample in the export), with FAKE values only (masked_..., 1000000001 ...). The fields the row's key names must
+  have exactly the row's values (k=v), or a different value / be absent (k!=v).
+- `headers.json`: transport headers the flow reads (resource, eventType ...) + a traceId.
+- `expected.json`: {"outcome": "success", "destination": "see mapping", "correlation": "<the traceId>"}.
+- `../SCENARIO.txt`: `<project>/<proxy>|success|k=v|...` with every key of the row.
+You never write or change the route, the beans, FlowParityTest.java, flow-test.json, or real (Splunk) case folders.
+If the schema is missing from the export, write nothing for that row and report it.
+KIT_EOF_AGENTS_TESTER_CAMELK_MD
 mkdir -p "$(dirname "pi/run_camelk.sh")"
 cat > 'pi/run_camelk.sh' <<'KIT_EOF_PI_RUN_CAMELK_SH'
 #!/usr/bin/env bash
-# Research pack -> Camel K module for ONE proxy: scaffold (script) -> approval gate -> implement (pi) -> mvn test -> gates.
+# Research pack -> Camel K module for ONE proxy: scaffold (script) -> approval gate -> synthetic inputs where Splunk has
+# none (pi tester) -> implement (pi) -> mvn test -> gates.
 #
 # Usage: pi/run_camelk.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]
 #   research-dir   research/<project>/<proxy> with research.json (+ facts.json), check PASS
@@ -1242,15 +1335,26 @@ if ! grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$MOD/FLOW_CARD.md" |
   exit 3
 fi
 
-echo "== 3 implement (pi)"
 LOG="$MOD/.agent-logs"; mkdir -p "$LOG"
+echo "== 3 test inputs: scenarios without a real Splunk message get synthetic ones (pi tester, before the route)"
+"$PY" "$SK/scripts/check_camelk.py" "$MOD" --no-surefire > /dev/null || true
+UNCOV=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['gates']['K9_scenarios_covered']['uncovered']))" "$MOD/GATES.json")
+if [ "$UNCOV" != 0 ]; then
+  PT=(pi --print --no-session --thinking "${PI_THINKING:-high}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
+  [ -n "${OSB_PI_MODEL:-}" ] && PT+=(--model "$OSB_PI_MODEL")
+  "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." \
+    > "$LOG/tester.out" 2> "$LOG/tester.err" || true
+fi
+"$PY" "$SK/scripts/scaffold_camelk.py" "$RES" -o "$MOD" --project "$PRJ" --freeze-synthetic
+
+echo "== 4 implement (pi)"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,edit,write"
     --append-system-prompt "$KIT/agents/implementer-camelk.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
 "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/RESEARCH.md and $RES/research.json. ${OSB_SRC:+OSB source (read only): $OSB_SRC.} Do steps 3-6 of the skill: fill every TODO(flow-card) in the route, write FlowErrorTest (one test per error scope at least) and the backend stubs, run 'mvn -B ${MVN_ARGS:-} -f $MOD/pom.xml test' and '$PY $SK/scripts/check_camelk.py $MOD' until it prints PASS. Never edit FlowParityTest.java or flow-test.json. Write nothing outside $MOD." \
   > "$LOG/implement.out" 2> "$LOG/implement.err" || true
 
-echo "== 4 verify"
+echo "== 5 verify"
 mvn -B -q ${MVN_ARGS:-} -f "$MOD/pom.xml" test > "$LOG/mvn.out" 2>&1 || true
 grep -h "Tests run:" "$LOG/mvn.out" | tail -1 || true
 "$PY" "$SK/scripts/check_camelk.py" "$MOD"
@@ -1264,6 +1368,8 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 # Usage: pi/run_domain.sh <osb-app-dir> <stage> [workspace]
 #   osb-app-dir  e.g. /e/contributor-agreement-mb-app (the folder holding the *-prj projects)
 #   stage        list      projects and proxies found (no agent)
+#                coverage  which proxies get real Splunk test messages and which synthetic ones (needs SPLUNK_COVERAGE =
+#                          CSV of the Splunk "stats count by project, proxy, payload" table) -> domain/COVERAGE.md
 #                research  research pack per proxy -> <ws>/research/<project>/<proxy>/   (skips packs that PASS)
 #                task1     Splunk test cases for every researched proxy, split by the fields its branches use
 #                          (research scenario_dims) -> <ws>/task1/flows/<project>-<proxy>/   (needs EXPORT, MASK_KEY)
@@ -1381,6 +1487,10 @@ do_matrix() {   # mutation check on every green module (MUTATE=0 skips it), then
 
 case "$STAGE" in
   list) flows | awk '{print} END{print NR " proxies"}' ;;
+  coverage)
+    [ -n "${SPLUNK_COVERAGE:-}" ] && [ -f "$SPLUNK_COVERAGE" ] || { echo "coverage needs SPLUNK_COVERAGE=<csv of the Splunk payload table>"; exit 2; }
+    "$PY" "$KIT/skills/osb-to-camel/scripts/osb_inventory.py" "$APP" -o "$WS/domain/inventory" > /dev/null
+    "$PY" "$(dirname "$BATCH")/domain_coverage.py" "$WS/domain/inventory" "$SPLUNK_COVERAGE" -o "$WS/domain/COVERAGE.md" ;;
   research) do_research; status ;;
   task1) do_task1; status ;;
   scaffold) do_scaffold; status ;;
@@ -1614,7 +1724,7 @@ source does not say. No code, no hosts, no data (see SKILL.md rules).
 | Q3 | **Flow overview.** The pipeline in order: stage → action type → what it does in one sentence. Include route nodes, branches, publish, service callouts, Java callouts, reply/resume | numbered list |
 | Q4 | **Branches.** For each branch/if-then: condition in plain words, the condition expression (one line), which values lead to which path, what happens on each path, default path | table per branch |
 | Q5 | **Scenario mapping.** Branches decide on payload fields: list those fields in `scenario_dims` (JSON path such as `data.hasPPAEngagement`, or the element name). Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
-| Q6 | **Outputs.** Name each output after the business service that writes it (the same name in branches, scenario_mapping and backends). Every destination the flow writes to (business service → queue/topic/HTTP path/operation): on which path, which body (built by which transform), which JMS properties / transport headers / HTTP headers are set and from where | table |
+| Q6 | **Outputs.** Request-response proxies (HTTP, local, SOAP): the answer to the caller is an output named `reply` (use it in branches and scenario_mapping). Name each other output after the business service that writes it (the same name in branches, scenario_mapping and backends). Every destination the flow writes to (business service → queue/topic/HTTP path/operation): on which path, which body (built by which transform), which JMS properties / transport headers / HTTP headers are set and from where | table |
 | Q7 | **Transforms.** For each XQuery/XSLT/assign/replace that builds a message: purpose, inputs (external params), output root, field mapping `source path → target path → rule` (copy, constant, format, lookup, condition), fn-bea functions used, constants | table per transform |
 | Q8 | **Backends.** Each business service / service callout: type, operation, when it is called, request built from, how the response is used, retry count/interval, timeout, load balancing, result caching, what happens on fault | table |
 | Q9 | **Errors.** Each error handler scope (stage, pipeline, service): what it catches, what it logs, where the message goes (error queue, reply, resume, re-raise), headers/fields set (errorCode, errorMessage, traceId ...), redelivery/retry behaviour of the transport | table |
@@ -2022,4 +2132,4 @@ cat > '.pi/skills/osb-research/assets/research.schema.json' <<'KIT_EOF__PI_SKILL
 }
 KIT_EOF__PI_SKILLS_OSB_RESEARCH_ASSETS_RESEARCH_SCHEMA_JSON
 chmod +x .pi/skills/osb-camelk-route/scripts/*.py pi/*.sh 2>/dev/null || true
-echo "installed: 19 files (skill osb-camelk-route + domain runner)"
+echo "installed: 20 files (skill osb-camelk-route + domain runner)"

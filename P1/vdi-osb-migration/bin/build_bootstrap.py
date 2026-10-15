@@ -84,7 +84,7 @@ def main() -> None:
     ck = KIT / "skills" / "osb-camelk-route"
     emit("9_install_skill_osb_camelk.sh", "Skill osb-camelk-route (research pack -> Camel K YAML module + tests + gates) under .pi/skills/ + implementer role + pi runners (one flow, whole domain).",
          [(p, ".pi/skills/osb-camelk-route/" + rel(ck, p)) for p in files_under(ck, ["SKILL.md", "scripts/*.py", "references/*", "assets/templates/*"])]
-         + [(KIT / "agents/implementer-camelk.md", "agents/implementer-camelk.md"), (KIT / "pi/run_camelk.sh", "pi/run_camelk.sh"),
+         + [(KIT / "agents/implementer-camelk.md", "agents/implementer-camelk.md"), (KIT / "agents/tester-camelk.md", "agents/tester-camelk.md"), (KIT / "pi/run_camelk.sh", "pi/run_camelk.sh"),
             (KIT / "pi/run_domain.sh", "pi/run_domain.sh"), (KIT / "pi/run_research.sh", "pi/run_research.sh"),
             (KIT / "pi/preflight.sh", "pi/preflight.sh"), (KIT / "AGENTS.md", "AGENTS.md"),
             (KIT / "pi/prompts/osb-camelk.md", ".pi/prompts/osb-camelk.md")]

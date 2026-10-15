@@ -5,6 +5,8 @@
 # Usage: pi/run_domain.sh <osb-app-dir> <stage> [workspace]
 #   osb-app-dir  e.g. /e/contributor-agreement-mb-app (the folder holding the *-prj projects)
 #   stage        list      projects and proxies found (no agent)
+#                coverage  which proxies get real Splunk test messages and which synthetic ones (needs SPLUNK_COVERAGE =
+#                          CSV of the Splunk "stats count by project, proxy, payload" table) -> domain/COVERAGE.md
 #                research  research pack per proxy -> <ws>/research/<project>/<proxy>/   (skips packs that PASS)
 #                task1     Splunk test cases for every researched proxy, split by the fields its branches use
 #                          (research scenario_dims) -> <ws>/task1/flows/<project>-<proxy>/   (needs EXPORT, MASK_KEY)
@@ -122,6 +124,10 @@ do_matrix() {   # mutation check on every green module (MUTATE=0 skips it), then
 
 case "$STAGE" in
   list) flows | awk '{print} END{print NR " proxies"}' ;;
+  coverage)
+    [ -n "${SPLUNK_COVERAGE:-}" ] && [ -f "$SPLUNK_COVERAGE" ] || { echo "coverage needs SPLUNK_COVERAGE=<csv of the Splunk payload table>"; exit 2; }
+    "$PY" "$KIT/skills/osb-to-camel/scripts/osb_inventory.py" "$APP" -o "$WS/domain/inventory" > /dev/null
+    "$PY" "$(dirname "$BATCH")/domain_coverage.py" "$WS/domain/inventory" "$SPLUNK_COVERAGE" -o "$WS/domain/COVERAGE.md" ;;
   research) do_research; status ;;
   task1) do_task1; status ;;
   scaffold) do_scaffold; status ;;

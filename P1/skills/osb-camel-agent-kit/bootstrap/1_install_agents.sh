@@ -420,7 +420,7 @@ cat > 'agents/implementer-camelk.md' <<'KIT_EOF_AGENTS_IMPLEMENTER_CAMELK_MD'
 # Role: implementer (Camel K YAML route from an approved card)
 
 You implement ONE flow in `modules/<project>/<proxy>/` with skill `osb-camelk-route`, from its approved FLOW_CARD.md and
-research pack. You never change the OSB source, the research pack, FlowParityTest.java or flow-test.json, and you never
+research pack. You never change the OSB source, the research pack, FlowParityTest.java, flow-test.json or any test case folder (real or synthetic), and you never
 disable or weaken a test. You may copy original XQuery/XSLT/XSD files from the OSB source into the module.
 Behaviour that is not on the card is not implemented: record it as an open question in MIGRATION_NOTES.md.
 Finish only when check_camelk.py prints PASS, or stop and report which gate fails and why it cannot pass.
@@ -522,6 +522,22 @@ MINOR (style, naming).
   Camel implementation / Behavioural differences / Items requiring human validation**. Use the words "evidence shows"
   with a gate or test name; never "equivalent".
 KIT_EOF_AGENTS_REVIEWER_MD
+mkdir -p "$(dirname "agents/tester-camelk.md")"
+cat > 'agents/tester-camelk.md' <<'KIT_EOF_AGENTS_TESTER_CAMELK_MD'
+# Role: tester (synthetic test messages for scenarios Splunk cannot supply)
+
+You write test INPUTS for ONE flow, before any route exists, so the implementer cannot shape them to its code.
+For every scenario_mapping row in `src/test/resources/flow-test.json` that has no case yet, write one case folder under
+`src/test/resources/parity/<project>-<proxy>-synthetic/<row-slug>/<case-id>/`:
+- `input.payload`: a message the OSB proxy accepts, built from the message schema in the OSB source (XSD, nXSD, WSDL,
+  JSON sample in the export), with FAKE values only (masked_..., 1000000001 ...). The fields the row's key names must
+  have exactly the row's values (k=v), or a different value / be absent (k!=v).
+- `headers.json`: transport headers the flow reads (resource, eventType ...) + a traceId.
+- `expected.json`: {"outcome": "success", "destination": "see mapping", "correlation": "<the traceId>"}.
+- `../SCENARIO.txt`: `<project>/<proxy>|success|k=v|...` with every key of the row.
+You never write or change the route, the beans, FlowParityTest.java, flow-test.json, or real (Splunk) case folders.
+If the schema is missing from the export, write nothing for that row and report it.
+KIT_EOF_AGENTS_TESTER_CAMELK_MD
 mkdir -p "$(dirname "agents/tester.md")"
 cat > 'agents/tester.md' <<'KIT_EOF_AGENTS_TESTER_MD'
 # Role: tester (independent oracle)
@@ -640,7 +656,8 @@ KIT_EOF_PI_PREFLIGHT_SH
 mkdir -p "$(dirname "pi/run_camelk.sh")"
 cat > 'pi/run_camelk.sh' <<'KIT_EOF_PI_RUN_CAMELK_SH'
 #!/usr/bin/env bash
-# Research pack -> Camel K module for ONE proxy: scaffold (script) -> approval gate -> implement (pi) -> mvn test -> gates.
+# Research pack -> Camel K module for ONE proxy: scaffold (script) -> approval gate -> synthetic inputs where Splunk has
+# none (pi tester) -> implement (pi) -> mvn test -> gates.
 #
 # Usage: pi/run_camelk.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]
 #   research-dir   research/<project>/<proxy> with research.json (+ facts.json), check PASS
@@ -670,15 +687,26 @@ if ! grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$MOD/FLOW_CARD.md" |
   exit 3
 fi
 
-echo "== 3 implement (pi)"
 LOG="$MOD/.agent-logs"; mkdir -p "$LOG"
+echo "== 3 test inputs: scenarios without a real Splunk message get synthetic ones (pi tester, before the route)"
+"$PY" "$SK/scripts/check_camelk.py" "$MOD" --no-surefire > /dev/null || true
+UNCOV=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['gates']['K9_scenarios_covered']['uncovered']))" "$MOD/GATES.json")
+if [ "$UNCOV" != 0 ]; then
+  PT=(pi --print --no-session --thinking "${PI_THINKING:-high}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
+  [ -n "${OSB_PI_MODEL:-}" ] && PT+=(--model "$OSB_PI_MODEL")
+  "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." \
+    > "$LOG/tester.out" 2> "$LOG/tester.err" || true
+fi
+"$PY" "$SK/scripts/scaffold_camelk.py" "$RES" -o "$MOD" --project "$PRJ" --freeze-synthetic
+
+echo "== 4 implement (pi)"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,edit,write"
     --append-system-prompt "$KIT/agents/implementer-camelk.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
 "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/RESEARCH.md and $RES/research.json. ${OSB_SRC:+OSB source (read only): $OSB_SRC.} Do steps 3-6 of the skill: fill every TODO(flow-card) in the route, write FlowErrorTest (one test per error scope at least) and the backend stubs, run 'mvn -B ${MVN_ARGS:-} -f $MOD/pom.xml test' and '$PY $SK/scripts/check_camelk.py $MOD' until it prints PASS. Never edit FlowParityTest.java or flow-test.json. Write nothing outside $MOD." \
   > "$LOG/implement.out" 2> "$LOG/implement.err" || true
 
-echo "== 4 verify"
+echo "== 5 verify"
 mvn -B -q ${MVN_ARGS:-} -f "$MOD/pom.xml" test > "$LOG/mvn.out" 2>&1 || true
 grep -h "Tests run:" "$LOG/mvn.out" | tail -1 || true
 "$PY" "$SK/scripts/check_camelk.py" "$MOD"
@@ -692,6 +720,8 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 # Usage: pi/run_domain.sh <osb-app-dir> <stage> [workspace]
 #   osb-app-dir  e.g. /e/contributor-agreement-mb-app (the folder holding the *-prj projects)
 #   stage        list      projects and proxies found (no agent)
+#                coverage  which proxies get real Splunk test messages and which synthetic ones (needs SPLUNK_COVERAGE =
+#                          CSV of the Splunk "stats count by project, proxy, payload" table) -> domain/COVERAGE.md
 #                research  research pack per proxy -> <ws>/research/<project>/<proxy>/   (skips packs that PASS)
 #                task1     Splunk test cases for every researched proxy, split by the fields its branches use
 #                          (research scenario_dims) -> <ws>/task1/flows/<project>-<proxy>/   (needs EXPORT, MASK_KEY)
@@ -809,6 +839,10 @@ do_matrix() {   # mutation check on every green module (MUTATE=0 skips it), then
 
 case "$STAGE" in
   list) flows | awk '{print} END{print NR " proxies"}' ;;
+  coverage)
+    [ -n "${SPLUNK_COVERAGE:-}" ] && [ -f "$SPLUNK_COVERAGE" ] || { echo "coverage needs SPLUNK_COVERAGE=<csv of the Splunk payload table>"; exit 2; }
+    "$PY" "$KIT/skills/osb-to-camel/scripts/osb_inventory.py" "$APP" -o "$WS/domain/inventory" > /dev/null
+    "$PY" "$(dirname "$BATCH")/domain_coverage.py" "$WS/domain/inventory" "$SPLUNK_COVERAGE" -o "$WS/domain/COVERAGE.md" ;;
   research) do_research; status ;;
   task1) do_task1; status ;;
   scaffold) do_scaffold; status ;;
@@ -1327,4 +1361,4 @@ For each red gate, name the owner role per skill camel-migration-verification St
 KIT_EOF__PI_PROMPTS_OSB_VERIFY_MD
 chmod +x pi/*.sh 2>/dev/null || true
 echo "commands /osb-* installed in .pi/prompts: start pi in this folder and trust the project (or pi --approve)"
-echo "installed: 33 files (agent layer)"
+echo "installed: 34 files (agent layer)"

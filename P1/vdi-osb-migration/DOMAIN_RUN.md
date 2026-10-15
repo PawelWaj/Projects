@@ -34,6 +34,7 @@ unzip to `E:\Pawel\`). `~/.m2/settings.xml` = the team's file with the Nexus mir
 | Stage | Command | Who | Result |
 |---|---|---|---|
 | 0 list | `bash $KIT/pi/run_domain.sh $APP list` | script | every project/proxy found; check the count |
+| 0b coverage | `SPLUNK_COVERAGE=<payload table.csv> … coverage` | script | `domain/COVERAGE.md`: per proxy A = real Splunk messages, B = logged without payload, C = not in Splunk; by transport (jms / http / jca) |
 | 1 research | `… research` | pi (researcher) | `research/<project>/<proxy>/` per proxy, share check PASS; packs that passed are skipped on rerun |
 | 2 task1 | `EXPORT=<domain export.csv> MASK_KEY=… … task1` | script | Splunk test messages per proxy, split by the fields its branches use (`scenario_dims` from step 1) → `task1/flows/<project>-<proxy>/` + `task1/SUMMARY.md` |
 | 3 scaffold | `… scaffold` | script | `modules/<project>/<proxy>/`: route skeleton, generated tests, `FLOW_CARD.md` (draft), real masked messages copied in |
@@ -48,7 +49,13 @@ Domain export for step 2 (Splunk, CSV, Unlimited), all projects of the applicati
 index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d@d "oracle.osb.logging.pipeline" ("::{" OR "::<")
 | dedup _raw | rex "for PS (?<proxy>\S+)" | dedup 500 proxy | sort 0 _time | table _time _raw
 ```
-Flows that log no payload get no test messages: STATUS shows `-` under test cases; they need OSB message tracing.
+Flows that log no payload (groups B and C) get **synthetic** test messages: in `build`, before the route is written, the pi
+tester writes one fake-value message per scenario from the message schema; they are frozen like the generated tests
+(gate K5) and every scenario must have a case (gate K9). The matrix lists them as S rows, the real ones as P rows.
+Request-response proxies (HTTP) are tested on their reply to the caller as well as on the queues.
+
+Payload table for 0b (Splunk, export as CSV): `index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d "oracle.osb.logging.pipeline"
+| rex "Project (?<project>\S+) :: for PS (?<proxy>\S+)" | eval payload=case(match(_raw, "::\s*\{"), "json", match(_raw, "::\s*<"), "xml", true(), "none") | stats count by project, proxy, payload`
 What was tested and how: [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
 
 Options: `PROJECTS='beneficiary|cancel-'` limits the run to matching project names (start with 2–3 projects).

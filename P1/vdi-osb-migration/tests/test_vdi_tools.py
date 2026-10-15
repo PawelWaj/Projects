@@ -347,3 +347,51 @@ class TestMatrixTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SyntheticAndReplyTests(unittest.TestCase):
+    """Request/reply flows get a 'reply' output; synthetic cases close gate K9 and are frozen (K5); coverage groups."""
+    SK = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts"
+    PACK = {"proxy": "get-status", "entry": {"transport": "http", "payload_format": "json"}, "scenario_dims": ["data.kind"],
+            "branches": [], "scenario_mapping": [{"scenario": "kind=A", "outputs": ["reply"]}],
+            "outputs": [{"name": "err", "destination": "jndi.errQ", "on": "error handler"}],
+            "backends": [], "errors": [{"scope": "pipeline"}], "logs": [], "open_questions": []}
+
+    def test_reply_synthetic_freeze(self):
+        with tempfile.TemporaryDirectory() as d:
+            res, mod = Path(d, "res"), Path(d, "mod")
+            res.mkdir()
+            (res / "research.json").write_text(json.dumps(self.PACK))
+            run = lambda *a: subprocess.run([sys.executable, *map(str, a)], capture_output=True, text=True)  # noqa: E731
+            self.assertEqual(run(self.SK / "scaffold_camelk.py", res, "-o", mod, "--project", "s-prj").returncode, 0)
+            cfg = json.loads((mod / "src/test/resources/flow-test.json").read_text())
+            self.assertEqual(cfg["outputs"]["reply"], "reply")
+            self.assertNotIn("out.reply", (mod / "src/main/resources/application.properties").read_text())
+            run(self.SK / "check_camelk.py", mod, "--no-surefire")
+            self.assertFalse(json.loads((mod / "GATES.json").read_text())["gates"]["K9_scenarios_covered"]["ok"])
+            c = mod / "src/test/resources/parity/s-prj-get-status-synthetic/kind-a/c1"
+            c.mkdir(parents=True)
+            (c.parent / "SCENARIO.txt").write_text("s-prj/get-status|success|kind=A\n")
+            (c / "input.payload").write_text('{"data":{"kind":"A"}}')
+            self.assertIn('"frozen_synthetic_files": 2', run(self.SK / "scaffold_camelk.py", res, "-o", mod, "--project", "s-prj", "--freeze-synthetic").stdout)
+            run(self.SK / "scaffold_camelk.py", res, "-o", mod, "--project", "s-prj")          # a rerun keeps the frozen hashes
+            (c / "input.payload").write_text('{"data":{"kind":"A","x":1}}')
+            run(self.SK / "check_camelk.py", mod, "--no-surefire")
+            g = json.loads((mod / "GATES.json").read_text())["gates"]
+            self.assertTrue(g["K9_scenarios_covered"]["ok"])
+            self.assertFalse(g["K5_tests_untouched"]["ok"], "an edited synthetic case is caught")
+
+    def test_domain_coverage_groups(self):
+        with tempfile.TemporaryDirectory() as d:
+            inv = Path(d, "inv")
+            subprocess.run([sys.executable, str(ROOT / "skills/osb-camel-agent-kit/skills/osb-to-camel/scripts/osb_inventory.py"),
+                            str(ROOT / "skills/osb-camel-agent-kit/skills/osb-to-camel/evals/fixtures/osb-export-12c-topic"), "-o", str(inv)],
+                           capture_output=True)
+            Path(d, "s.csv").write_text("project,proxy,payload,count\norder-event-prj,order-event,json,5\n")
+            r = subprocess.run([sys.executable, str(ROOT / "vdi-osb-migration/bin/domain_coverage.py"), str(inv), str(Path(d, "s.csv")),
+                                "-o", str(Path(d, "COVERAGE.md"))], capture_output=True, text=True)
+            self.assertIn('"A real inputs": 1', r.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()
