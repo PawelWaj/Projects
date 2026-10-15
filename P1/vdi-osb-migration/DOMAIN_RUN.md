@@ -11,6 +11,26 @@ APP=/e/contributor-agreement-mb-app       # Git Bash path: /e/..., not E:\...
 cd /e/Pawel/work                          # workspace: research/, modules/, domain/ are created here
 ```
 
+## Before the first build: Java 21, Maven 3.6.3+, the GOSI Nexus (found on the pilot VDI, 2026-10-15)
+
+The VDI has no internet, a system Maven 3.5.3 and `JAVA_HOME` on JDK 1.7 (kept for OSB/JDeveloper). Per Git Bash window
+(or once in `~/.bashrc`):
+```
+export JAVA_HOME="/c/Program Files/Eclipse Adoptium/jdk-21.0.11.10-hotspot"     # JDK 21 is installed; Maven reads JAVA_HOME, not PATH
+export PATH="/e/Pawel/apache-maven-3.9.9/bin:$JAVA_HOME/bin:$PATH"; hash -r
+mvn -v                                                                            # Apache Maven 3.9.x, Java 21
+```
+Maven 3.9.9 comes from the GOSI Nexus (`<nexus>/repository/maven-public/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip`,
+unzip to `E:\Pawel\`). `~/.m2/settings.xml` = the team's file with the Nexus mirror (`mirrorOf *`); remove its
+`<localRepository>` line or point it at your own user. Never commit it. Run Maven with `-s ~/.m2/settings.xml`.
+
+| Message | Cause |
+|---|---|
+| `Connect to repo.maven.apache.org ... timed out` | no settings.xml with the Nexus mirror (or Maven reads another file: use `-s`, add `-U` once) |
+| `try-with-resources is not supported in -source 1.5` | old pom; update (compiler plugin pinned since c122237) |
+| `Unsupported major.minor version 52.0` | Maven runs on Java 7: set `JAVA_HOME` to JDK 21 |
+| `requires Maven version 3.6.3` / plugin API errors | Maven 3.5.3 on the PATH: put Maven 3.9.9 first, `hash -r` |
+
 | Stage | Command | Who | Result |
 |---|---|---|---|
 | 0 list | `bash $KIT/pi/run_domain.sh $APP list` | script | every project/proxy found; check the count |
@@ -47,7 +67,7 @@ $P1/vdi-osb-migration/bin/task1_log_only.sh events.csv task1      # same MASK_KE
 Route: request log → JSON check → two independent checks: `hasPPAEngagement='true'` → PPA queue,
 `hasGOSIEngagement='true'` → GOSI queue (retry 3 × 10 s); none → consumed, nothing sent; any fault → error queue with
 the original body and errorCode / errorMessage / debugInfo / traceId. Reference implementation:
-`P1/pilot/maintain-adjustment` (16 tests green on synthetic cases, 4 route mutations all caught).
+`P1/pilot/maintain-adjustment`: **2026-10-15 on the VDI with the real masked E2E cases: 254 tests, 0 failures** (124 skipped = no golden body for this flow); 4 route mutations all caught.
 
 Open points for the card (answer on the VDI, send back counts or yes/no only):
 1. **Both flags true: one queue or two?** If the two calls are `route` actions in a route node, OSB sends to the first
