@@ -1372,6 +1372,7 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 #                          (routes: approve the cards, then build and matrix)
 #                status    only rewrite <ws>/domain/STATUS.md + status.csv
 #   workspace    default: current folder
+# PROJECTS matches whole project names: 'a-prj|b-.*' (regex, anchored).
 # Env: PI_PAUSE (seconds between two flows in a pi stage, default 30: keeps under the model's rate limit),
 #      PI_RETRIES / PI_BACKOFF (retries after a 429, see pi_call.sh),
 #      PROJECTS (regex on project names, e.g. 'beneficiary|cancel-'), EXPORT (one Splunk CSV export with all flows of
@@ -1394,7 +1395,7 @@ t1dir() { local d="$WS/task1/flows/$(echo "$1-$2" | tr -cs 'A-Za-z0-9' '-' | sed
 flows() {   # "<project> <proxy>" for every proxy file (12c .proxy, sbconfig .ProxyService) in every project folder
   for prj in "$APP"/*/; do
     p=$(basename "$prj"); case "$p" in .*) continue;; esac
-    echo "$p" | grep -Eq "$FILTER" || continue
+    echo "$p" | grep -Eqx "($FILTER)" || continue
     find "$prj" -type f \( -name '*.proxy' -o -name '*.ProxyService' \) | sort | while read -r f; do
       n=$(basename "$f"); echo "$p ${n%.*}"
     done
