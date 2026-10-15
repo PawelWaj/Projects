@@ -998,7 +998,7 @@ cat > 'bin/task1_log_only.sh' <<'KIT_EOF_BIN_TASK1_LOG_ONLY_SH'
 #   5 --replay: Artemis + WireMock + stub flow in Docker Compose, replay every case -> <work>/report/report.json
 # Env: MASK_KEY (required), REPLAY (osb-log-replay root), EXAMPLE_LINE (which event is the example; default auto = one signature per kind of line),
 #      FLOW (<project>/<proxy> if the line does not name them), SUCCESS_QUEUE / ERROR_QUEUE (stand-in output names),
-#      EXTRA_MASK_ARGS (e.g. "--mask-json-key establishmentNameArb"),
+#      EXTRA_MASK_ARGS (e.g. "--mask-json-key organisationNameArb"),
 #      SCENARIO_DIMS (split scenarios by payload fields, e.g. hdr_resource,body:data.businessTransaction), PER_SCENARIO (default 3).
 set -euo pipefail
 EVENTS=${1:?usage: task1_log_only.sh <events.csv> [work-dir] [--replay]}
@@ -1408,7 +1408,7 @@ Two separate tracks: **A** migrates the OSB code to a Camel K route in YAML DSL 
 Work in a workspace folder, e.g. `~/work/osb-migration`. Tools: `~/Projects/P1` (`git clone git@github.com:PawelWaj/Projects.git ~/Projects`).
 Nothing unmasked leaves the VDI. Send only reports and file lists, never CSVs or payloads.
 
-**Step-by-step with the Splunk searches (index `ameen_e2e`): [LOGS_END_TO_END.md](LOGS_END_TO_END.md). All flows in one run: [ALL_FLOWS.md](ALL_FLOWS.md). Source cannot leave the VDI: [RESEARCH_PACK.md](RESEARCH_PACK.md). All proxies of an OSB application, research → Camel K route → green tests: [DOMAIN_RUN.md](DOMAIN_RUN.md). Code generation and comparing skills: [CODEGEN_RUNBOOK.md](CODEGEN_RUNBOOK.md).**
+**Step-by-step with the Splunk searches (index `<e2e_index>`): [LOGS_END_TO_END.md](LOGS_END_TO_END.md). All flows in one run: [ALL_FLOWS.md](ALL_FLOWS.md). Source cannot leave the VDI: [RESEARCH_PACK.md](RESEARCH_PACK.md). All proxies of an OSB application, research → Camel K route → green tests: [DOMAIN_RUN.md](DOMAIN_RUN.md). Code generation and comparing skills: [CODEGEN_RUNBOOK.md](CODEGEN_RUNBOOK.md).**
 
 ---
 
@@ -1513,16 +1513,16 @@ mkdir -p "$(dirname "LOGS_END_TO_END.md")"
 cat > 'LOGS_END_TO_END.md' <<'KIT_EOF_LOGS_END_TO_END_MD'
 # From Splunk logs to test cases — end to end, one flow
 
-Pilot: project `beneficiary-engagement-change-prj`, proxy `maintain-adjustment`, topic `contributorAgreementTopic`.
+Pilot: project `sample-change-prj`, proxy `sample-adjustment`, topic `sampleTopic`.
 Other flows: replace the three names. Everything below runs on the VDI. Never send CSVs, payloads or screenshots of them; only the files listed in step 6.
 
 | Where | What you need |
 |---|---|
-| Splunk | read access to `ameen_e2e` (E2E) — `ameen_ann_e2e` (Dev) runs other code, don't use it for test data |
+| Splunk | read access to `<e2e_index>` (E2E) — `<dev_index>` (Dev) runs other code, don't use it for test data |
 | VDI | Python 3, Git, this repo at `~/Projects` (`git clone git@github.com:PawelWaj/Projects.git ~/Projects`, later `git pull`) |
 | Optional | Docker or Podman for the replay (step 5) |
 
-Folders used below: `~/work/osb-migration/work/maintain-adjustment/`.
+Folders used below: `~/work/osb-migration/work/sample-adjustment/`.
 
 ---
 
@@ -1532,16 +1532,16 @@ Paste each block as ONE search. Time picker does not matter: `earliest=` inside 
 
 **1a. The flow logs payloads, and how many**
 ```
-index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d "beneficiary-engagement-change-prj"
+index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d "sample-change-prj"
 | rex "for PS (?<proxy>\S+)"
 | eval payload=case(match(_raw, "::\s*\{"), "json", match(_raw, "::\s*<"), "xml", true(), "none")
 | stats count by proxy, payload
 ```
-Expect `maintain-adjustment | json | ~800`. If `payload=none`: this flow logs no payload → stop, ask for OSB message tracing.
+Expect `sample-adjustment | json | ~800`. If `payload=none`: this flow logs no payload → stop, ask for OSB message tracing.
 
 **1b. Events are complete (not cut by Splunk)**
 ```
-index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d "beneficiary-engagement-change-prj" "::{"
+index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d "sample-change-prj" "::{"
 | eval size=len(_raw), complete=if(match(_raw, "\}\s*$"), "yes", "no")
 | stats count max(size) as max_bytes by complete
 ```
@@ -1549,7 +1549,7 @@ All `complete=yes` and `max_bytes` well below 10000. Otherwise ask the Splunk ad
 
 **1c. Scenarios (what the tests must cover)**
 ```
-index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d "beneficiary-engagement-change-prj" "::{"
+index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d "sample-change-prj" "::{"
 | dedup _raw
 | rex "::(?<payload>\{.*)$"
 | spath input=payload path=data.businessTransaction output=business_transaction
@@ -1561,7 +1561,7 @@ Keep this table: it is the scenario list; step 4 must show the same scenarios.
 
 **1d. Duplicate lines**
 ```
-index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-7d "for PS maintain-adjustment"
+index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-7d "for PS sample-adjustment"
 | rex "TraceID - (?<trace>[0-9a-fA-F-]{36})"
 | eval rawhash=md5(_raw)
 | stats count as lines dc(rawhash) as distinct_raw dc(source) as sources by trace
@@ -1575,17 +1575,17 @@ index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-7d "for PS maintain-ad
 ## Step 2 — export (contains personal data: VDI only)
 
 ```
-index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d@d "beneficiary-engagement-change-prj" ("::{" OR "::<")
+index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d@d "sample-change-prj" ("::{" OR "::<")
 | dedup _raw
 | sort 0 _time
 | table _time _raw
 ```
 1. Run it, then **Export** (arrow icon) → format **CSV** → number of results **Unlimited** → file name `events.csv`.
-2. Move it to `~/work/osb-migration/work/maintain-adjustment/events.csv`.
+2. Move it to `~/work/osb-migration/work/sample-adjustment/events.csv`.
 3. Check: the first line is `"_time","_raw"`, and the row count matches 1a (minus duplicates).
    ```
-   head -c 300 ~/work/osb-migration/work/maintain-adjustment/events.csv; echo
-   python3 -c "import csv,sys; csv.field_size_limit(2**31-1); print(sum(1 for _ in csv.DictReader(open(sys.argv[1], encoding='utf-8-sig'))), 'events')" ~/work/osb-migration/work/maintain-adjustment/events.csv
+   head -c 300 ~/work/osb-migration/work/sample-adjustment/events.csv; echo
+   python3 -c "import csv,sys; csv.field_size_limit(2**31-1); print(sum(1 for _ in csv.DictReader(open(sys.argv[1], encoding='utf-8-sig'))), 'events')" ~/work/osb-migration/work/sample-adjustment/events.csv
    ```
    If the CSV is too big for the export: run step 2 per week (`earliest=-28d@d latest=-21d@d`, …) and combine (`tail -n +2` for files 2–4).
 
@@ -1595,10 +1595,10 @@ index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d@d "beneficiary-eng
 
 ```
 cd ~/work/osb-migration
-export MASK_KEY='<key>'     # trial: any value; real runs: the key from the GOSI data owner, never in a file
+export MASK_KEY='<key>'     # trial: any value; real runs: the key from the client data owner, never in a file
 export SCENARIO_DIMS='hdr_resource,body:data.businessTransaction,body:data.approvedOrRejected'
 export PER_SCENARIO=5       # real inputs kept per scenario
-~/Projects/P1/vdi-osb-migration/bin/task1_log_only.sh work/maintain-adjustment/events.csv work/maintain-adjustment/task1
+~/Projects/P1/vdi-osb-migration/bin/task1_log_only.sh work/sample-adjustment/events.csv work/sample-adjustment/task1
 ```
 
 What it prints, in order:
@@ -1616,7 +1616,7 @@ What it prints, in order:
 ## Step 4 — check the result
 
 ```
-cd ~/work/osb-migration/work/maintain-adjustment/task1
+cd ~/work/osb-migration/work/sample-adjustment/task1
 python3 -c "import json; r=json.load(open('events.masked.csv.report.json')); print('residue', r['residue_check']['findings']); [print(k, v) for k, v in sorted(r['key_inventory'].items()) if not v.get('masked')]"
 ls fixtures/parity/*/
 ```
@@ -1636,9 +1636,9 @@ ls fixtures/parity/*/
 Task 1 already writes `task1/TEST_CATALOG.md` (+ `test-catalog.csv`). For the pilot, add the selector negatives and the fan-out seen in Splunk:
 ```
 python $P1/vdi-osb-migration/bin/test_catalog.py task1 \
-  --negative-resource "Transfer Value - PPA to GOSI" --negative-resource "Bulk Termination Request" \
-  --negative-resource "Cancel Rpa First Scheme" --negative-resource "Initiate Delay Transaction" \
-  --negative-resource "Modify coverage details" --fanout-peer record-contribution
+  --negative-resource "Other Resource A" --negative-resource "Other Resource B" \
+  --negative-resource "Other Resource C" --negative-resource "Other Resource D" \
+  --negative-resource "Other Resource E" --fanout-peer peer-flow
 ```
 | Group | Cases | Input from | Expected from |
 |---|---|---|---|
@@ -1655,7 +1655,7 @@ The command also checks every case folder (payload parses, `traceId` header, `ex
 ## Step 5 — replay through the mocks (optional, needs Docker/Podman)
 
 ```
-~/Projects/P1/vdi-osb-migration/bin/task1_log_only.sh work/maintain-adjustment/events.csv work/maintain-adjustment/task1 --replay
+~/Projects/P1/vdi-osb-migration/bin/task1_log_only.sh work/sample-adjustment/events.csv work/sample-adjustment/task1 --replay
 ```
 Starts Artemis + WireMock + a stand-in flow, sends every case, writes `task1/report/report.json` (PASS/FAIL per case). This proves the mock environment and the test cases, not the migration: the stand-in only forwards valid JSON.
 Stop afterwards: `cd ~/Projects/P1/osb-log-replay/mock && docker compose down -v`.
@@ -1677,15 +1677,15 @@ Stop afterwards: `cd ~/Projects/P1/osb-log-replay/mock && docker compose down -v
 ## Step 7 — with the OSB source (Task 2, next)
 
 Test inputs alone are not a test: the expected output and the mocks come from the OSB code.
-1. OSB project `beneficiary-engagement-change-prj` from the OSB repository, **the version deployed in E2E**, into `~/work/osb-migration/osb-src/beneficiary-engagement-change-prj/`.
+1. OSB project `sample-change-prj` from the OSB repository, **the version deployed in E2E**, into `~/work/osb-migration/osb-src/sample-change-prj/`.
 2. `bash ~/Projects/P1/vdi-osb-migration/bin/preflight_vdi.sh`
 3. Same `MASK_KEY` and `SCENARIO_DIMS` exported, then:
    ```
-   ~/Projects/P1/vdi-osb-migration/bin/start_flow.sh osb-src/beneficiary-engagement-change-prj maintain-adjustment modules/maintain-adjustment work/maintain-adjustment/task1/events.masked.csv
+   ~/Projects/P1/vdi-osb-migration/bin/start_flow.sh osb-src/sample-change-prj sample-adjustment modules/sample-adjustment work/sample-adjustment/task1/events.masked.csv
    ```
    Gives the flow card (selector, branches, backends, error handler), the real replay config, and the expected outputs from the original XQuery. Stops at "card not approved": don't approve yet (templates are being switched to Camel K YAML).
 
-What the logs cannot give (known for this flow): backend responses and error cases — only REQUEST lines are logged. Those come from the OSB source (WSDL/XSD, error handler) until GOSI enables message tracing in E2E.
+What the logs cannot give (known for this flow): backend responses and error cases — only REQUEST lines are logged. Those come from the OSB source (WSDL/XSD, error handler) until the client enables message tracing in E2E.
 
 ---
 
@@ -1698,7 +1698,7 @@ What the logs cannot give (known for this flow): backend responses and error cas
 | `matches_in_file` 1/N, no `body` in `groups` | payload not recognised: update the repo (fixed 2026-10-14); then send the `payloads` block of the report |
 | `lines_matched` below N/N | more than 5 kinds of line in the export; send the `== 2` output (no values in it) |
 | warning `payload is json-lenient` / `json-trailing` / `unparsed` | OSB logged JSON that is not strictly valid (raw tabs/newlines, text after `}`, or cut off). Tests still build; send the `payloads` block of the report: Camel's JSON parser must be configured to accept the same input |
-| `cannot derive the flow id` | `FLOW=beneficiary-engagement-change-prj/maintain-adjustment` before the command |
+| `cannot derive the flow id` | `FLOW=sample-change-prj/sample-adjustment` before the command |
 | 1 scenario only | `SCENARIO_DIMS` not exported in this shell |
 | `_csv.Error: field larger than field limit` | old repo version: `git pull`, or download the ZIP again (fixed 2026-10-14) |
 | Docker errors in step 5 | skip step 5; replay can run on a Jenkins agent with Docker |
@@ -1713,7 +1713,7 @@ VDI only; never send CSVs or payloads. Python 3.10+, works in Git Bash and Power
 
 ## 1 — which flows log payloads (Splunk, counts only)
 ```
-index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d "oracle.osb.logging.pipeline"
+index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d "oracle.osb.logging.pipeline"
 | rex "Project (?<project>\S+) :: for PS (?<proxy>\S+)"
 | eval payload=case(match(_raw, "::\s*\{"), "json", match(_raw, "::\s*<"), "xml", true(), "none")
 | fillnull value="(other log text)" project proxy
@@ -1727,14 +1727,14 @@ index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d "oracle.osb.loggin
 ## 2 — one export for all flows
 Splunk UI (CSV, Unlimited). This keeps at most 500 messages per proxy, so the file stays manageable:
 ```
-index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d@d "oracle.osb.logging.pipeline" ("::{" OR "::<")
+index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d@d "oracle.osb.logging.pipeline" ("::{" OR "::<")
 | dedup _raw
 | rex "for PS (?<proxy>\S+)"
 | dedup 500 proxy
 | sort 0 _time
 | table _time _raw
 ```
-`dedup 500 proxy` keeps the newest 500 per proxy, so rare scenarios older than those can be missed. For complete coverage drop that line and export per week. One domain only: add its project names, e.g. `("beneficiary-engagement-change-prj" OR "contributor-collection-prj")`.
+`dedup 500 proxy` keeps the newest 500 per proxy, so rare scenarios older than those can be missed. For complete coverage drop that line and export per week. One domain only: add its project names, e.g. `("sample-change-prj" OR "peer-prj")`.
 
 Or, with a Splunk REST token (no UI export, same search):
 ```
@@ -1785,12 +1785,12 @@ blocks the pack until it is clean. Only the pack is sent out; from it the Camel 
 - Kit: the repo (`~/Projects/P1/skills/osb-camel-agent-kit`) or bootstrap script `8_install_skill_osb_research.sh`.
 - Check: `bash $P1/skills/osb-camel-agent-kit/pi/preflight.sh` shows `skill osb-research discoverable`.
 
-## Per proxy (pilot: maintain-adjustment)
-1. OSB project on the VDI, the version deployed in E2E: `~/work/osb-migration/osb-src/beneficiary-engagement-change-prj/`
+## Per proxy (pilot: sample-adjustment)
+1. OSB project on the VDI, the version deployed in E2E: `~/work/osb-migration/osb-src/sample-change-prj/`
    (plus shared projects it references).
 2. Run, in `~/work/osb-migration`:
    ```
-   bash $P1/skills/osb-camel-agent-kit/pi/run_research.sh osb-src/beneficiary-engagement-change-prj maintain-adjustment /e/Pawel/maintain-adjustment/task1
+   bash $P1/skills/osb-camel-agent-kit/pi/run_research.sh osb-src/sample-change-prj sample-adjustment /e/Pawel/sample-adjustment/task1
    ```
    The third argument (task 1 output) lets the pack map the 15 Splunk scenarios to branches.
    - `== 1 facts`: script, sanitised inventory of the proxy (`facts.json`, `SOURCES.txt`).
@@ -1798,35 +1798,35 @@ blocks the pack until it is clean. Only the pack is sent out; from it the Camel 
      backends, errors, logging, dependencies, open questions) into `RESEARCH.md` + `research.json`.
    - `== 3 share check`: must end with `PASS`. On `FAIL` the flagged lines are listed (rule + 3-character preview):
      rerun step 2, or fix the lines by hand (describe instead of quoting, remove the value), then
-     `python $P1/skills/osb-camel-agent-kit/skills/osb-research/scripts/research_check.py research/maintain-adjustment`.
+     `python $P1/skills/osb-camel-agent-kit/skills/osb-research/scripts/research_check.py research/sample-adjustment`.
 3. Read `RESEARCH.md` yourself once: is anything in it that must not leave? The check is a safety net, not a licence.
-4. Send: `research/maintain-adjustment/RESEARCH.md`, `research.json`, `facts.json`, `SHARE_CHECK.json`.
+4. Send: `research/sample-adjustment/RESEARCH.md`, `research.json`, `facts.json`, `SHARE_CHECK.json`.
    Never send `SOURCES.txt`-listed files, `research/*.agent-logs` (they may quote source) or anything from `osb-src/`.
 
 ## What comes back
-From the pack: the flow card, the Camel K YAML route (replacing the stand-in block in `P1/pilot/maintain-adjustment`),
+From the pack: the flow card, the Camel K YAML route (replacing the stand-in block in `P1/pilot/sample-adjustment`),
 the selector/branch/error tests, and the WireMock/Artemis mocks. Expected output bodies are still computed ON the VDI
 by running the original XQuery on the masked inputs (task 2, `golden_runner.py`); they never leave the VDI either.
 
 ## Interactive alternative
-In pi: `/osb-research osb-src/beneficiary-engagement-change-prj maintain-adjustment /e/Pawel/maintain-adjustment/task1`
+In pi: `/osb-research osb-src/sample-change-prj sample-adjustment /e/Pawel/sample-adjustment/task1`
 KIT_EOF_RESEARCH_PACK_MD
 mkdir -p "$(dirname "DOMAIN_RUN.md")"
 cat > 'DOMAIN_RUN.md' <<'KIT_EOF_DOMAIN_RUN_MD'
 # One OSB application, all its flows: research → card → Camel K route → green tests
 
-An OSB application (e.g. `contributor-agreement-mb-app`) holds many projects (`*-prj`), each with one or more proxies.
+An OSB application (e.g. `osb-application`) holds many projects (`*-prj`), each with one or more proxies.
 `pi/run_domain.sh` runs the per-flow steps for every proxy, keeps going when one fails, and keeps a status table.
 Everything runs on the VDI. What may leave it: `research/<project>/<proxy>/{RESEARCH.md,research.json,facts.json,SHARE_CHECK.json}`
 and `domain/STATUS.md`. Never: the OSB source, `modules/` (it holds the original XQuery and the masked cases), agent logs.
 
 ```
 KIT=$P1/skills/osb-camel-agent-kit        # or the workspace where the bootstrap scripts were pasted
-APP=/e/contributor-agreement-mb-app       # Git Bash path: /e/..., not E:\...
+APP=/e/osb-application       # Git Bash path: /e/..., not E:\...
 cd /e/Pawel/work                          # workspace: research/, modules/, domain/ are created here
 ```
 
-## Before the first build: Java 21, Maven 3.6.3+, the GOSI Nexus (found on the pilot VDI, 2026-10-15)
+## Before the first build: Java 21, Maven 3.6.3+, the client Nexus (found on the pilot VDI, 2026-10-15)
 
 The VDI has no internet, a system Maven 3.5.3 and `JAVA_HOME` on JDK 1.7 (kept for OSB/JDeveloper). Per Git Bash window
 (or once in `~/.bashrc`):
@@ -1835,7 +1835,7 @@ export JAVA_HOME="/c/Program Files/Eclipse Adoptium/jdk-21.0.11.10-hotspot"     
 export PATH="/e/Pawel/apache-maven-3.9.9/bin:$JAVA_HOME/bin:$PATH"; hash -r
 mvn -v                                                                            # Apache Maven 3.9.x, Java 21
 ```
-Maven 3.9.9 comes from the GOSI Nexus (`<nexus>/repository/maven-public/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip`,
+Maven 3.9.9 comes from the client Nexus (`<nexus>/repository/maven-public/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip`,
 unzip to `E:\Pawel\`). `~/.m2/settings.xml` = the team's file with the Nexus mirror (`mirrorOf *`); remove its
 `<localRepository>` line or point it at your own user. Never commit it. Run Maven with `-s ~/.m2/settings.xml`.
 
@@ -1861,7 +1861,7 @@ unzip to `E:\Pawel\`). `~/.m2/settings.xml` = the team's file with the Nexus mir
 
 Domain export for step 2 (Splunk, CSV, Unlimited), all projects of the application:
 ```
-index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d@d "oracle.osb.logging.pipeline" ("::{" OR "::<")
+index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d@d "oracle.osb.logging.pipeline" ("::{" OR "::<")
 | dedup _raw | rex "for PS (?<proxy>\S+)" | dedup 500 proxy | sort 0 _time | table _time _raw
 ```
 Flows that log no payload (groups B and C) get **synthetic** test messages: in `build`, before the route is written, the pi
@@ -1869,7 +1869,7 @@ tester writes one fake-value message per scenario from the message schema; they 
 (gate K5) and every scenario must have a case (gate K9). The matrix lists them as S rows, the real ones as P rows.
 Request-response proxies (HTTP) are tested on their reply to the caller as well as on the queues.
 
-Payload table for 0b (Splunk, export as CSV): `index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d "oracle.osb.logging.pipeline"
+Payload table for 0b (Splunk, export as CSV): `index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d "oracle.osb.logging.pipeline"
 | rex "Project (?<project>\S+) :: for PS (?<proxy>\S+)" | eval payload=case(match(_raw, "::\s*\{"), "json", match(_raw, "::\s*<"), "xml", true(), "none") | stats count by project, proxy, payload`
 What was tested and how: [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
 
@@ -1879,7 +1879,7 @@ raise it, e.g. `PI_PAUSE=120`, if 429s keep coming). A pi stage with more than 1
 
 Options: `PROJECTS='beneficiary|cancel-'` limits the run to matching project names (start with 2–3 projects).
 `TASK1_ROOT=/e/Pawel` uses `/e/Pawel/<proxy>/task1` (the masked Splunk cases) for research and as test inputs.
-`MVN_ARGS='-s <GOSI settings.xml>'` for the Nexus mirror. One flow only: `pi/run_research.sh`, `pi/run_camelk.sh`.
+`MVN_ARGS='-s <client settings.xml>'` for the Nexus mirror. One flow only: `pi/run_research.sh`, `pi/run_camelk.sh`.
 
 ## What the gates mean (check_camelk.py)
 
@@ -1895,22 +1895,22 @@ The generated parity test reads each case's scenario (from task 1) and expects e
 dims, or no case can be mapped. `research.json` → `scenario_dims` names them. Pilot example:
 
 ```
-export SCENARIO_DIMS='hdr_resource,body:data.businessTransaction,body:data.hasPPAEngagement,body:data.hasGOSIEngagement'
+export SCENARIO_DIMS='hdr_resource,body:data.businessTransaction,body:data.hasPartnerEngagement,body:data.hasMainEngagement'
 $P1/vdi-osb-migration/bin/task1_log_only.sh events.csv task1      # same MASK_KEY as before
 ```
 
-## Pilot `maintain-adjustment`: what the research showed, what the card must settle
+## Pilot `sample-adjustment`: what the research showed, what the card must settle
 
-Route: request log → JSON check → two independent checks: `hasPPAEngagement='true'` → PPA queue,
-`hasGOSIEngagement='true'` → GOSI queue (retry 3 × 10 s); none → consumed, nothing sent; any fault → error queue with
+Route: request log → JSON check → two independent checks: `hasPartnerEngagement='true'` → partner queue,
+`hasMainEngagement='true'` → main queue (retry 3 × 10 s); none → consumed, nothing sent; any fault → error queue with
 the original body and errorCode / errorMessage / debugInfo / traceId. Reference implementation:
-`P1/pilot/maintain-adjustment`: **2026-10-15 on the VDI with the real masked E2E cases: 254 tests, 0 failures** (124 skipped = no golden body for this flow); 4 route mutations all caught.
+`P1/pilot/sample-adjustment`: **2026-10-15 on the VDI with the real masked E2E cases: 254 tests, 0 failures** (124 skipped = no golden body for this flow); 4 route mutations all caught.
 
 Open points for the card (answer on the VDI, send back counts or yes/no only):
 1. **Both flags true: one queue or two?** If the two calls are `route` actions in a route node, OSB sends to the first
    only; if they are `publish` actions (or routes in a stage), both fire. Run and send the output (element names only):
    ```
-   grep -o '<[A-Za-z0-9]*:\(route-node\|stage\|route\|publish\|ifThenElse\)\b' /e/contributor-agreement-mb-app/beneficiary-engagement-change-prj/Pipeline/maintain-adjustment.pipeline | sort | uniq -c
+   grep -o '<[A-Za-z0-9]*:\(route-node\|stage\|route\|publish\|ifThenElse\)\b' /e/osb-application/sample-change-prj/Pipeline/sample-adjustment.pipeline | sort | uniq -c
    ```
    And from task 1 rerun with the flag dims: how many messages have both flags true.
 2. **errorCode values.** OSB writes its fault code (e.g. a `BEA-...` / `OSB-...` code); Camel writes the exception
@@ -1924,8 +1924,8 @@ mkdir -p "$(dirname "HOW_IT_WORKS.md")"
 cat > 'HOW_IT_WORKS.md' <<'KIT_EOF_HOW_IT_WORKS_MD'
 # OSB → Camel K with pi: how it works, what the tests prove, what was tested
 
-Pilot: OSB application `contributor-agreement-mb-app`, project `beneficiary-engagement-change-prj`, proxy
-`maintain-adjustment`. Status 2026-10-15: **254 tests, 0 failures on the VDI with 751 real masked E2E messages.**
+Pilot: OSB application `osb-application`, project `sample-change-prj`, proxy
+`sample-adjustment`. Status 2026-10-15: **254 tests, 0 failures on the VDI with 751 real masked E2E messages.**
 
 ## 1 The chain, and who does what
 
@@ -1975,8 +1975,8 @@ consumers of the queues see it.
 ```mermaid
 flowchart LR
   C["case folder<br/>input.payload (real, masked)<br/>headers.json · SCENARIO.txt"] -->|direct:in| R["the Camel K YAML route<br/>(unchanged production file)"]
-  R --> P["mock:out-ppa-engagement"]
-  R --> G["mock:out-maintain-adjustment"]
+  R --> P["mock:out-partner-engagement"]
+  R --> G["mock:out-sample-adjustment"]
   R --> E["mock:out-…-error-queue"]
   M["flow-test.json<br/>scenario → expected queues<br/>(from research.json)"] --> A{"assert"}
   P --> A
@@ -1992,7 +1992,7 @@ flowchart LR
 | L3 replay | built integration, all 751 messages | volume, ordering, no message lost | after L2 |
 | UAT shadow | Camel next to OSB on the same traffic | outputs compared message by message | before cut-over |
 
-## 3 Test matrix: pilot `maintain-adjustment` (evidence)
+## 3 Test matrix: pilot `sample-adjustment` (evidence)
 
 ### 3.1 Data and research checks
 
@@ -2010,9 +2010,9 @@ flowchart LR
 
 | ID | Messages (flags) | In export | Expected (from OSB source) | Result |
 |---|---|---|---|---|
-| P-GOSI | `hasGOSIEngagement=true` only | 596 | GOSI queue only | ✅ all cases pass |
-| P-PPA | `hasPPAEngagement=true` only | 45 | PPA queue only | ✅ |
-| P-BOTH | both flags true | 86 | PPA **and** GOSI queue | ✅ (open point O1: confirm OSB sends to both) |
+| P-main | `hasMainEngagement=true` only | 596 | main queue only | ✅ all cases pass |
+| P-partner | `hasPartnerEngagement=true` only | 45 | partner queue only | ✅ |
+| P-BOTH | both flags true | 86 | partner **and** main queue | ✅ (open point O1: confirm OSB sends to both) |
 | P-NONE | both flags false | 21 | nothing sent (consumed) | ✅ |
 | P-BAD | unreadable `{[[` | 3 | error queue | ✅ (assumption O3) |
 | P-ALL | 29 scenarios: 124 cases (119 real + 5 synthetic) × 2 tests + 2 generic | 751 | — | **250 run, 0 failed, 124 skipped** (the skipped = body check: this flow forwards the input unchanged, no XQuery output) |
@@ -2022,8 +2022,8 @@ flowchart LR
 | ID | Test | Result |
 |---|---|---|
 | E1 | any fault → error queue with the original body + errorCode, errorMessage, debugInfo, traceId, resource, eventType | ✅ |
-| E2 | GOSI queue send retried 3× (business service retry-count 3), then error queue | ✅ |
-| E3 | PPA queue send not retried (retry-count 0) | ✅ |
+| E2 | main queue send retried 3× (business service retry-count 3), then error queue | ✅ |
+| E3 | partner queue send not retried (retry-count 0) | ✅ |
 | E4 | traceId generated when missing (like fn-bea:uuid), body forwarded byte for byte | ✅ |
 | E5 | unreadable payload → error queue with traceId | ✅ |
 
@@ -2043,12 +2043,12 @@ flowchart LR
 | O1 | both flags true: does OSB really send to both queues (publish) or only one (route)? 86 messages depend on it | `grep` of the pipeline element names |
 | O2 | errorCode values: OSB fault codes vs Camel exception names | who reads the error queue |
 | O3 | the 3 `{[[` messages: error queue in OSB too? | one run on the OSB test console |
-| L2 | selector `resource='Contributory Wage' AND eventType='update-approved'`, durable subscription, fan-out to `record-contribution` | next phase on the Dev environment |
+| L2 | selector `resource='Sample Resource' AND eventType='approved'`, durable subscription, fan-out to `peer-flow` | next phase on the Dev environment |
 | B | body equality vs original XQuery | not applicable here (identity); applies to flows with transforms |
 
 ## 4 The same for the whole domain
 
-`pi/run_domain.sh /e/contributor-agreement-mb-app matrix` writes `modules/<project>/<proxy>/TEST_MATRIX.md` per flow
+`pi/run_domain.sh /e/osb-application matrix` writes `modules/<project>/<proxy>/TEST_MATRIX.md` per flow
 (P/E/K/M rows as above, generated from the reports) and `domain/TEST_MATRIX.md`: one row per flow with scenarios
 covered, real messages run and failed, error tests, gates, mutations caught. `domain/STATUS.md` shows where each flow
 is: research, open questions, test cases, card, gates, tests.
@@ -2059,7 +2059,7 @@ cat > 'CODEGEN_RUNBOOK.md' <<'KIT_EOF_CODEGEN_RUNBOOK_MD'
 
 Skill: [`P1/skills/osb-camel-agent-kit/skills/osb-camelk-route`](../skills/osb-camel-agent-kit/skills/osb-camelk-route/SKILL.md)
 (scripts, templates, [YAML patterns](../skills/osb-camel-agent-kit/skills/osb-camelk-route/references/yaml-patterns.md)).
-Reference result: [`P1/pilot/maintain-adjustment`](../pilot/maintain-adjustment/README.md).
+Reference result: [`P1/pilot/sample-adjustment`](../pilot/sample-adjustment/README.md).
 Everything runs on the VDI (Git Bash). Scope here: **generating the route code**. How the tests are created:
 [HOW_IT_WORKS.md](HOW_IT_WORKS.md), [DOMAIN_RUN.md](DOMAIN_RUN.md).
 
@@ -2087,9 +2087,9 @@ export PATH="/e/Pawel/apache-maven-3.9.9/bin:$JAVA_HOME/bin:$PATH"; hash -r
 export PI_OFFLINE=1 PI_TELEMETRY=0 MVN_ARGS='-s ~/.m2/settings.xml'
 KIT=/e/Pawel/Projects-main/P1/skills/osb-camel-agent-kit
 cd /e/Pawel/work
-P=transfer-value-prj; X=transfer-value                       # project / proxy
+P=sample-transform-prj; X=sample-transform                       # project / proxy
 # card approved? then:
-OSB_SRC=/e/contributor-agreement-mb-app/$P bash $KIT/pi/run_camelk.sh research/$P/$X modules/$P/$X $P
+OSB_SRC=/e/osb-application/$P bash $KIT/pi/run_camelk.sh research/$P/$X modules/$P/$X $P
 ```
 What happens: (1) test pack refreshed, synthetic cases only where missing; (2) stops with exit 3 if the card is not
 approved; (3) **pi implementer** (role `agents/implementer-camelk.md`, skill `osb-camelk-route`) fills the route
@@ -2120,8 +2120,8 @@ K7 error test per error scope · K8 `mvn test` green · K9 every scenario has a 
 
 ### 3.1 Set-up (once per flow)
 
-1. Pick 3 flows of different kinds, e.g. `maintain-adjustment` (branches, retries, error queue),
-   `transfer-value` (XQuery transform; expected body = what OSB logged), one HTTP request/reply flow.
+1. Pick 3 flows of different kinds, e.g. `sample-adjustment` (branches, retries, error queue),
+   `sample-transform` (XQuery transform; expected body = what OSB logged), one HTTP request/reply flow.
 2. Build the test pack first: `run_domain.sh <app> auto` (or `run_tests.sh` per flow) and approve the cards.
 3. Give both skills the same inputs: the OSB source of the project and/or `RESEARCH.md` + `FLOW_CARD.md`. Record which
    inputs each skill used, the model, and the start/end time.
@@ -2136,8 +2136,8 @@ K7 error test per error scope · K8 `mvn test` green · K9 every scenario has a 
   `{{backend.<name>}}` (names in `src/test/resources/flow-test.json`). If the other skill uses its own URIs, write an
   endpoint map instead of changing its code, e.g. `compare-input/<x>/colleague.map`:
   ```
-  amqp:queue:jndi.InboundTransferValueQueue = {{out.transfer-value}}
-  amqp:topic:jndi.contributorAgreementTopic = {{flow.input}}
+  amqp:queue:jndi.outboundQueue = {{out.sample-transform}}
+  amqp:topic:jndi.sampleTopic = {{flow.input}}
   ```
 
 ### 3.3 Run the comparison

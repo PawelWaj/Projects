@@ -243,12 +243,12 @@ if __name__ == "__main__":
 
 
 class MaskingV2Tests(unittest.TestCase):
-    SRC = ('{"name":"update-approved","data":{"mhrsdLaborerRequest":{"name":{"firstName":"\u0633\u0627\u0645\u064a",'
-           '"surName":"\u0645\u062b\u0627\u0644","nameEnglish":"TEST PERSON"},"establishmentNameArb":"\u0645\u0624\u0633\u0633\u0629",'
+    SRC = ('{"name":"approved","data":{"mhrsdLaborerRequest":{"name":{"firstName":"\u0633\u0627\u0645\u064a",'
+           '"surName":"\u0645\u062b\u0627\u0644","nameEnglish":"TEST PERSON"},"organisationNameArb":"\u0645\u0624\u0633\u0633\u0629",'
            '"remarks":"free text about a person","iban":"SA0380000000608010167519","nin":1555555555,'
            '"birthDate":{"gregorian":"1995-03-15T00:00:00.000Z","hijiri":"1415-10-14","entryFormat":"GREGORIAN"},'
            '"joiningDate":{"gregorian":"2021-01-01T00:00:00.000Z"},"engagementId":1222222222,"wage":5000}},'
-           '"resource":"Contributory Wage","uuid":"00000000-1111-4222-8333-444444444444"}')
+           '"resource":"Sample Resource","uuid":"00000000-1111-4222-8333-444444444444"}')
 
     def masker(self, key=b"k1"):
         return trmod.Masker(trmod.DEFAULT_MASKS, trmod.DEFAULT_JSON_KEYS, key=key)
@@ -262,10 +262,10 @@ class MaskingV2Tests(unittest.TestCase):
         out = self.masker()(self.SRC)
         doc = json.loads(out)
         req = doc["data"]["mhrsdLaborerRequest"]
-        self.assertEqual(doc["name"], "update-approved")                    # event type is not a person name
-        self.assertEqual(doc["resource"], "Contributory Wage")
+        self.assertEqual(doc["name"], "approved")                    # event type is not a person name
+        self.assertEqual(doc["resource"], "Sample Resource")
         for v in (req["name"]["firstName"], req["name"]["surName"], req["name"]["nameEnglish"],
-                  req["establishmentNameArb"], req["remarks"], req["iban"]):
+                  req["organisationNameArb"], req["remarks"], req["iban"]):
             self.assertTrue(v.startswith("masked_"), v)
         self.assertNotRegex(out, r"[\u0600-\u06FF]")                    # no Arabic script left
         self.assertNotIn("SA0380000000608010167519", out)
@@ -344,7 +344,7 @@ class AnonymizeLogsTests(unittest.TestCase):
             lr = body["data"]["laborerRequest"]
             self.assertTrue(lr["name"]["firstName"].startswith("masked_"))
             self.assertTrue(lr["name"]["nameEnglish"].startswith("masked_"))
-            self.assertTrue(lr["establishmentNameArb"].startswith("masked_"))
+            self.assertTrue(lr["organisationNameArb"].startswith("masked_"))
             self.assertNotRegex(raw, r"[\u0600-\u06FF]")
             for original in ("1555555555", "777777777", "1222222222", "666666666", "SAMI ALI"):
                 self.assertNotIn(original, raw)
@@ -357,7 +357,7 @@ class AnonymizeLogsTests(unittest.TestCase):
             self.assertEqual(body["uuid"], "00000000-1111-4222-8333-444444444444")
             self.assertIn("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", raw)                  # ecid kept
             self.assertIn("99999999-8888-4777-8666-555555555555", raw)                  # TraceID kept
-            self.assertEqual(body["name"], "update-approved")
+            self.assertEqual(body["name"], "approved")
             self.assertEqual(lr["wage"], 5000)
             rep = json.loads((d / "m.csv.report.json").read_text())
             self.assertEqual(rep["residue_check"]["findings"], 0)
@@ -415,15 +415,15 @@ class ExampleSignatureTests(unittest.TestCase):
             tr = [json.loads(l) for l in (d / "t/traces.jsonl").read_text().splitlines()]
             self.assertEqual(len(tr), 1)
             self.assertTrue(tr[0]["has_payload"])
-            self.assertEqual(tr[0]["branch"], {"hdr_resource": "Contributory Wage"})
+            self.assertEqual(tr[0]["branch"], {"hdr_resource": "Sample Resource"})
             json.loads(tr[0]["events"][0]["fields"]["body"])        # payload still valid JSON after masking
 
 
 class ScenarioDimsTests(unittest.TestCase):
     def test_body_path_dimension(self):
-        f = {"hdr_resource": "R", "body": '{"data":{"businessTransaction":"MANAGE_WAGE","list":[1]}}'}
+        f = {"hdr_resource": "R", "body": '{"data":{"businessTransaction":"TYPE_A","list":[1]}}'}
         self.assertEqual(trmod.dim_value(f, "hdr_resource"), "R")
-        self.assertEqual(trmod.dim_value(f, "body:data.businessTransaction"), "MANAGE_WAGE")
+        self.assertEqual(trmod.dim_value(f, "body:data.businessTransaction"), "TYPE_A")
         self.assertEqual(trmod.dim_value(f, "body:data.missing"), "?")
         self.assertEqual(trmod.dim_value(f, "body:data.list"), "?")          # containers never split scenarios
         self.assertEqual(trmod.dim_value({"body": "<xml/>"}, "body:a"), "?")  # non-JSON payload

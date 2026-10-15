@@ -1,6 +1,6 @@
 # OSB pipeline → Camel K YAML DSL (Camel 4.18), patterns proven on the pilot
 
-All of these ran green in `pilot/maintain-adjustment` (Camel 4.18.4, `camel-test-main-junit5`). Anything else: check
+All of these ran green in `pilot/sample-adjustment` (Camel 4.18.4, `camel-test-main-junit5`). Anything else: check
 the Camel 4.18 documentation of the component or EIP before writing it.
 
 | OSB | Camel K YAML |

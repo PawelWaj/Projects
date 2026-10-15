@@ -1,0 +1,1 @@
+sample-change-prj/sample-adjustment|success|hdr_resource=Sample Resource|businessTransaction=TYPE_A|hasPartnerEngagement=true|hasMainEngagement=false

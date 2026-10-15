@@ -18,7 +18,7 @@ A check script blocks the pack if it still contains code, hosts, credentials or 
 2. **No infrastructure.** No host names, IP addresses, ports, credentials, service accounts or key material.
    Destinations by name only (queue/topic JNDI name, HTTP path, SOAP operation).
 3. **No data.** No values from payloads, logs or test files. Field names, codes and enum values defined in the code
-   (for example `businessTransaction = 'MANAGE_WAGE'`) are allowed; personal values never.
+   (for example `businessTransaction = 'TYPE_A'`) are allowed; personal values never.
 4. **Evidence for every answer.** Each answer names the file (path relative to the export) and the stage/action it
    comes from. If something cannot be determined from the source, write `UNKNOWN` and add it to open questions.
    Never guess.

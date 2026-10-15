@@ -7,7 +7,7 @@ description: "Turn one OSB proxy's research pack (research.json from osb-researc
 
 Input: `research/<project>/<proxy>/research.json` (the shareable pack, check PASS) and, on the client machine, the
 masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module around a `*.camel.yaml` route
-(Camel 4.18.4 = Camel Quarkus 3.33.3, the Camel K runtime pin). Pattern: `pilot/maintain-adjustment` in the repo.
+(Camel 4.18.4 = Camel Quarkus 3.33.3, the Camel K runtime pin). Pattern: `pilot/sample-adjustment` in the repo.
 
 ## Rules
 

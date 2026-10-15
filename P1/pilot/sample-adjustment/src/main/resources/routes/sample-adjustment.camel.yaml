@@ -1,0 +1,88 @@
+# Camel K route (YAML DSL) for OSB project sample-change-prj, proxy sample-adjustment.
+# Implemented from FLOW_CARD.md (research pack). ids branch-*, out-* are checked by check_camelk.py and the tests.
+# OSB behaviour kept:
+#   - traceId = inbound traceId header, else a new UUID (fn-bea:uuid)
+#   - same INFO log line as the OSB Log action (logName oracle.osb.logging.pipeline), so Splunk searches keep working
+#   - payload must be JSON (OSB: nXSD translation fails otherwise -> error handler); the body is forwarded UNCHANGED
+#   - two independent checks: hasPartnerEngagement='true' -> partner queue, hasMainEngagement='true' -> main queue;
+#     both, one or none (none = consumed, nothing sent)
+#   - main queue send retried 3x every 10 s (business service retry-count/interval), partner queue not retried
+#   - any failure -> error queue with the original body + errorCode, errorMessage, debugInfo, traceId
+#     (resource and eventType are inbound headers and travel with the message)
+- route:
+    id: sample-adjustment
+    from:
+      uri: "{{flow.input}}"
+      steps:
+        - setHeader:
+            name: traceId
+            simple: "${header.traceId} ?: ${uuid(random)}"
+        - doTry:
+            steps:
+              - log:
+                  loggingLevel: INFO
+                  logName: oracle.osb.logging.pipeline
+                  message: "Request Received to Project sample-change-prj :: for PS sample-adjustment from JMS sampleTopic for Resource Name: ${header.resource} event with TraceID - ${header.traceId} ::${body}"
+              - bean:
+                  beanType: osb.samplechangeprj.sampleadjustment.OsbJson
+                  method: annotate
+              # --- BEGIN flow logic (from the approved FLOW_CARD.md) ---
+              - choice:
+                  id: branch-haspartnerengagement-check
+                  when:
+                    - id: branch-haspartnerengagement-check-partner-path
+                      simple: "${header.hasPartnerEngagement} == 'true'"
+                      steps:
+                        - to:
+                            id: out-partner-engagement
+                            uri: "{{out.partner-engagement}}"
+              - choice:
+                  id: branch-hasmainengagement-check
+                  when:
+                    - id: branch-hasmainengagement-check-main-path
+                      simple: "${header.hasMainEngagement} == 'true'"
+                      steps:
+                        - to:
+                            uri: "direct:send-sample-adjustment"
+              # --- END flow logic ---
+            doCatch:
+              - exception:
+                  - java.lang.Exception
+                steps:
+                  - log:
+                      loggingLevel: INFO
+                      logName: oracle.osb.logging.pipeline
+                      message: "Error captured for Project sample-change-prj :: for PS sample-adjustment with TraceID: ${header.traceId} :: fault - ${exception.class.simpleName}: ${exception.message}"
+                  - setHeader:
+                      name: errorCode
+                      simple: "${exception.class.simpleName}"
+                  - setHeader:
+                      name: errorMessage
+                      simple: "${exception.message}"
+                  - setHeader:
+                      name: debugInfo
+                      constant: "target-calling-Stage"
+                  - removeHeaders:
+                      pattern: "hasPartnerEngagement|hasMainEngagement"
+                  - to:
+                      id: out-sample-adjustment-error-queue
+                      uri: "{{out.sample-adjustment-error-queue}}"
+
+# main queue send with the business service retry (retry-count=3, retry-interval=10s); after the last retry the
+# exception goes back to the doCatch above.
+- routeConfiguration:
+    id: retry-sample-adjustment
+    errorHandler:
+      defaultErrorHandler:
+        redeliveryPolicy:
+          maximumRedeliveries: "{{retry.sample-adjustment.count:3}}"
+          redeliveryDelay: "{{retry.sample-adjustment.delay:10000}}"
+- route:
+    id: send-sample-adjustment
+    routeConfigurationId: retry-sample-adjustment
+    from:
+      uri: "direct:send-sample-adjustment"
+      steps:
+        - to:
+            id: out-sample-adjustment
+            uri: "{{out.sample-adjustment}}"

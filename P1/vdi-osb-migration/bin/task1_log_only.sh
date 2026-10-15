@@ -11,7 +11,7 @@
 #   5 --replay: Artemis + WireMock + stub flow in Docker Compose, replay every case -> <work>/report/report.json
 # Env: MASK_KEY (required), REPLAY (osb-log-replay root), EXAMPLE_LINE (which event is the example; default auto = one signature per kind of line),
 #      FLOW (<project>/<proxy> if the line does not name them), SUCCESS_QUEUE / ERROR_QUEUE (stand-in output names),
-#      EXTRA_MASK_ARGS (e.g. "--mask-json-key establishmentNameArb"),
+#      EXTRA_MASK_ARGS (e.g. "--mask-json-key organisationNameArb"),
 #      SCENARIO_DIMS (split scenarios by payload fields, e.g. hdr_resource,body:data.businessTransaction), PER_SCENARIO (default 3).
 set -euo pipefail
 EVENTS=${1:?usage: task1_log_only.sh <events.csv> [work-dir] [--replay]}

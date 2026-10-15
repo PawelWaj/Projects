@@ -63,7 +63,7 @@ text(1290, 270, 560, 60, "Implementer rule: may not touch src/test or the card. 
 
 # Track B
 b1 = box(50, 490, 220, 90, "Splunk logs of the flow\n(real messages, 2–4 weeks\nincl. a month-end)", TGREY, GREY)
-b2 = box(320, 490, 230, 90, "3 Anonymise (inside GOSI)\nanonymize_logs.py · MASK_KEY\nresidue check = 0 findings", TMINT, MINT)
+b2 = box(320, 490, 230, 90, "3 Anonymise (inside the client network)\nanonymize_logs.py · MASK_KEY\nresidue check = 0 findings", TMINT, MINT)
 b3 = box(600, 490, 200, 90, "4 Test cases\none per real transaction\ninput · headers · expected", TMINT, MINT)
 b4 = box(850, 490, 210, 90, "5 Expected results\nORIGINAL OSB XQuery on the\nsame inputs (golden runner,\nORACLE.lock)", TMINT, MINT)
 b5 = box(1110, 490, 220, 90, "6 pi TESTER\nwrites tests + mocks FIRST\n(fresh context, no route yet)", TMINT, MINT, bold=True)

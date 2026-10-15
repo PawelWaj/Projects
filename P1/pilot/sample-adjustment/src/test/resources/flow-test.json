@@ -1,0 +1,42 @@
+{
+  "outputs": {
+    "sample-adjustment": "mock:out-sample-adjustment",
+    "partner-engagement": "mock:out-partner-engagement",
+    "sample-adjustment-error-queue": "mock:out-sample-adjustment-error-queue"
+  },
+  "error_output": "sample-adjustment-error-queue",
+  "backends": {},
+  "scenario_mapping": [
+    {
+      "scenario": "businessTransaction=?|hasPartnerEngagement=?|hasMainEngagement=?",
+      "outputs": [
+        "sample-adjustment-error-queue"
+      ]
+    },
+    {
+      "scenario": "hasPartnerEngagement=true|hasMainEngagement=true",
+      "outputs": [
+        "partner-engagement",
+        "sample-adjustment"
+      ]
+    },
+    {
+      "scenario": "hasPartnerEngagement=true|hasMainEngagement!=true",
+      "outputs": [
+        "partner-engagement"
+      ]
+    },
+    {
+      "scenario": "hasPartnerEngagement!=true|hasMainEngagement=true",
+      "outputs": [
+        "sample-adjustment"
+      ]
+    },
+    {
+      "scenario": "hasPartnerEngagement!=true|hasMainEngagement!=true",
+      "outputs": []
+    }
+  ],
+  "correlation_header": "traceId",
+  "payload_format": "json"
+}

@@ -1,7 +1,7 @@
 # OSB → Camel K with pi: how it works, what the tests prove, what was tested
 
-Pilot: OSB application `contributor-agreement-mb-app`, project `beneficiary-engagement-change-prj`, proxy
-`maintain-adjustment`. Status 2026-10-15: **254 tests, 0 failures on the VDI with 751 real masked E2E messages.**
+Pilot: OSB application `osb-application`, project `sample-change-prj`, proxy
+`sample-adjustment`. Status 2026-10-15: **254 tests, 0 failures on the VDI with 751 real masked E2E messages.**
 
 ## 1 The chain, and who does what
 
@@ -51,8 +51,8 @@ consumers of the queues see it.
 ```mermaid
 flowchart LR
   C["case folder<br/>input.payload (real, masked)<br/>headers.json · SCENARIO.txt"] -->|direct:in| R["the Camel K YAML route<br/>(unchanged production file)"]
-  R --> P["mock:out-ppa-engagement"]
-  R --> G["mock:out-maintain-adjustment"]
+  R --> P["mock:out-partner-engagement"]
+  R --> G["mock:out-sample-adjustment"]
   R --> E["mock:out-…-error-queue"]
   M["flow-test.json<br/>scenario → expected queues<br/>(from research.json)"] --> A{"assert"}
   P --> A
@@ -68,7 +68,7 @@ flowchart LR
 | L3 replay | built integration, all 751 messages | volume, ordering, no message lost | after L2 |
 | UAT shadow | Camel next to OSB on the same traffic | outputs compared message by message | before cut-over |
 
-## 3 Test matrix: pilot `maintain-adjustment` (evidence)
+## 3 Test matrix: pilot `sample-adjustment` (evidence)
 
 ### 3.1 Data and research checks
 
@@ -86,9 +86,9 @@ flowchart LR
 
 | ID | Messages (flags) | In export | Expected (from OSB source) | Result |
 |---|---|---|---|---|
-| P-GOSI | `hasGOSIEngagement=true` only | 596 | GOSI queue only | ✅ all cases pass |
-| P-PPA | `hasPPAEngagement=true` only | 45 | PPA queue only | ✅ |
-| P-BOTH | both flags true | 86 | PPA **and** GOSI queue | ✅ (open point O1: confirm OSB sends to both) |
+| P-main | `hasMainEngagement=true` only | 596 | main queue only | ✅ all cases pass |
+| P-partner | `hasPartnerEngagement=true` only | 45 | partner queue only | ✅ |
+| P-BOTH | both flags true | 86 | partner **and** main queue | ✅ (open point O1: confirm OSB sends to both) |
 | P-NONE | both flags false | 21 | nothing sent (consumed) | ✅ |
 | P-BAD | unreadable `{[[` | 3 | error queue | ✅ (assumption O3) |
 | P-ALL | 29 scenarios: 124 cases (119 real + 5 synthetic) × 2 tests + 2 generic | 751 | — | **250 run, 0 failed, 124 skipped** (the skipped = body check: this flow forwards the input unchanged, no XQuery output) |
@@ -98,8 +98,8 @@ flowchart LR
 | ID | Test | Result |
 |---|---|---|
 | E1 | any fault → error queue with the original body + errorCode, errorMessage, debugInfo, traceId, resource, eventType | ✅ |
-| E2 | GOSI queue send retried 3× (business service retry-count 3), then error queue | ✅ |
-| E3 | PPA queue send not retried (retry-count 0) | ✅ |
+| E2 | main queue send retried 3× (business service retry-count 3), then error queue | ✅ |
+| E3 | partner queue send not retried (retry-count 0) | ✅ |
 | E4 | traceId generated when missing (like fn-bea:uuid), body forwarded byte for byte | ✅ |
 | E5 | unreadable payload → error queue with traceId | ✅ |
 
@@ -119,12 +119,12 @@ flowchart LR
 | O1 | both flags true: does OSB really send to both queues (publish) or only one (route)? 86 messages depend on it | `grep` of the pipeline element names |
 | O2 | errorCode values: OSB fault codes vs Camel exception names | who reads the error queue |
 | O3 | the 3 `{[[` messages: error queue in OSB too? | one run on the OSB test console |
-| L2 | selector `resource='Contributory Wage' AND eventType='update-approved'`, durable subscription, fan-out to `record-contribution` | next phase on the Dev environment |
+| L2 | selector `resource='Sample Resource' AND eventType='approved'`, durable subscription, fan-out to `peer-flow` | next phase on the Dev environment |
 | B | body equality vs original XQuery | not applicable here (identity); applies to flows with transforms |
 
 ## 4 The same for the whole domain
 
-`pi/run_domain.sh /e/contributor-agreement-mb-app matrix` writes `modules/<project>/<proxy>/TEST_MATRIX.md` per flow
+`pi/run_domain.sh /e/osb-application matrix` writes `modules/<project>/<proxy>/TEST_MATRIX.md` per flow
 (P/E/K/M rows as above, generated from the reports) and `domain/TEST_MATRIX.md`: one row per flow with scenarios
 covered, real messages run and failed, error tests, gates, mutations caught. `domain/STATUS.md` shows where each flow
 is: research, open questions, test cases, card, gates, tests.

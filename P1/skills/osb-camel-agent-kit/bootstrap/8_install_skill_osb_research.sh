@@ -24,7 +24,7 @@ A check script blocks the pack if it still contains code, hosts, credentials or 
 2. **No infrastructure.** No host names, IP addresses, ports, credentials, service accounts or key material.
    Destinations by name only (queue/topic JNDI name, HTTP path, SOAP operation).
 3. **No data.** No values from payloads, logs or test files. Field names, codes and enum values defined in the code
-   (for example `businessTransaction = 'MANAGE_WAGE'`) are allowed; personal values never.
+   (for example `businessTransaction = 'TYPE_A'`) are allowed; personal values never.
 4. **Evidence for every answer.** Each answer names the file (path relative to the export) and the stage/action it
    comes from. If something cannot be determined from the source, write `UNKNOWN` and add it to open questions.
    Never guess.
@@ -240,7 +240,7 @@ def transform_files(project: Path, transforms: list[dict]) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("project", type=Path, help="OSB export directory (unzipped sbconfig.jar or JDeveloper project)")
-    ap.add_argument("proxy", help="proxy service name, e.g. maintain-adjustment")
+    ap.add_argument("proxy", help="proxy service name, e.g. sample-adjustment")
     ap.add_argument("-o", "--out", type=Path, required=True)
     ap.add_argument("--scenarios", type=Path, help="task1/traces/scenarios.json: scenario values to map to branches")
     a = ap.parse_args()
@@ -298,7 +298,7 @@ source does not say. No code, no hosts, no data (see SKILL.md rules).
 | Q2 | **Message format.** What arrives (JSON or XML; root element or top-level keys), is there an nXSD/JSON-to-XML translation (which one, is the file in the export), what `$body` contains after it | short text + field list |
 | Q3 | **Flow overview.** The pipeline in order: stage → action type → what it does in one sentence. Include route nodes, branches, publish, service callouts, Java callouts, reply/resume | numbered list |
 | Q4 | **Branches.** For each branch/if-then: condition in plain words, the condition expression (one line), which values lead to which path, what happens on each path, default path | table per branch |
-| Q5 | **Scenario mapping.** Branches decide on payload fields: list those fields in `scenario_dims` (JSON path such as `data.hasPPAEngagement`, or the element name). Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). A flow without branches has one row with scenario `*` (every message). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
+| Q5 | **Scenario mapping.** Branches decide on payload fields: list those fields in `scenario_dims` (JSON path such as `data.hasPartnerEngagement`, or the element name). Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). A flow without branches has one row with scenario `*` (every message). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
 | Q6 | **Outputs.** Request-response proxies (HTTP, local, SOAP): the answer to the caller is an output named `reply` (use it in branches and scenario_mapping). Name each other output after the business service that writes it (the same name in branches, scenario_mapping and backends). Every destination the flow writes to (business service → queue/topic/HTTP path/operation): on which path, which body (built by which transform), which JMS properties / transport headers / HTTP headers are set and from where | table |
 | Q7 | **Transforms.** For each XQuery/XSLT/assign/replace that builds a message: purpose, inputs (external params), output root, field mapping `source path → target path → rule` (copy, constant, format, lookup, condition), fn-bea functions used, constants | table per transform |
 | Q8 | **Backends.** Each business service / service callout: type, operation, when it is called, request built from, how the response is used, retry count/interval, timeout, load balancing, result caching, what happens on fault | table |
@@ -730,7 +730,7 @@ PROJECT=${1:?usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]}
 PROXY=${2:?proxy name}
 TASK1=${3:-}
 case "$PROJECT" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && PROJECT=$(cygpath -u "$PROJECT");; esac   # Windows path (quoted) -> /e/...
-case "$PROXY" in */*|*\\*) echo "2nd argument must be the proxy name (e.g. maintain-adjustment), not a path. usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]"; exit 2;; esac
+case "$PROXY" in */*|*\\*) echo "2nd argument must be the proxy name (e.g. sample-adjustment), not a path. usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]"; exit 2;; esac
 [ -e "$PROJECT" ] || { echo "OSB project not found: $PROJECT  (Git Bash: write /e/folder/project, not E:\\folder\\project)"; exit 2; }
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
 . "$KIT/pi/pi_call.sh"

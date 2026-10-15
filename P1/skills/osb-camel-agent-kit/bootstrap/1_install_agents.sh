@@ -30,7 +30,7 @@ Camel K integrations (YAML DSL) that replace Oracle Service Bus flows: one modul
 - Inputs are files from `osb-src/`. Never build code from screenshots, chat text or memory of "how OSB usually works".
 - Runtime (decision 2026-10-14): **Camel K, routes in YAML DSL** (`*.camel.yaml`), Camel 4.18.4 = Camel Quarkus 3.33.3
   (`camel.runtime-version=3.33.3`), small Java helper beans next to the YAML, tests with `camel-test-main-junit5` +
-  mock endpoints. Pattern: `pilot/maintain-adjustment`, skill `osb-camelk-route`. Older Spring Boot templates in
+  mock endpoints. Pattern: `pilot/sample-adjustment`, skill `osb-camelk-route`. Older Spring Boot templates in
   `osb-to-camel/assets` are reference only.
 - Messaging: Red Hat AMQ Broker, AMQP 1.0 on port 5672, `camel-amqp` (Qpid JMS) with a failover URI. Destinations
   exist only through the Git register; never rely on auto-create. A WebLogic durable topic subscription becomes a
@@ -531,8 +531,8 @@ You write test INPUTS for ONE flow, before any route exists, so the implementer 
 For every scenario_mapping row in `src/test/resources/flow-test.json` that has no case yet, write one case folder under
 `src/test/resources/parity/<project>-<proxy>-synthetic/<row-slug>/<case-id>/`, i.e. THREE folder levels below parity:
 ```
-parity/transfer-value-prj-transfer-value-synthetic/all/SCENARIO.txt
-parity/transfer-value-prj-transfer-value-synthetic/all/case1/input.payload   (+ headers.json, expected.json)
+parity/sample-transform-prj-sample-transform-synthetic/all/SCENARIO.txt
+parity/sample-transform-prj-sample-transform-synthetic/all/case1/input.payload   (+ headers.json, expected.json)
 ```
 (scenario `*` = every message: SCENARIO.txt is then `<project>/<proxy>|success` with no keys)
 - `input.payload`: a message the OSB proxy accepts, built from the message schema in the OSB source (XSD, nXSD, WSDL,
@@ -693,7 +693,7 @@ cat > 'pi/run_camelk.sh' <<'KIT_EOF_PI_RUN_CAMELK_SH'
 #   module-dir     modules/<project>/<proxy> (created on the first run)
 #   task1-dir      its fixtures/parity/* are copied into the module as test inputs (masked; .gitignore keeps them out of Git)
 # Env: OSB_SRC (OSB project folder: the implementer may copy original XQuery/XSLT/XSD into the module), MVN_ARGS
-#      (e.g. "-s ~/.m2/gosi-settings.xml"), OSB_PI_MODEL, PI_THINKING (default high), KIT, PYTHON
+#      (e.g. "-s ~/.m2/client-settings.xml"), OSB_PI_MODEL, PI_THINKING (default high), KIT, PYTHON
 # Exit: 0 gates PASS, 3 card not approved yet (expected after the first run), 1 anything else.
 set -euo pipefail
 RES=${1:?usage: run_camelk.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]}
@@ -736,7 +736,7 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 # one flow fails, and keep a status table. Safe to rerun: finished steps are skipped.
 #
 # Usage: pi/run_domain.sh <osb-app-dir> <stage> [workspace]
-#   osb-app-dir  e.g. /e/contributor-agreement-mb-app (the folder holding the *-prj projects)
+#   osb-app-dir  e.g. /e/osb-application (the folder holding the *-prj projects)
 #   stage        list      projects and proxies found (no agent)
 #                coverage  which proxies get real Splunk test messages and which synthetic ones (needs SPLUNK_COVERAGE =
 #                          CSV of the Splunk "stats count by project, proxy, payload" table) -> domain/COVERAGE.md
@@ -1033,7 +1033,7 @@ PROJECT=${1:?usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]}
 PROXY=${2:?proxy name}
 TASK1=${3:-}
 case "$PROJECT" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && PROJECT=$(cygpath -u "$PROJECT");; esac   # Windows path (quoted) -> /e/...
-case "$PROXY" in */*|*\\*) echo "2nd argument must be the proxy name (e.g. maintain-adjustment), not a path. usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]"; exit 2;; esac
+case "$PROXY" in */*|*\\*) echo "2nd argument must be the proxy name (e.g. sample-adjustment), not a path. usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]"; exit 2;; esac
 [ -e "$PROJECT" ] || { echo "OSB project not found: $PROJECT  (Git Bash: write /e/folder/project, not E:\\folder\\project)"; exit 2; }
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
 . "$KIT/pi/pi_call.sh"

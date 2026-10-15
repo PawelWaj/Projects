@@ -13,7 +13,7 @@ description: "Turn one OSB proxy's research pack (research.json from osb-researc
 
 Input: `research/<project>/<proxy>/research.json` (the shareable pack, check PASS) and, on the client machine, the
 masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module around a `*.camel.yaml` route
-(Camel 4.18.4 = Camel Quarkus 3.33.3, the Camel K runtime pin). Pattern: `pilot/maintain-adjustment` in the repo.
+(Camel 4.18.4 = Camel Quarkus 3.33.3, the Camel K runtime pin). Pattern: `pilot/sample-adjustment` in the repo.
 
 ## Rules
 
@@ -848,7 +848,7 @@ mkdir -p "$(dirname ".pi/skills/osb-camelk-route/references/yaml-patterns.md")"
 cat > '.pi/skills/osb-camelk-route/references/yaml-patterns.md' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_REFERENCES_YAML_PATTERNS_MD'
 # OSB pipeline → Camel K YAML DSL (Camel 4.18), patterns proven on the pilot
 
-All of these ran green in `pilot/maintain-adjustment` (Camel 4.18.4, `camel-test-main-junit5`). Anything else: check
+All of these ran green in `pilot/sample-adjustment` (Camel 4.18.4, `camel-test-main-junit5`). Anything else: check
 the Camel 4.18 documentation of the component or EIP before writing it.
 
 | OSB | Camel K YAML |
@@ -1351,8 +1351,8 @@ You write test INPUTS for ONE flow, before any route exists, so the implementer 
 For every scenario_mapping row in `src/test/resources/flow-test.json` that has no case yet, write one case folder under
 `src/test/resources/parity/<project>-<proxy>-synthetic/<row-slug>/<case-id>/`, i.e. THREE folder levels below parity:
 ```
-parity/transfer-value-prj-transfer-value-synthetic/all/SCENARIO.txt
-parity/transfer-value-prj-transfer-value-synthetic/all/case1/input.payload   (+ headers.json, expected.json)
+parity/sample-transform-prj-sample-transform-synthetic/all/SCENARIO.txt
+parity/sample-transform-prj-sample-transform-synthetic/all/case1/input.payload   (+ headers.json, expected.json)
 ```
 (scenario `*` = every message: SCENARIO.txt is then `<project>/<proxy>|success` with no keys)
 - `input.payload`: a message the OSB proxy accepts, built from the message schema in the OSB source (XSD, nXSD, WSDL,
@@ -1375,7 +1375,7 @@ cat > 'pi/run_camelk.sh' <<'KIT_EOF_PI_RUN_CAMELK_SH'
 #   module-dir     modules/<project>/<proxy> (created on the first run)
 #   task1-dir      its fixtures/parity/* are copied into the module as test inputs (masked; .gitignore keeps them out of Git)
 # Env: OSB_SRC (OSB project folder: the implementer may copy original XQuery/XSLT/XSD into the module), MVN_ARGS
-#      (e.g. "-s ~/.m2/gosi-settings.xml"), OSB_PI_MODEL, PI_THINKING (default high), KIT, PYTHON
+#      (e.g. "-s ~/.m2/client-settings.xml"), OSB_PI_MODEL, PI_THINKING (default high), KIT, PYTHON
 # Exit: 0 gates PASS, 3 card not approved yet (expected after the first run), 1 anything else.
 set -euo pipefail
 RES=${1:?usage: run_camelk.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]}
@@ -1418,7 +1418,7 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 # one flow fails, and keep a status table. Safe to rerun: finished steps are skipped.
 #
 # Usage: pi/run_domain.sh <osb-app-dir> <stage> [workspace]
-#   osb-app-dir  e.g. /e/contributor-agreement-mb-app (the folder holding the *-prj projects)
+#   osb-app-dir  e.g. /e/osb-application (the folder holding the *-prj projects)
 #   stage        list      projects and proxies found (no agent)
 #                coverage  which proxies get real Splunk test messages and which synthetic ones (needs SPLUNK_COVERAGE =
 #                          CSV of the Splunk "stats count by project, proxy, payload" table) -> domain/COVERAGE.md
@@ -1680,7 +1680,7 @@ PROJECT=${1:?usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]}
 PROXY=${2:?proxy name}
 TASK1=${3:-}
 case "$PROJECT" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && PROJECT=$(cygpath -u "$PROJECT");; esac   # Windows path (quoted) -> /e/...
-case "$PROXY" in */*|*\\*) echo "2nd argument must be the proxy name (e.g. maintain-adjustment), not a path. usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]"; exit 2;; esac
+case "$PROXY" in */*|*\\*) echo "2nd argument must be the proxy name (e.g. sample-adjustment), not a path. usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]"; exit 2;; esac
 [ -e "$PROJECT" ] || { echo "OSB project not found: $PROJECT  (Git Bash: write /e/folder/project, not E:\\folder\\project)"; exit 2; }
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
 . "$KIT/pi/pi_call.sh"
@@ -1835,7 +1835,7 @@ Camel K integrations (YAML DSL) that replace Oracle Service Bus flows: one modul
 - Inputs are files from `osb-src/`. Never build code from screenshots, chat text or memory of "how OSB usually works".
 - Runtime (decision 2026-10-14): **Camel K, routes in YAML DSL** (`*.camel.yaml`), Camel 4.18.4 = Camel Quarkus 3.33.3
   (`camel.runtime-version=3.33.3`), small Java helper beans next to the YAML, tests with `camel-test-main-junit5` +
-  mock endpoints. Pattern: `pilot/maintain-adjustment`, skill `osb-camelk-route`. Older Spring Boot templates in
+  mock endpoints. Pattern: `pilot/sample-adjustment`, skill `osb-camelk-route`. Older Spring Boot templates in
   `osb-to-camel/assets` are reference only.
 - Messaging: Red Hat AMQ Broker, AMQP 1.0 on port 5672, `camel-amqp` (Qpid JMS) with a failover URI. Destinations
   exist only through the Git register; never rely on auto-create. A WebLogic durable topic subscription becomes a
@@ -1895,7 +1895,7 @@ source does not say. No code, no hosts, no data (see SKILL.md rules).
 | Q2 | **Message format.** What arrives (JSON or XML; root element or top-level keys), is there an nXSD/JSON-to-XML translation (which one, is the file in the export), what `$body` contains after it | short text + field list |
 | Q3 | **Flow overview.** The pipeline in order: stage → action type → what it does in one sentence. Include route nodes, branches, publish, service callouts, Java callouts, reply/resume | numbered list |
 | Q4 | **Branches.** For each branch/if-then: condition in plain words, the condition expression (one line), which values lead to which path, what happens on each path, default path | table per branch |
-| Q5 | **Scenario mapping.** Branches decide on payload fields: list those fields in `scenario_dims` (JSON path such as `data.hasPPAEngagement`, or the element name). Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). A flow without branches has one row with scenario `*` (every message). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
+| Q5 | **Scenario mapping.** Branches decide on payload fields: list those fields in `scenario_dims` (JSON path such as `data.hasPartnerEngagement`, or the element name). Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). A flow without branches has one row with scenario `*` (every message). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
 | Q6 | **Outputs.** Request-response proxies (HTTP, local, SOAP): the answer to the caller is an output named `reply` (use it in branches and scenario_mapping). Name each other output after the business service that writes it (the same name in branches, scenario_mapping and backends). Every destination the flow writes to (business service → queue/topic/HTTP path/operation): on which path, which body (built by which transform), which JMS properties / transport headers / HTTP headers are set and from where | table |
 | Q7 | **Transforms.** For each XQuery/XSLT/assign/replace that builds a message: purpose, inputs (external params), output root, field mapping `source path → target path → rule` (copy, constant, format, lookup, condition), fn-bea functions used, constants | table per transform |
 | Q8 | **Backends.** Each business service / service callout: type, operation, when it is called, request built from, how the response is used, retry count/interval, timeout, load balancing, result caching, what happens on fault | table |

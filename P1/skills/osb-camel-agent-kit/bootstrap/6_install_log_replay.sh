@@ -991,7 +991,7 @@ def main() -> int:
                     "body:<json.path> takes a field of the JSON payload, e.g. body:data.businessTransaction")
     ap.add_argument("--mask-regex", action="append", default=[])
     ap.add_argument("--no-default-masks", action="store_true")
-    ap.add_argument("--mask-json-key", action="append", default=[], help="extra JSON field to mask, e.g. establishmentNameArb")
+    ap.add_argument("--mask-json-key", action="append", default=[], help="extra JSON field to mask, e.g. organisationNameArb")
     ap.add_argument("--no-default-json-keys", action="store_true")
     ap.add_argument("--mask-key-pattern", action="append", default=[], help="extra case-insensitive key pattern (full match)")
     ap.add_argument("--mask-key-env", default="MASK_KEY", help="environment variable holding the masking key (default MASK_KEY)")

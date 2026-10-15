@@ -76,7 +76,7 @@ def transform_files(project: Path, transforms: list[dict]) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("project", type=Path, help="OSB export directory (unzipped sbconfig.jar or JDeveloper project)")
-    ap.add_argument("proxy", help="proxy service name, e.g. maintain-adjustment")
+    ap.add_argument("proxy", help="proxy service name, e.g. sample-adjustment")
     ap.add_argument("-o", "--out", type=Path, required=True)
     ap.add_argument("--scenarios", type=Path, help="task1/traces/scenarios.json: scenario values to map to branches")
     a = ap.parse_args()

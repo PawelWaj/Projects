@@ -2,7 +2,7 @@
 
 Skill: [`P1/skills/osb-camel-agent-kit/skills/osb-camelk-route`](../skills/osb-camel-agent-kit/skills/osb-camelk-route/SKILL.md)
 (scripts, templates, [YAML patterns](../skills/osb-camel-agent-kit/skills/osb-camelk-route/references/yaml-patterns.md)).
-Reference result: [`P1/pilot/maintain-adjustment`](../pilot/maintain-adjustment/README.md).
+Reference result: [`P1/pilot/sample-adjustment`](../pilot/sample-adjustment/README.md).
 Everything runs on the VDI (Git Bash). Scope here: **generating the route code**. How the tests are created:
 [HOW_IT_WORKS.md](HOW_IT_WORKS.md), [DOMAIN_RUN.md](DOMAIN_RUN.md).
 
@@ -30,9 +30,9 @@ export PATH="/e/Pawel/apache-maven-3.9.9/bin:$JAVA_HOME/bin:$PATH"; hash -r
 export PI_OFFLINE=1 PI_TELEMETRY=0 MVN_ARGS='-s ~/.m2/settings.xml'
 KIT=/e/Pawel/Projects-main/P1/skills/osb-camel-agent-kit
 cd /e/Pawel/work
-P=transfer-value-prj; X=transfer-value                       # project / proxy
+P=sample-transform-prj; X=sample-transform                       # project / proxy
 # card approved? then:
-OSB_SRC=/e/contributor-agreement-mb-app/$P bash $KIT/pi/run_camelk.sh research/$P/$X modules/$P/$X $P
+OSB_SRC=/e/osb-application/$P bash $KIT/pi/run_camelk.sh research/$P/$X modules/$P/$X $P
 ```
 What happens: (1) test pack refreshed, synthetic cases only where missing; (2) stops with exit 3 if the card is not
 approved; (3) **pi implementer** (role `agents/implementer-camelk.md`, skill `osb-camelk-route`) fills the route
@@ -63,8 +63,8 @@ K7 error test per error scope · K8 `mvn test` green · K9 every scenario has a 
 
 ### 3.1 Set-up (once per flow)
 
-1. Pick 3 flows of different kinds, e.g. `maintain-adjustment` (branches, retries, error queue),
-   `transfer-value` (XQuery transform; expected body = what OSB logged), one HTTP request/reply flow.
+1. Pick 3 flows of different kinds, e.g. `sample-adjustment` (branches, retries, error queue),
+   `sample-transform` (XQuery transform; expected body = what OSB logged), one HTTP request/reply flow.
 2. Build the test pack first: `run_domain.sh <app> auto` (or `run_tests.sh` per flow) and approve the cards.
 3. Give both skills the same inputs: the OSB source of the project and/or `RESEARCH.md` + `FLOW_CARD.md`. Record which
    inputs each skill used, the model, and the start/end time.
@@ -79,8 +79,8 @@ K7 error test per error scope · K8 `mvn test` green · K9 every scenario has a 
   `{{backend.<name>}}` (names in `src/test/resources/flow-test.json`). If the other skill uses its own URIs, write an
   endpoint map instead of changing its code, e.g. `compare-input/<x>/colleague.map`:
   ```
-  amqp:queue:jndi.InboundTransferValueQueue = {{out.transfer-value}}
-  amqp:topic:jndi.contributorAgreementTopic = {{flow.input}}
+  amqp:queue:jndi.outboundQueue = {{out.sample-transform}}
+  amqp:topic:jndi.sampleTopic = {{flow.input}}
   ```
 
 ### 3.3 Run the comparison

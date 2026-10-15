@@ -3,7 +3,7 @@
 # one flow fails, and keep a status table. Safe to rerun: finished steps are skipped.
 #
 # Usage: pi/run_domain.sh <osb-app-dir> <stage> [workspace]
-#   osb-app-dir  e.g. /e/contributor-agreement-mb-app (the folder holding the *-prj projects)
+#   osb-app-dir  e.g. /e/osb-application (the folder holding the *-prj projects)
 #   stage        list      projects and proxies found (no agent)
 #                coverage  which proxies get real Splunk test messages and which synthetic ones (needs SPLUNK_COVERAGE =
 #                          CSV of the Splunk "stats count by project, proxy, payload" table) -> domain/COVERAGE.md

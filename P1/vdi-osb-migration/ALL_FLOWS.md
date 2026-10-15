@@ -6,7 +6,7 @@ VDI only; never send CSVs or payloads. Python 3.10+, works in Git Bash and Power
 
 ## 1 — which flows log payloads (Splunk, counts only)
 ```
-index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d "oracle.osb.logging.pipeline"
+index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d "oracle.osb.logging.pipeline"
 | rex "Project (?<project>\S+) :: for PS (?<proxy>\S+)"
 | eval payload=case(match(_raw, "::\s*\{"), "json", match(_raw, "::\s*<"), "xml", true(), "none")
 | fillnull value="(other log text)" project proxy
@@ -20,14 +20,14 @@ index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d "oracle.osb.loggin
 ## 2 — one export for all flows
 Splunk UI (CSV, Unlimited). This keeps at most 500 messages per proxy, so the file stays manageable:
 ```
-index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d@d "oracle.osb.logging.pipeline" ("::{" OR "::<")
+index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d@d "oracle.osb.logging.pipeline" ("::{" OR "::<")
 | dedup _raw
 | rex "for PS (?<proxy>\S+)"
 | dedup 500 proxy
 | sort 0 _time
 | table _time _raw
 ```
-`dedup 500 proxy` keeps the newest 500 per proxy, so rare scenarios older than those can be missed. For complete coverage drop that line and export per week. One domain only: add its project names, e.g. `("beneficiary-engagement-change-prj" OR "contributor-collection-prj")`.
+`dedup 500 proxy` keeps the newest 500 per proxy, so rare scenarios older than those can be missed. For complete coverage drop that line and export per week. One domain only: add its project names, e.g. `("sample-change-prj" OR "peer-prj")`.
 
 Or, with a Splunk REST token (no UI export, same search):
 ```

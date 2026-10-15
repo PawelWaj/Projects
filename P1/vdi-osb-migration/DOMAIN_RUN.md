@@ -1,17 +1,17 @@
 # One OSB application, all its flows: research → card → Camel K route → green tests
 
-An OSB application (e.g. `contributor-agreement-mb-app`) holds many projects (`*-prj`), each with one or more proxies.
+An OSB application (e.g. `osb-application`) holds many projects (`*-prj`), each with one or more proxies.
 `pi/run_domain.sh` runs the per-flow steps for every proxy, keeps going when one fails, and keeps a status table.
 Everything runs on the VDI. What may leave it: `research/<project>/<proxy>/{RESEARCH.md,research.json,facts.json,SHARE_CHECK.json}`
 and `domain/STATUS.md`. Never: the OSB source, `modules/` (it holds the original XQuery and the masked cases), agent logs.
 
 ```
 KIT=$P1/skills/osb-camel-agent-kit        # or the workspace where the bootstrap scripts were pasted
-APP=/e/contributor-agreement-mb-app       # Git Bash path: /e/..., not E:\...
+APP=/e/osb-application       # Git Bash path: /e/..., not E:\...
 cd /e/Pawel/work                          # workspace: research/, modules/, domain/ are created here
 ```
 
-## Before the first build: Java 21, Maven 3.6.3+, the GOSI Nexus (found on the pilot VDI, 2026-10-15)
+## Before the first build: Java 21, Maven 3.6.3+, the client Nexus (found on the pilot VDI, 2026-10-15)
 
 The VDI has no internet, a system Maven 3.5.3 and `JAVA_HOME` on JDK 1.7 (kept for OSB/JDeveloper). Per Git Bash window
 (or once in `~/.bashrc`):
@@ -20,7 +20,7 @@ export JAVA_HOME="/c/Program Files/Eclipse Adoptium/jdk-21.0.11.10-hotspot"     
 export PATH="/e/Pawel/apache-maven-3.9.9/bin:$JAVA_HOME/bin:$PATH"; hash -r
 mvn -v                                                                            # Apache Maven 3.9.x, Java 21
 ```
-Maven 3.9.9 comes from the GOSI Nexus (`<nexus>/repository/maven-public/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip`,
+Maven 3.9.9 comes from the client Nexus (`<nexus>/repository/maven-public/org/apache/maven/apache-maven/3.9.9/apache-maven-3.9.9-bin.zip`,
 unzip to `E:\Pawel\`). `~/.m2/settings.xml` = the team's file with the Nexus mirror (`mirrorOf *`); remove its
 `<localRepository>` line or point it at your own user. Never commit it. Run Maven with `-s ~/.m2/settings.xml`.
 
@@ -46,7 +46,7 @@ unzip to `E:\Pawel\`). `~/.m2/settings.xml` = the team's file with the Nexus mir
 
 Domain export for step 2 (Splunk, CSV, Unlimited), all projects of the application:
 ```
-index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d@d "oracle.osb.logging.pipeline" ("::{" OR "::<")
+index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d@d "oracle.osb.logging.pipeline" ("::{" OR "::<")
 | dedup _raw | rex "for PS (?<proxy>\S+)" | dedup 500 proxy | sort 0 _time | table _time _raw
 ```
 Flows that log no payload (groups B and C) get **synthetic** test messages: in `build`, before the route is written, the pi
@@ -54,7 +54,7 @@ tester writes one fake-value message per scenario from the message schema; they 
 (gate K5) and every scenario must have a case (gate K9). The matrix lists them as S rows, the real ones as P rows.
 Request-response proxies (HTTP) are tested on their reply to the caller as well as on the queues.
 
-Payload table for 0b (Splunk, export as CSV): `index=ameen_e2e sourcetype="gosi:ameen:osb:log" earliest=-28d "oracle.osb.logging.pipeline"
+Payload table for 0b (Splunk, export as CSV): `index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d "oracle.osb.logging.pipeline"
 | rex "Project (?<project>\S+) :: for PS (?<proxy>\S+)" | eval payload=case(match(_raw, "::\s*\{"), "json", match(_raw, "::\s*<"), "xml", true(), "none") | stats count by project, proxy, payload`
 What was tested and how: [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
 
@@ -64,7 +64,7 @@ raise it, e.g. `PI_PAUSE=120`, if 429s keep coming). A pi stage with more than 1
 
 Options: `PROJECTS='beneficiary|cancel-'` limits the run to matching project names (start with 2–3 projects).
 `TASK1_ROOT=/e/Pawel` uses `/e/Pawel/<proxy>/task1` (the masked Splunk cases) for research and as test inputs.
-`MVN_ARGS='-s <GOSI settings.xml>'` for the Nexus mirror. One flow only: `pi/run_research.sh`, `pi/run_camelk.sh`.
+`MVN_ARGS='-s <client settings.xml>'` for the Nexus mirror. One flow only: `pi/run_research.sh`, `pi/run_camelk.sh`.
 
 ## What the gates mean (check_camelk.py)
 
@@ -80,22 +80,22 @@ The generated parity test reads each case's scenario (from task 1) and expects e
 dims, or no case can be mapped. `research.json` → `scenario_dims` names them. Pilot example:
 
 ```
-export SCENARIO_DIMS='hdr_resource,body:data.businessTransaction,body:data.hasPPAEngagement,body:data.hasGOSIEngagement'
+export SCENARIO_DIMS='hdr_resource,body:data.businessTransaction,body:data.hasPartnerEngagement,body:data.hasMainEngagement'
 $P1/vdi-osb-migration/bin/task1_log_only.sh events.csv task1      # same MASK_KEY as before
 ```
 
-## Pilot `maintain-adjustment`: what the research showed, what the card must settle
+## Pilot `sample-adjustment`: what the research showed, what the card must settle
 
-Route: request log → JSON check → two independent checks: `hasPPAEngagement='true'` → PPA queue,
-`hasGOSIEngagement='true'` → GOSI queue (retry 3 × 10 s); none → consumed, nothing sent; any fault → error queue with
+Route: request log → JSON check → two independent checks: `hasPartnerEngagement='true'` → partner queue,
+`hasMainEngagement='true'` → main queue (retry 3 × 10 s); none → consumed, nothing sent; any fault → error queue with
 the original body and errorCode / errorMessage / debugInfo / traceId. Reference implementation:
-`P1/pilot/maintain-adjustment`: **2026-10-15 on the VDI with the real masked E2E cases: 254 tests, 0 failures** (124 skipped = no golden body for this flow); 4 route mutations all caught.
+`P1/pilot/sample-adjustment`: **2026-10-15 on the VDI with the real masked E2E cases: 254 tests, 0 failures** (124 skipped = no golden body for this flow); 4 route mutations all caught.
 
 Open points for the card (answer on the VDI, send back counts or yes/no only):
 1. **Both flags true: one queue or two?** If the two calls are `route` actions in a route node, OSB sends to the first
    only; if they are `publish` actions (or routes in a stage), both fire. Run and send the output (element names only):
    ```
-   grep -o '<[A-Za-z0-9]*:\(route-node\|stage\|route\|publish\|ifThenElse\)\b' /e/contributor-agreement-mb-app/beneficiary-engagement-change-prj/Pipeline/maintain-adjustment.pipeline | sort | uniq -c
+   grep -o '<[A-Za-z0-9]*:\(route-node\|stage\|route\|publish\|ifThenElse\)\b' /e/osb-application/sample-change-prj/Pipeline/sample-adjustment.pipeline | sort | uniq -c
    ```
    And from task 1 rerun with the flag dims: how many messages have both flags true.
 2. **errorCode values.** OSB writes its fault code (e.g. a `BEA-...` / `OSB-...` code); Camel writes the exception

@@ -7,7 +7,7 @@
 #   module-dir     modules/<project>/<proxy> (created on the first run)
 #   task1-dir      its fixtures/parity/* are copied into the module as test inputs (masked; .gitignore keeps them out of Git)
 # Env: OSB_SRC (OSB project folder: the implementer may copy original XQuery/XSLT/XSD into the module), MVN_ARGS
-#      (e.g. "-s ~/.m2/gosi-settings.xml"), OSB_PI_MODEL, PI_THINKING (default high), KIT, PYTHON
+#      (e.g. "-s ~/.m2/client-settings.xml"), OSB_PI_MODEL, PI_THINKING (default high), KIT, PYTHON
 # Exit: 0 gates PASS, 3 card not approved yet (expected after the first run), 1 anything else.
 set -euo pipefail
 RES=${1:?usage: run_camelk.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]}

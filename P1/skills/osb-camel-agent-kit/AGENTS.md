@@ -24,7 +24,7 @@ Camel K integrations (YAML DSL) that replace Oracle Service Bus flows: one modul
 - Inputs are files from `osb-src/`. Never build code from screenshots, chat text or memory of "how OSB usually works".
 - Runtime (decision 2026-10-14): **Camel K, routes in YAML DSL** (`*.camel.yaml`), Camel 4.18.4 = Camel Quarkus 3.33.3
   (`camel.runtime-version=3.33.3`), small Java helper beans next to the YAML, tests with `camel-test-main-junit5` +
-  mock endpoints. Pattern: `pilot/maintain-adjustment`, skill `osb-camelk-route`. Older Spring Boot templates in
+  mock endpoints. Pattern: `pilot/sample-adjustment`, skill `osb-camelk-route`. Older Spring Boot templates in
   `osb-to-camel/assets` are reference only.
 - Messaging: Red Hat AMQ Broker, AMQP 1.0 on port 5672, `camel-amqp` (Qpid JMS) with a failover URI. Destinations
   exist only through the Git register; never rely on auto-create. A WebLogic durable topic subscription becomes a

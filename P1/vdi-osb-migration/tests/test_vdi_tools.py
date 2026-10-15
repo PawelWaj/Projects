@@ -193,7 +193,7 @@ class BatchTask1Tests(unittest.TestCase):
 
         def mk(prj, ps, res, bt):
             r = raw.replace("Project sample-change-prj :: for PS sample-adjustment", f"Project {prj} :: for PS {ps}")
-            r = r.replace("Contributory Wage event", f"{res} event").replace("TERMINATE_ENGAGEMENT", bt)
+            r = r.replace("Sample Resource event", f"{res} event").replace("TYPE_B", bt)
             return r.replace("99999999-8888-4777-8666-555555555555", str(uuid.uuid4()))
         lines = [mk("a-prj", "a", "Wage", ["X_ONE", "X_TWO"][i % 2]) for i in range(6)]
         lines += [mk("b-prj", "b", "Wage", "X_ONE") for _ in range(3)] + [mk("c-prj", "c", "Transfer", "T_IN") for _ in range(3)]
@@ -300,7 +300,7 @@ class CamelkRouteTests(unittest.TestCase):
             self.assertFalse(gates["K4_no_infrastructure"]["ok"])
 
     def test_pilot_module_passes_static_gates_except_approval(self):
-        mod = ROOT / "pilot/maintain-adjustment"
+        mod = ROOT / "pilot/sample-adjustment"
         with tempfile.TemporaryDirectory() as d:
             m = Path(d, "m")
             shutil.copytree(mod, m, ignore=shutil.ignore_patterns("target"))

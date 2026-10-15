@@ -1,0 +1,22 @@
+{
+  "proxy": "sample-adjustment",
+  "project": "sample-change-prj",
+  "package": "osb.samplechangeprj.sampleadjustment",
+  "research_sha256": "8a4d91331da9b46104d8bcd3151cbf22a0432c51056683b2666c87f931dcb992",
+  "generated": {
+    "src/test/java/osb/samplechangeprj/sampleadjustment/FlowParityTest.java": "2d5478bede4b47507c4b3ab9df01e6d26fd21814a224d3ca92917a50b4117cb2",
+    "src/test/resources/flow-test.json": "7f9b55fb1331f4e990a75b4d479ccd915c0e8dfa0a7d71e94b4a14d08157af3f"
+  },
+  "route_ids": [
+    "branch-hasmainengagement-check",
+    "branch-hasmainengagement-check-main-path",
+    "branch-haspartnerengagement-check",
+    "branch-haspartnerengagement-check-partner-path",
+    "out-partner-engagement",
+    "out-sample-adjustment",
+    "out-sample-adjustment-error-queue"
+  ],
+  "errors": 1,
+  "task1": "",
+  "backends_with_response": []
+}
