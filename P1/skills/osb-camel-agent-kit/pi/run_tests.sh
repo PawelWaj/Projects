@@ -23,10 +23,16 @@ SK=$(for d in "$KIT/skills/osb-camelk-route" "$KIT/.pi/skills/osb-camelk-route";
 echo "== 1 generated tests + mocks (script)"
 "$PY" "$SK/scripts/scaffold_camelk.py" "$RES" -o "$MOD" --project "$PRJ" ${TASK1:+--parity "$TASK1/fixtures/parity"}
 
-echo "== 2 synthetic inputs where Splunk has none (pi tester)"
+echo "== 2 synthetic inputs where Splunk has none (script from the schema first, pi tester only for the rest)"
 LOG="$MOD/.agent-logs"; mkdir -p "$LOG"
 "$PY" "$SK/scripts/check_camelk.py" "$MOD" --no-surefire > /dev/null || true
 UNCOV=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['gates']['K9_scenarios_covered']['uncovered']))" "$MOD/GATES.json")
+if [ "$UNCOV" != 0 ] && [ -n "${OSB_SRC:-}" ] && [ -d "$OSB_SRC" ]; then
+  # first without an AI: fake-value messages built from the flow's schema (no model calls, no quota)
+  "$PY" "$SK/scripts/synth_from_schema.py" "$MOD" "$OSB_SRC" --research "$RES/research.json" || true
+  "$PY" "$SK/scripts/check_camelk.py" "$MOD" --no-surefire > /dev/null || true
+  UNCOV=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['gates']['K9_scenarios_covered']['uncovered']))" "$MOD/GATES.json")
+fi
 if [ "$UNCOV" != 0 ] && [ "${PI_TESTER:-1}" = 0 ]; then
   echo "   PI_TESTER=0: $UNCOV scenario(s) stay without a test case (gate K9 shows them)"
 elif [ "$UNCOV" != 0 ]; then

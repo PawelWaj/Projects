@@ -462,3 +462,37 @@ class DomainReportTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SynthFromSchemaTests(unittest.TestCase):
+    """Synthetic messages without an AI: from an nXSD (JSON) schema, scenario values applied, K9 closed."""
+    SK = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts"
+    XSD = ('<?xml version="1.0"?><xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" '
+           'xmlns:nxsd="http://xmlns.oracle.com/pcbpel/nxsd" nxsd:version="JSON"><xsd:element name="Root-Element">'
+           '<xsd:complexType><xsd:sequence><xsd:element name="data"><xsd:complexType><xsd:sequence>'
+           '<xsd:element name="flagA" type="xsd:boolean"/><xsd:element name="n" type="xsd:long"/>'
+           '</xsd:sequence></xsd:complexType></xsd:element></xsd:sequence></xsd:complexType></xsd:element></xsd:schema>')
+
+    def test_builds_cases_for_uncovered_rows(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "prj").mkdir()
+            (d / "prj/x-nxsd.xsd").write_text(self.XSD)
+            pack = {"proxy": "x", "entry": {"payload_format": "json", "nxsd": "x-nxsd"}, "scenario_dims": ["data.flagA"],
+                    "branches": [], "outputs": [{"name": "q", "destination": "jndi.q"}, {"name": "err", "destination": "jndi.e", "on": "error"}],
+                    "scenario_mapping": [{"scenario": "flagA=true", "outputs": ["q"]}, {"scenario": "flagA!=true", "outputs": []}],
+                    "backends": [], "errors": [], "logs": [], "open_questions": []}
+            (d / "res").mkdir()
+            (d / "res/research.json").write_text(json.dumps(pack))
+            run = lambda *a: subprocess.run([sys.executable, *map(str, a)], capture_output=True, text=True)  # noqa: E731
+            run(self.SK / "scaffold_camelk.py", d / "res", "-o", d / "mod", "--project", "p")
+            r = run(self.SK / "synth_from_schema.py", d / "mod", d / "prj", "--research", d / "res/research.json")
+            self.assertIn('"written": 2', r.stdout, r.stderr)
+            bodies = sorted(json.loads(p.read_text())["data"]["flagA"] for p in (d / "mod").rglob("input.payload"))
+            self.assertEqual(bodies, [False, True])
+            run(self.SK / "check_camelk.py", d / "mod", "--no-surefire")
+            self.assertTrue(json.loads((d / "mod/GATES.json").read_text())["gates"]["K9_scenarios_covered"]["ok"])
+
+
+if __name__ == "__main__":
+    unittest.main()

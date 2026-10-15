@@ -2453,7 +2453,7 @@ flowchart LR
 | Step | Who | Why |
 |---|---|---|
 | research: read the OSB source, answer 12 questions | **pi** | every flow is written differently; reading XML pipelines, XQuery and schemas needs judgement |
-| synthetic messages for scenarios Splunk cannot supply | **pi** (tester), only when needed | building a valid message from an XSD/nXSD/WSDL with fake values |
+| synthetic messages for scenarios Splunk cannot supply | **script first** (`synth_from_schema.py`, from the XSD/nXSD, no AI); **pi** (tester) only for what the script cannot build | fake values; the scenario fields get the scenario's values |
 | Camel K route that the tests run against | **pi** (implementer) | writing code; needed to prove the tests (and for the migration itself) |
 | masking, splitting, scenarios, expected outputs, test classes, mocks | script | deterministic; the same input always gives the same tests |
 | running the tests, checks K1–K9, mutation check | script + Maven | the judge must not be an AI |
