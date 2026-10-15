@@ -1235,11 +1235,17 @@ SHA=$(command -v sha1sum || command -v shasum)
 fp() { find "$1" -type f -print0 | sort -z | xargs -0 "$SHA" 2>/dev/null | "$SHA" | cut -c1-16; }
 before=$(fp "$PROJECT")
 
+# all source files of this proxy in ONE file, so pi reads them with one call instead of one call per file (rate limit);
+# it lies next to (not inside) the shareable folder and is deleted after the research
+BUNDLE="$OUT.sources.txt"
+while IFS= read -r f; do [ -n "$f" ] && [ -f "$PROJECT/$f" ] && { printf '\n===== FILE: %s =====\n' "$f"; cat "$PROJECT/$f"; }; done < "$OUT/SOURCES.txt" > "$BUNDLE"
+trap 'rm -f "$BUNDLE"' EXIT
+
 echo "== 2 questionnaire (pi)"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,write"
     --append-system-prompt "$KIT/agents/researcher.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
-rc=0; pi_call "$LOG/research.out" "$LOG/research.err" "${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." || rc=$?
+rc=0; pi_call "$LOG/research.out" "$LOG/research.err" "${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). All files of SOURCES.txt are concatenated in $BUNDLE: read that ONE file first (one read instead of one per file); open other files only for references it does not contain. Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." || rc=$?
 [ "$rc" = 75 ] && exit 75
 for try in 2; do   # pi sometimes ends without writing the files: one more attempt, logs kept per attempt
   [ -s "$OUT/RESEARCH.md" ] && [ -s "$OUT/research.json" ] && break
@@ -1264,7 +1270,8 @@ cat > 'pi/run_tests.sh' <<'KIT_EOF_PI_RUN_TESTS_SH'
 # -> synthetic inputs for scenarios Splunk cannot supply (pi tester) -> frozen test pack + catalogue.
 #
 # Usage: pi/run_tests.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]
-# Env:   OSB_SRC (OSB project folder: the tester reads the message schema there), OSB_PI_MODEL, PI_THINKING, KIT, PYTHON
+# Env:   OSB_SRC (OSB project folder: the tester reads the message schema there), OSB_PI_MODEL, KIT, PYTHON,
+#        PI_TESTER=0 (skip the synthetic messages, e.g. when the model quota is short), PI_TESTER_THINKING (default low)
 # Result: <module>/src/test/** (FlowParityTest + flow-test.json + real and synthetic case folders, frozen),
 #         <module>/TEST_MATRIX.md (catalogue: every scenario, its inputs and expected outputs). Exit 1 if a scenario has no case.
 set -euo pipefail
@@ -1287,8 +1294,10 @@ echo "== 2 synthetic inputs where Splunk has none (pi tester)"
 LOG="$MOD/.agent-logs"; mkdir -p "$LOG"
 "$PY" "$SK/scripts/check_camelk.py" "$MOD" --no-surefire > /dev/null || true
 UNCOV=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['gates']['K9_scenarios_covered']['uncovered']))" "$MOD/GATES.json")
-if [ "$UNCOV" != 0 ]; then
-  PT=(pi --print --no-session --thinking "${PI_THINKING:-high}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
+if [ "$UNCOV" != 0 ] && [ "${PI_TESTER:-1}" = 0 ]; then
+  echo "   PI_TESTER=0: $UNCOV scenario(s) stay without a test case (gate K9 shows them)"
+elif [ "$UNCOV" != 0 ]; then
+  PT=(pi --print --no-session --thinking "${PI_TESTER_THINKING:-low}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
   [ -n "${OSB_PI_MODEL:-}" ] && PT+=(--model "$OSB_PI_MODEL")
   pi_call "$LOG/tester.out" "$LOG/tester.err" "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." || true
 else

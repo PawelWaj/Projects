@@ -3,7 +3,8 @@
 # -> synthetic inputs for scenarios Splunk cannot supply (pi tester) -> frozen test pack + catalogue.
 #
 # Usage: pi/run_tests.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]
-# Env:   OSB_SRC (OSB project folder: the tester reads the message schema there), OSB_PI_MODEL, PI_THINKING, KIT, PYTHON
+# Env:   OSB_SRC (OSB project folder: the tester reads the message schema there), OSB_PI_MODEL, KIT, PYTHON,
+#        PI_TESTER=0 (skip the synthetic messages, e.g. when the model quota is short), PI_TESTER_THINKING (default low)
 # Result: <module>/src/test/** (FlowParityTest + flow-test.json + real and synthetic case folders, frozen),
 #         <module>/TEST_MATRIX.md (catalogue: every scenario, its inputs and expected outputs). Exit 1 if a scenario has no case.
 set -euo pipefail
@@ -26,8 +27,10 @@ echo "== 2 synthetic inputs where Splunk has none (pi tester)"
 LOG="$MOD/.agent-logs"; mkdir -p "$LOG"
 "$PY" "$SK/scripts/check_camelk.py" "$MOD" --no-surefire > /dev/null || true
 UNCOV=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['gates']['K9_scenarios_covered']['uncovered']))" "$MOD/GATES.json")
-if [ "$UNCOV" != 0 ]; then
-  PT=(pi --print --no-session --thinking "${PI_THINKING:-high}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
+if [ "$UNCOV" != 0 ] && [ "${PI_TESTER:-1}" = 0 ]; then
+  echo "   PI_TESTER=0: $UNCOV scenario(s) stay without a test case (gate K9 shows them)"
+elif [ "$UNCOV" != 0 ]; then
+  PT=(pi --print --no-session --thinking "${PI_TESTER_THINKING:-low}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
   [ -n "${OSB_PI_MODEL:-}" ] && PT+=(--model "$OSB_PI_MODEL")
   pi_call "$LOG/tester.out" "$LOG/tester.err" "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." || true
 else
