@@ -786,6 +786,7 @@ pi_call() {
       n=$((n + 1))
       echo "   model endpoint busy (rate limit), waiting ${wait}s, retry $n/${PI_RETRIES:-5}"
       sleep "$wait"
+      [ -n "${PI_WAIT_FILE:-}" ] && echo "$wait" >> "$PI_WAIT_FILE"     # rate-limit waiting, measured separately
       wait=$((wait * 2)); [ "$wait" -gt 900 ] && wait=900
       continue
     fi

@@ -23,6 +23,8 @@
 #                          (build needs approved cards, or POC=1 for a proof-of-concept run: cards marked, K1 FAIL)
 #                estimate  model load per flow (calls, tokens, minutes) from the OSB source size + measured times
 #                          (domain/timings.csv); quota via PI_RPM / PI_TPM -> domain/PI_LOAD_ESTIMATE.md
+#                time      MEASURED time per pi step (work vs rate-limit waiting) and the projection for TOTAL_FLOWS
+#                          (default 450) -> domain/TIME_PROJECTION.md
 #                report    domain/FUNCTIONAL_TEST_REPORT.md: inputs, expected outputs, mocks, results, mutations per flow
 #                auto      research -> task1 -> tests: the functional test pack for every flow, then stops
 #                          (routes: approve the cards, then build and matrix)
@@ -38,7 +40,7 @@
 set -uo pipefail
 # local client settings, never in Git: $OSB_KIT_ENV, else ./.osb-kit.env, else ~/.osb-kit.env
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
-STAGES='list|batches|coverage|estimate|research|task1|tests|scaffold|build|matrix|report|functional|auto|status'
+STAGES='list|batches|coverage|estimate|time|research|task1|tests|scaffold|build|matrix|report|functional|auto|status'
 if echo "${1:-}" | grep -Eqx "($STAGES)"; then         # short form: run_domain.sh <stage> [workspace], APP from the env file
   STAGE=$1; WS=${2:-${WS:-.}}; APP=${APP:?set APP in .osb-kit.env or use: run_domain.sh <osb-app-dir> <stage>}
 else
@@ -57,10 +59,12 @@ BATCH=$(for d in "$KIT/../../vdi-osb-migration/bin" "$KIT/bin"; do [ -f "$d/batc
 t1dir() { local d="$WS/task1/flows/$(echo "$1-$2" | tr -cs 'A-Za-z0-9' '-' | sed 's/^-//;s/-$//' | tr 'A-Z' 'a-z' | cut -c1-80)"; [ -d "$d/fixtures/parity" ] && echo "$d"; }
 
 timed() {   # timed <project> <proxy> <stage> <command...>: run it, append the duration to domain/timings.csv
-  local p=$1 x=$2 st=$3 t0 rc; shift 3; t0=$(date +%s)
+  local p=$1 x=$2 st=$3 t0 rc w; shift 3; t0=$(date +%s)
+  export PI_WAIT_FILE="$WS/domain/.wait.$$"; : > "$PI_WAIT_FILE"
   "$@"; rc=$?
-  [ -f "$WS/domain/timings.csv" ] || echo "project,proxy,stage,seconds,exit" > "$WS/domain/timings.csv"
-  echo "$p,$x,$st,$(( $(date +%s) - t0 )),$rc" >> "$WS/domain/timings.csv"
+  w=$(awk '{s+=$1} END{print s+0}' "$PI_WAIT_FILE"); rm -f "$PI_WAIT_FILE"; unset PI_WAIT_FILE
+  [ -f "$WS/domain/timings.csv" ] || echo "project,proxy,stage,seconds,waited,exit" > "$WS/domain/timings.csv"
+  echo "$p,$x,$st,$(( $(date +%s) - t0 )),$w,$rc" >> "$WS/domain/timings.csv"
   return $rc
 }
 
@@ -210,6 +214,8 @@ case "$STAGE" in
     [ -d "$WS/domain/inventory/flows" ] || "$PY" "$KIT/skills/osb-to-camel/scripts/osb_inventory.py" "$APP" -o "$WS/domain/inventory" > /dev/null
     "$PY" "$(dirname "$BATCH")/estimate_pi_load.py" "$WS/domain/inventory" "$APP" --coverage "$WS/domain/coverage.csv" \
       --timings "$WS/domain/timings.csv" --rpm "${PI_RPM:-20}" --tpm "${PI_TPM:-200000}" -o "$WS/domain/PI_LOAD_ESTIMATE.md" ;;
+  time) "$PY" "$(dirname "$BATCH")/time_projection.py" "$WS/domain/timings.csv" --flows "${TOTAL_FLOWS:-450}" \
+          --coverage "$WS/domain/coverage.csv" -o "$WS/domain/TIME_PROJECTION.md" ;;
   report) status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
   functional) do_research; do_task1; do_tests; do_build; do_matrix; status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
   status) status ;;
