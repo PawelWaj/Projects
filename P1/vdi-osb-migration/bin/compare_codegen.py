@@ -29,6 +29,11 @@ SK = next((p for p in (Path(__file__).resolve().parents[2] / "skills/osb-camel-a
                        Path(__file__).resolve().parents[1] / ".pi/skills/osb-camelk-route/scripts") if p.is_dir()), None)
 
 
+def win_path(arg: str) -> str:
+    """Git Bash path (/c/Users/x) -> Windows path (c:/Users/x) when running natively on Windows; else unchanged."""
+    return re.sub(r"^/([a-zA-Z])/", r"\1:/", arg) if os.name == "nt" else arg
+
+
 def surefire(mod: Path) -> dict:
     t = f = e = s = 0
     for rep in (mod / "target/surefire-reports").glob("TEST-*.xml"):
@@ -94,7 +99,8 @@ def main() -> int:
     a = ap.parse_args()
     if not SK:
         sys.exit("skill osb-camelk-route scripts not found")
-    mvn = [os.path.expanduser(x) for x in shlex.split(a.mvn)]
+    mvn = [win_path(os.path.expanduser(x)) for x in shlex.split(a.mvn)]
+    mvn[0] = shutil.which(mvn[0]) or shutil.which(mvn[0] + ".cmd") or mvn[0]     # Windows: mvn.cmd
     out = a.out or Path("compare") / a.module.name
     out.mkdir(parents=True, exist_ok=True)
     rows = []

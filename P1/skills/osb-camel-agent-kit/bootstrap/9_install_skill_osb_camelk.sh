@@ -364,15 +364,21 @@ Mutations (generic, from the route text):
   drop-out    every output step removed (message silently lost)
   no-retry    every redelivery count -> 0 (business service retry ignored)
 Each mutation runs `mvn test`; a non-zero exit = caught. The route file is always restored, even on Ctrl-C.
-Writes MUTATION.json (what, killed) next to the pom. Exit 1 if any mutation survived."""
+Writes MUTATION.json (what, killed) next to the pom. Exit 1 if any mutation survived, 2 if the check could not run."""
 import argparse
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+
+
+def win_path(arg: str) -> str:
+    """Git Bash path (/c/Users/x) -> Windows path (c:/Users/x) when running natively on Windows; else unchanged."""
+    return re.sub(r"^/([a-zA-Z])/", r"\1:/", arg) if os.name == "nt" else arg
 
 
 def mutations(text: str) -> list[tuple[str, str]]:
@@ -408,13 +414,20 @@ def main() -> int:
     ap.add_argument("--mvn", default="mvn -B -q")
     ap.add_argument("--max", type=int, default=12)
     a = ap.parse_args()
-    a.mvn = " ".join(shlex.quote(os.path.expanduser(x)) for x in shlex.split(a.mvn))   # ~ in -s ~/.m2/settings.xml
+    a.mvn = " ".join(shlex.quote(win_path(os.path.expanduser(x))) for x in shlex.split(a.mvn))   # ~ and /c/... paths
+    first = shlex.split(a.mvn)[0]
+    exe = shutil.which(first) or shutil.which(first + ".cmd")   # Windows: Maven is mvn.cmd, subprocess needs the full name
+    if not exe:
+        print(f"cannot find '{first}' on PATH (Maven 3.9 must be on PATH)")
+        return 2
+    a.mvn = " ".join([shlex.quote(exe)] + [shlex.quote(x) for x in shlex.split(a.mvn)[1:]])
     routes = sorted((a.module / "src/main/resources/routes").glob("*.camel.yaml"))
     if not routes:
         sys.exit("no *.camel.yaml route in the module")
     base = subprocess.run(shlex.split(a.mvn) + ["-f", str(a.module / "pom.xml"), "test"], capture_output=True, text=True)
     if base.returncode:
-        sys.exit("tests are not green on the unchanged route: fix that first (mutation check needs a green baseline)")
+        print("tests are not green on the unchanged route: fix that first (mutation check needs a green baseline)")
+        return 2
     results = []
     for route in routes:
         orig = route.read_text(encoding="utf-8")
@@ -1952,7 +1965,9 @@ do_matrix() {   # mutation check on every green module (MUTATE=0 skips it), then
   flows | while read -r p x; do
     m="$WS/modules/$p/$x"; [ -f "$m/.scaffold.json" ] || continue
     if [ "${MUTATE:-1}" = 1 ] && [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json" && [ ! -f "$m/MUTATION.json" ]; then
-      echo "=== mutations $p/$x"; "$PY" "$SK/mutate_route.py" "$m" --mvn "mvn -B -q ${MVN_ARGS:-}" || echo "MUTATION SURVIVED $p/$x: tests too weak (see $m/MUTATION.json)"
+      echo "=== mutations $p/$x"; "$PY" "$SK/mutate_route.py" "$m" --mvn "mvn -B -q ${MVN_ARGS:-}"
+      case $? in 0) ;; 1) echo "MUTATION SURVIVED $p/$x: tests too weak (see $m/MUTATION.json)";;
+                 *) echo "MUTATION CHECK DID NOT RUN for $p/$x (message above)";; esac
     fi
   done
   "$PY" "$SK/test_matrix.py" --domain "$WS/modules" -o "$WS/domain"

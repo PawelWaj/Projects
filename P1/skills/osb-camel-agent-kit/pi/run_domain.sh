@@ -180,7 +180,9 @@ do_matrix() {   # mutation check on every green module (MUTATE=0 skips it), then
   flows | while read -r p x; do
     m="$WS/modules/$p/$x"; [ -f "$m/.scaffold.json" ] || continue
     if [ "${MUTATE:-1}" = 1 ] && [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json" && [ ! -f "$m/MUTATION.json" ]; then
-      echo "=== mutations $p/$x"; "$PY" "$SK/mutate_route.py" "$m" --mvn "mvn -B -q ${MVN_ARGS:-}" || echo "MUTATION SURVIVED $p/$x: tests too weak (see $m/MUTATION.json)"
+      echo "=== mutations $p/$x"; "$PY" "$SK/mutate_route.py" "$m" --mvn "mvn -B -q ${MVN_ARGS:-}"
+      case $? in 0) ;; 1) echo "MUTATION SURVIVED $p/$x: tests too weak (see $m/MUTATION.json)";;
+                 *) echo "MUTATION CHECK DID NOT RUN for $p/$x (message above)";; esac
     fi
   done
   "$PY" "$SK/test_matrix.py" --domain "$WS/modules" -o "$WS/domain"
