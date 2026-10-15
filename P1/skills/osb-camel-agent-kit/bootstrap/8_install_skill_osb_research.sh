@@ -726,7 +726,8 @@ cat > 'pi/run_research.sh' <<'KIT_EOF_PI_RUN_RESEARCH_SH'
 # Env:   OUT (default research/<proxy>; run_domain.sh uses research/<project>/<proxy>), OSB_PI_MODEL (model pattern for
 #        `pi --model`), PI_THINKING (default high), KIT, PYTHON
 set -euo pipefail
-[ -f "${OSB_KIT_ENV:-$HOME/.osb-kit.env}" ] && . "${OSB_KIT_ENV:-$HOME/.osb-kit.env}"   # local client settings, never in Git
+for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done   # local settings, never in Git
+MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
 PROJECT=${1:?usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]}
 PROXY=${2:?proxy name}
 TASK1=${3:-}
@@ -882,6 +883,7 @@ cat > 'pi/make_review_pack.sh' <<'KIT_EOF_PI_MAKE_REVIEW_PACK_SH'
 # Result: review/<project>-<proxy>/ + review/<project>-<proxy>.tgz   (agent logs and build output are left out)
 set -uo pipefail
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
+MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
 P=${1:?usage: make_review_pack.sh <project> <proxy> [reference-route-dir]}
 X=${2:?proxy}
 REF=${3:-}
@@ -967,6 +969,7 @@ cat > 'pi/run_overnight.sh' <<'KIT_EOF_PI_RUN_OVERNIGHT_SH'
 # Log: domain/overnight.log. At the end: domain/FUNCTIONAL_TEST_REPORT.md and domain/TIME_PROJECTION.md.
 set -u
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
+MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
 STAGE=${1:?usage: run_overnight.sh <stage> [hours]}
 HOURS=${2:-10}
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}

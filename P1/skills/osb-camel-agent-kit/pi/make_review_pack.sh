@@ -9,6 +9,7 @@
 # Result: review/<project>-<proxy>/ + review/<project>-<proxy>.tgz   (agent logs and build output are left out)
 set -uo pipefail
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
+MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
 P=${1:?usage: make_review_pack.sh <project> <proxy> [reference-route-dir]}
 X=${2:?proxy}
 REF=${3:-}

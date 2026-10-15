@@ -620,6 +620,7 @@ cat > 'pi/make_review_pack.sh' <<'KIT_EOF_PI_MAKE_REVIEW_PACK_SH'
 # Result: review/<project>-<proxy>/ + review/<project>-<proxy>.tgz   (agent logs and build output are left out)
 set -uo pipefail
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
+MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
 P=${1:?usage: make_review_pack.sh <project> <proxy> [reference-route-dir]}
 X=${2:?proxy}
 REF=${3:-}
@@ -738,7 +739,7 @@ cat > 'pi/preflight.sh' <<'KIT_EOF_PI_PREFLIGHT_SH'
 # Runs in Git Bash (Windows), WSL or Linux. Read-only: installs nothing, changes nothing.
 # Usage: pi/preflight.sh [model-endpoint-url]
 set -u
-[ -f "${OSB_KIT_ENV:-$HOME/.osb-kit.env}" ] && . "${OSB_KIT_ENV:-$HOME/.osb-kit.env}"   # local client settings, never in Git
+for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done   # local settings, never in Git
 ok=0; warn=0; fail=0
 pass() { printf '  [ OK ] %s\n' "$1"; ok=$((ok+1)); }
 wrn()  { printf '  [WARN] %s\n' "$1"; warn=$((warn+1)); }
@@ -835,7 +836,8 @@ cat > 'pi/run_camelk.sh' <<'KIT_EOF_PI_RUN_CAMELK_SH'
 #      (e.g. "-s ~/.m2/client-settings.xml"), OSB_PI_MODEL, PI_THINKING (default high), KIT, PYTHON
 # Exit: 0 gates PASS, 3 card not approved yet (expected after the first run), 1 anything else.
 set -euo pipefail
-[ -f "${OSB_KIT_ENV:-$HOME/.osb-kit.env}" ] && . "${OSB_KIT_ENV:-$HOME/.osb-kit.env}"   # local client settings, never in Git
+for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done   # local settings, never in Git
+MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
 RES=${1:?usage: run_camelk.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]}
 MOD=${2:?module dir}
 PRJ=${3:?osb project name}
@@ -919,6 +921,7 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 set -uo pipefail
 # local client settings, never in Git: $OSB_KIT_ENV, else ./.osb-kit.env, else ~/.osb-kit.env
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
+MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
 STAGES='list|batches|coverage|estimate|time|research|task1|tests|scaffold|build|matrix|report|functional|auto|status'
 if echo "${1:-}" | grep -Eqx "($STAGES)"; then         # short form: run_domain.sh <stage> [workspace], APP from the env file
   STAGE=$1; WS=${2:-${WS:-.}}; APP=${APP:?set APP in .osb-kit.env or use: run_domain.sh <osb-app-dir> <stage>}
@@ -1230,6 +1233,7 @@ cat > 'pi/run_overnight.sh' <<'KIT_EOF_PI_RUN_OVERNIGHT_SH'
 # Log: domain/overnight.log. At the end: domain/FUNCTIONAL_TEST_REPORT.md and domain/TIME_PROJECTION.md.
 set -u
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
+MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
 STAGE=${1:?usage: run_overnight.sh <stage> [hours]}
 HOURS=${2:-10}
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
@@ -1270,7 +1274,8 @@ cat > 'pi/run_research.sh' <<'KIT_EOF_PI_RUN_RESEARCH_SH'
 # Env:   OUT (default research/<proxy>; run_domain.sh uses research/<project>/<proxy>), OSB_PI_MODEL (model pattern for
 #        `pi --model`), PI_THINKING (default high), KIT, PYTHON
 set -euo pipefail
-[ -f "${OSB_KIT_ENV:-$HOME/.osb-kit.env}" ] && . "${OSB_KIT_ENV:-$HOME/.osb-kit.env}"   # local client settings, never in Git
+for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done   # local settings, never in Git
+MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
 PROJECT=${1:?usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]}
 PROXY=${2:?proxy name}
 TASK1=${3:-}
@@ -1333,7 +1338,8 @@ cat > 'pi/run_tests.sh' <<'KIT_EOF_PI_RUN_TESTS_SH'
 # Result: <module>/src/test/** (FlowParityTest + flow-test.json + real and synthetic case folders, frozen),
 #         <module>/TEST_MATRIX.md (catalogue: every scenario, its inputs and expected outputs). Exit 1 if a scenario has no case.
 set -euo pipefail
-[ -f "${OSB_KIT_ENV:-$HOME/.osb-kit.env}" ] && . "${OSB_KIT_ENV:-$HOME/.osb-kit.env}"   # local client settings, never in Git
+for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done   # local settings, never in Git
+MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
 RES=${1:?usage: run_tests.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]}
 MOD=${2:?module dir}
 PRJ=${3:?osb project name}

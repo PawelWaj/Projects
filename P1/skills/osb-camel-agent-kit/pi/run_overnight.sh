@@ -10,6 +10,7 @@
 # Log: domain/overnight.log. At the end: domain/FUNCTIONAL_TEST_REPORT.md and domain/TIME_PROJECTION.md.
 set -u
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
+MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
 STAGE=${1:?usage: run_overnight.sh <stage> [hours]}
 HOURS=${2:-10}
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
