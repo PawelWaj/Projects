@@ -117,7 +117,10 @@ do_research() {
     if [ -f "$out/SHARE_CHECK.json" ] && grep -q '"pass": true' "$out/SHARE_CHECK.json"; then echo "skip $p/$x (PASS)"; continue; fi
     echo "=== research $p/$x"
     t1=$(task1_of "$p" "$x")
-    timed "$p" "$x" research bash -c 'cd "$1" && OUT="research/$2/$3" bash "$4/pi/run_research.sh" "$5/$2" "$3" ${6:+"$6"}' _ "$WS" "$p" "$x" "$KIT" "$APP" "$t1" < /dev/null || echo "FAILED research $p/$x (continuing)"
+    timed "$p" "$x" research bash -c 'cd "$1" && OUT="research/$2/$3" bash "$4/pi/run_research.sh" "$5/$2" "$3" ${6:+"$6"}' _ "$WS" "$p" "$x" "$KIT" "$APP" "$t1" < /dev/null
+    rc=$?
+    [ "$rc" = 75 ] && { echo "STOP: the model endpoint refuses every call (quota). Rerun later: finished flows are skipped."; return 75; }
+    [ "$rc" = 0 ] || echo "FAILED research $p/$x (continuing)"
     sleep "${PI_PAUSE:-30}"
   done
 }
@@ -202,7 +205,7 @@ case "$STAGE" in
     [ -n "${SPLUNK_COVERAGE:-}" ] && [ -f "$SPLUNK_COVERAGE" ] || { echo "coverage needs SPLUNK_COVERAGE=<csv of the Splunk payload table>"; exit 2; }
     "$PY" "$KIT/skills/osb-to-camel/scripts/osb_inventory.py" "$APP" -o "$WS/domain/inventory" > /dev/null
     "$PY" "$(dirname "$BATCH")/domain_coverage.py" "$WS/domain/inventory" "$SPLUNK_COVERAGE" -o "$WS/domain/COVERAGE.md" ;;
-  research) do_research; status ;;
+  research) do_research; rc=$?; status; exit $rc ;;
   task1) do_task1; status ;;
   tests) do_tests; status ;;
   scaffold) do_scaffold; status ;;
@@ -217,7 +220,7 @@ case "$STAGE" in
   time) "$PY" "$(dirname "$BATCH")/time_projection.py" "$WS/domain/timings.csv" --flows "${TOTAL_FLOWS:-450}" \
           --coverage "$WS/domain/coverage.csv" -o "$WS/domain/TIME_PROJECTION.md" ;;
   report) status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
-  functional) do_research; do_task1; do_tests; do_build; do_matrix; status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
+  functional) do_research || { status > /dev/null; exit 75; }; do_task1; do_tests; do_build; do_matrix; status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
   status) status ;;
   *) echo "unknown stage: $STAGE"; exit 2 ;;
 esac

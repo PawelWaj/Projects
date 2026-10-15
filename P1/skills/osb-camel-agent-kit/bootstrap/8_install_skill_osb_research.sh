@@ -753,7 +753,8 @@ echo "== 2 questionnaire (pi)"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,write"
     --append-system-prompt "$KIT/agents/researcher.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
-pi_call "$LOG/research.out" "$LOG/research.err" "${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." || true
+rc=0; pi_call "$LOG/research.out" "$LOG/research.err" "${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." || rc=$?
+[ "$rc" = 75 ] && exit 75
 for try in 2; do   # pi sometimes ends without writing the files: one more attempt, logs kept per attempt
   [ -s "$OUT/RESEARCH.md" ] && [ -s "$OUT/research.json" ] && break
   echo "   pi wrote no answer files, attempt $try (see $LOG/research.err)"
@@ -776,6 +777,7 @@ cat > 'pi/pi_call.sh' <<'KIT_EOF_PI_PI_CALL_SH'
 # Sourced by the pi runners. pi_call <out-file> <err-file> <pi args...>
 # Runs pi; when the model endpoint answers 429 / rate limit / overloaded, waits and retries with a growing pause.
 # Env: PI_RETRIES (default 5), PI_BACKOFF (first pause in seconds, default 60, doubled each time, max 15 min).
+# Exit 75 when the endpoint still refuses after all retries (quota used up): the runners stop instead of moving on.
 pi_call() {
   local out=$1 err=$2; shift 2
   local n=0 wait=${PI_BACKOFF:-60}
@@ -789,6 +791,10 @@ pi_call() {
       [ -n "${PI_WAIT_FILE:-}" ] && echo "$wait" >> "$PI_WAIT_FILE"     # rate-limit waiting, measured separately
       wait=$((wait * 2)); [ "$wait" -gt 900 ] && wait=900
       continue
+    fi
+    if grep -qiE '(^|[^0-9])429([^0-9]|$)|too many requests|rate.?limit|overloaded' "$err" 2>/dev/null; then
+      echo "   model endpoint still refuses after ${PI_RETRIES:-5} retries: quota used up? stopping (exit 75)"
+      return 75
     fi
     return 1
   done
