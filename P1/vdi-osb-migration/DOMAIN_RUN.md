@@ -11,6 +11,13 @@ APP=/e/osb-application       # Git Bash path: /e/..., not E:\...
 cd /e/Pawel/work                          # workspace: research/, modules/, domain/ are created here
 ```
 
+## Local settings, not in Git
+
+Client-specific values (application folder, Splunk index and sourcetype, Maven settings, pi settings) live only on the
+machine: copy `pi/osb-kit.env.example` to `~/.osb-kit.env` and fill it in; every runner reads it (values on the command
+line win). The repo stays generic. Before a commit, `tools/check_no_client_names.sh --install` adds a hook that blocks
+names listed in the local `~/.osb-kit-denylist` (one regex per line, also never in Git).
+
 ## Before the first build: Java 21, Maven 3.6.3+, the client Nexus (found on the pilot VDI, 2026-10-15)
 
 The VDI has no internet, a system Maven 3.5.3 and `JAVA_HOME` on JDK 1.7 (kept for OSB/JDeveloper). Per Git Bash window

@@ -417,7 +417,7 @@ def main() -> None:
     rs = KIT / "skills" / "osb-research"
     emit("8_install_skill_osb_research.sh", "Skill osb-research (shareable research pack) under .pi/skills/ + researcher role + pi runner.",
          [(p, ".pi/skills/osb-research/" + rel(rs, p)) for p in files_under(rs, ["SKILL.md", "scripts/*.py", "references/*", "assets/*"])]
-         + [(KIT / "agents/researcher.md", "agents/researcher.md"), (KIT / "pi/run_research.sh", "pi/run_research.sh"), (KIT / "pi/pi_call.sh", "pi/pi_call.sh"),
+         + [(KIT / "agents/researcher.md", "agents/researcher.md"), (KIT / "pi/run_research.sh", "pi/run_research.sh"), (KIT / "pi/pi_call.sh", "pi/pi_call.sh"), (KIT / "pi/osb-kit.env.example", "pi/osb-kit.env.example"),
             (KIT / "pi/prompts/osb-research.md", ".pi/prompts/osb-research.md")],
          ["chmod +x .pi/skills/osb-research/scripts/*.py pi/run_research.sh 2>/dev/null || true"], "skill osb-research")
     ck = KIT / "skills" / "osb-camelk-route"
@@ -1825,6 +1825,13 @@ KIT=$P1/skills/osb-camel-agent-kit        # or the workspace where the bootstrap
 APP=/e/osb-application       # Git Bash path: /e/..., not E:\...
 cd /e/Pawel/work                          # workspace: research/, modules/, domain/ are created here
 ```
+
+## Local settings, not in Git
+
+Client-specific values (application folder, Splunk index and sourcetype, Maven settings, pi settings) live only on the
+machine: copy `pi/osb-kit.env.example` to `~/.osb-kit.env` and fill it in; every runner reads it (values on the command
+line win). The repo stays generic. Before a commit, `tools/check_no_client_names.sh --install` adds a hook that blocks
+names listed in the local `~/.osb-kit-denylist` (one regex per line, also never in Git).
 
 ## Before the first build: Java 21, Maven 3.6.3+, the client Nexus (found on the pilot VDI, 2026-10-15)
 

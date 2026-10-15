@@ -726,6 +726,7 @@ cat > 'pi/run_research.sh' <<'KIT_EOF_PI_RUN_RESEARCH_SH'
 # Env:   OUT (default research/<proxy>; run_domain.sh uses research/<project>/<proxy>), OSB_PI_MODEL (model pattern for
 #        `pi --model`), PI_THINKING (default high), KIT, PYTHON
 set -euo pipefail
+[ -f "${OSB_KIT_ENV:-$HOME/.osb-kit.env}" ] && . "${OSB_KIT_ENV:-$HOME/.osb-kit.env}"   # local client settings, never in Git
 PROJECT=${1:?usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]}
 PROXY=${2:?proxy name}
 TASK1=${3:-}
@@ -792,6 +793,22 @@ pi_call() {
   done
 }
 KIT_EOF_PI_PI_CALL_SH
+mkdir -p "$(dirname "pi/osb-kit.env.example")"
+cat > 'pi/osb-kit.env.example' <<'KIT_EOF_PI_OSB_KIT_ENV_EXAMPLE'
+# Copy to ~/.osb-kit.env on the client machine and fill in. NEVER commit the filled copy: client-specific values
+# (application folder, Splunk names, Maven settings) live only on the machine. Every runner in pi/ reads it if present
+# (another path: export OSB_KIT_ENV=/path/to/file). Values set on the command line win over this file (every line is a default: ${VAR:-...}).
+export KIT="${KIT:-/e/Pawel/Projects-main/P1/skills/osb-camel-agent-kit}"   # the kit in the unzipped repo
+export APP="${APP:-/e/<osb-application-folder>}"                              # OSB application with the *-prj projects
+export WS="${WS:-/e/Pawel/work}"                                             # workspace: research/, task1/, modules/, domain/
+export JAVA_HOME="${JAVA_HOME:-/c/Program Files/<jdk-21-folder>}"
+export PATH="/e/Pawel/apache-maven-3.9.9/bin:$JAVA_HOME/bin:$PATH"
+export MVN_ARGS="${MVN_ARGS:--s $HOME/.m2/settings.xml}"                          # the client's Nexus mirror
+export PI_OFFLINE="${PI_OFFLINE:-1}" PI_TELEMETRY="${PI_TELEMETRY:-0}" PI_PAUSE="${PI_PAUSE:-60}"   # pi: no outside calls, stay under the rate limit
+export SPLUNK_INDEX="${SPLUNK_INDEX:-<e2e_index>}"                                     # used in the Splunk searches of the guides
+export SPLUNK_SOURCETYPE="${SPLUNK_SOURCETYPE:-<osb_sourcetype>}"
+# export MASK_KEY=...   # do NOT put the masking key here: type it per session, it comes from the data owner
+KIT_EOF_PI_OSB_KIT_ENV_EXAMPLE
 mkdir -p "$(dirname ".pi/prompts/osb-research.md")"
 cat > '.pi/prompts/osb-research.md' <<'KIT_EOF__PI_PROMPTS_OSB_RESEARCH_MD'
 ---
@@ -803,4 +820,4 @@ Use skill osb-research on the OSB export $1 for proxy $2 (scenarios from $3/trac
 Write research/$2/RESEARCH.md and research/$2/research.json, run the share check until it passes, then give the five-line report.
 KIT_EOF__PI_PROMPTS_OSB_RESEARCH_MD
 chmod +x .pi/skills/osb-research/scripts/*.py pi/run_research.sh 2>/dev/null || true
-echo "installed: 10 files (skill osb-research)"
+echo "installed: 11 files (skill osb-research)"

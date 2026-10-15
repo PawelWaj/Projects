@@ -601,6 +601,7 @@ cat > 'pi/preflight.sh' <<'KIT_EOF_PI_PREFLIGHT_SH'
 # Runs in Git Bash (Windows), WSL or Linux. Read-only: installs nothing, changes nothing.
 # Usage: pi/preflight.sh [model-endpoint-url]
 set -u
+[ -f "${OSB_KIT_ENV:-$HOME/.osb-kit.env}" ] && . "${OSB_KIT_ENV:-$HOME/.osb-kit.env}"   # local client settings, never in Git
 ok=0; warn=0; fail=0
 pass() { printf '  [ OK ] %s\n' "$1"; ok=$((ok+1)); }
 wrn()  { printf '  [WARN] %s\n' "$1"; warn=$((warn+1)); }
@@ -696,6 +697,7 @@ cat > 'pi/run_camelk.sh' <<'KIT_EOF_PI_RUN_CAMELK_SH'
 #      (e.g. "-s ~/.m2/client-settings.xml"), OSB_PI_MODEL, PI_THINKING (default high), KIT, PYTHON
 # Exit: 0 gates PASS, 3 card not approved yet (expected after the first run), 1 anything else.
 set -euo pipefail
+[ -f "${OSB_KIT_ENV:-$HOME/.osb-kit.env}" ] && . "${OSB_KIT_ENV:-$HOME/.osb-kit.env}"   # local client settings, never in Git
 RES=${1:?usage: run_camelk.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]}
 MOD=${2:?module dir}
 PRJ=${3:?osb project name}
@@ -761,9 +763,10 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 #      MASK_JSON_KEYS ('fieldA fieldB': extra JSON/XML fields to mask in task1, when the residue check finds one),
 #      plus the env of run_research.sh / run_camelk.sh (OSB_PI_MODEL, ...).
 set -uo pipefail
+[ -f "${OSB_KIT_ENV:-$HOME/.osb-kit.env}" ] && . "${OSB_KIT_ENV:-$HOME/.osb-kit.env}"   # local client settings, never in Git
 APP=${1:?usage: run_domain.sh <osb-app-dir> <list|research|scaffold|build|status> [workspace]}
 STAGE=${2:?stage}
-WS=${3:-.}
+WS=${3:-${WS:-.}}
 case "$APP" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && APP=$(cygpath -u "$APP");; esac
 [ -d "$APP" ] || { echo "OSB application folder not found: $APP (Git Bash: /e/folder, not E:\\folder)"; exit 2; }
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
@@ -1029,6 +1032,7 @@ cat > 'pi/run_research.sh' <<'KIT_EOF_PI_RUN_RESEARCH_SH'
 # Env:   OUT (default research/<proxy>; run_domain.sh uses research/<project>/<proxy>), OSB_PI_MODEL (model pattern for
 #        `pi --model`), PI_THINKING (default high), KIT, PYTHON
 set -euo pipefail
+[ -f "${OSB_KIT_ENV:-$HOME/.osb-kit.env}" ] && . "${OSB_KIT_ENV:-$HOME/.osb-kit.env}"   # local client settings, never in Git
 PROJECT=${1:?usage: run_research.sh <osb-project-dir> <proxy> [task1-dir]}
 PROXY=${2:?proxy name}
 TASK1=${3:-}
@@ -1083,6 +1087,7 @@ cat > 'pi/run_tests.sh' <<'KIT_EOF_PI_RUN_TESTS_SH'
 # Result: <module>/src/test/** (FlowParityTest + flow-test.json + real and synthetic case folders, frozen),
 #         <module>/TEST_MATRIX.md (catalogue: every scenario, its inputs and expected outputs). Exit 1 if a scenario has no case.
 set -euo pipefail
+[ -f "${OSB_KIT_ENV:-$HOME/.osb-kit.env}" ] && . "${OSB_KIT_ENV:-$HOME/.osb-kit.env}"   # local client settings, never in Git
 RES=${1:?usage: run_tests.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]}
 MOD=${2:?module dir}
 PRJ=${3:?osb project name}

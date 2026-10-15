@@ -3,6 +3,7 @@
 # Runs in Git Bash (Windows), WSL or Linux. Read-only: installs nothing, changes nothing.
 # Usage: pi/preflight.sh [model-endpoint-url]
 set -u
+[ -f "${OSB_KIT_ENV:-$HOME/.osb-kit.env}" ] && . "${OSB_KIT_ENV:-$HOME/.osb-kit.env}"   # local client settings, never in Git
 ok=0; warn=0; fail=0
 pass() { printf '  [ OK ] %s\n' "$1"; ok=$((ok+1)); }
 wrn()  { printf '  [WARN] %s\n' "$1"; warn=$((warn+1)); }
