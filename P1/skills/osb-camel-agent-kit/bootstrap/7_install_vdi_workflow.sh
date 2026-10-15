@@ -417,7 +417,7 @@ def main() -> None:
     rs = KIT / "skills" / "osb-research"
     emit("8_install_skill_osb_research.sh", "Skill osb-research (shareable research pack) under .pi/skills/ + researcher role + pi runner.",
          [(p, ".pi/skills/osb-research/" + rel(rs, p)) for p in files_under(rs, ["SKILL.md", "scripts/*.py", "references/*", "assets/*"])]
-         + [(KIT / "agents/researcher.md", "agents/researcher.md"), (KIT / "pi/run_research.sh", "pi/run_research.sh"), (KIT / "pi/pi_call.sh", "pi/pi_call.sh"), (KIT / "pi/osb-kit.env.example", "pi/osb-kit.env.example"), (KIT / "pi/init_env.sh", "pi/init_env.sh"), (KIT / "pi/make_review_pack.sh", "pi/make_review_pack.sh"),
+         + [(KIT / "agents/researcher.md", "agents/researcher.md"), (KIT / "pi/run_research.sh", "pi/run_research.sh"), (KIT / "pi/pi_call.sh", "pi/pi_call.sh"), (KIT / "pi/osb-kit.env.example", "pi/osb-kit.env.example"), (KIT / "pi/init_env.sh", "pi/init_env.sh"), (KIT / "pi/make_review_pack.sh", "pi/make_review_pack.sh"), (KIT / "pi/run_overnight.sh", "pi/run_overnight.sh"), (KIT / "pi/rate_limit_probe.py", "pi/rate_limit_probe.py"),
             (KIT / "pi/prompts/osb-research.md", ".pi/prompts/osb-research.md")],
          ["chmod +x .pi/skills/osb-research/scripts/*.py pi/run_research.sh 2>/dev/null || true"], "skill osb-research")
     ck = KIT / "skills" / "osb-camelk-route"
@@ -2097,6 +2097,8 @@ Request-response proxies (HTTP) are tested on their reply to the caller as well 
 Payload table for 0b (Splunk, export as CSV): `index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d "oracle.osb.logging.pipeline"
 | rex "Project (?<project>\S+) :: for PS (?<proxy>\S+)" | eval payload=case(match(_raw, "::\s*\{"), "json", match(_raw, "::\s*<"), "xml", true(), "none") | stats count by project, proxy, payload`
 What was tested and how: [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
+
+Unattended: `bash $KIT/pi/run_overnight.sh <stage> [hours]` repeats the stage in rounds (finished flows skipped), sleeps when the quota is used up, makes one tiny warm-up call per round and stops at the deadline; log in `domain/overnight.log`. What the endpoint allows: `python $KIT/pi/rate_limit_probe.py` (one tiny call, prints only the rate-limit headers).
 
 Rate limit: the model endpoint answers `429 Too Many Requests` when calls come too fast. The runners wait and retry
 (`PI_RETRIES`, default 5; `PI_BACKOFF`, first pause 60 s, doubled) and pause between flows (`PI_PAUSE`, default 30 s;

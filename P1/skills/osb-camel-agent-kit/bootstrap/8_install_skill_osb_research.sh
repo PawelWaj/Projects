@@ -953,6 +953,123 @@ PY
 (cd "$WS/review" && tar -czf "$P-$X.tgz" "$P-$X")
 echo "review package: $O  (+ $WS/review/$P-$X.tgz). Keep it on the client machine."
 KIT_EOF_PI_MAKE_REVIEW_PACK_SH
+mkdir -p "$(dirname "pi/run_overnight.sh")"
+cat > 'pi/run_overnight.sh' <<'KIT_EOF_PI_RUN_OVERNIGHT_SH'
+#!/usr/bin/env bash
+# Unattended run: works through a domain stage in small steps, pauses when the model quota is used up, tries again,
+# and stops at a deadline. Start it, go home, read the log and the report in the morning.
+#
+# Usage (in the workspace, .osb-kit.env loaded, MASK_KEY exported):
+#   bash <kit>/pi/run_overnight.sh <stage> [hours]          e.g.  POC=1 PROJECTS='a-prj' bash .../run_overnight.sh functional 10
+# Env: QUOTA_SLEEP (seconds to wait after the endpoint refused everything, default 1800), MAX_ROUNDS (default 12),
+#      plus the run_domain.sh env.
+# Every round runs `run_domain.sh <stage>`; finished flows are skipped, so each round only does what is left.
+# Log: domain/overnight.log. At the end: domain/FUNCTIONAL_TEST_REPORT.md and domain/TIME_PROJECTION.md.
+set -u
+for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
+STAGE=${1:?usage: run_overnight.sh <stage> [hours]}
+HOURS=${2:-10}
+KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+WS=${WS:-.}
+LOG="$WS/domain/overnight.log"; mkdir -p "$WS/domain"
+end=$(( $(date +%s) + HOURS * 3600 ))
+round=0
+echo "$(date '+%F %T') start: stage=$STAGE hours=$HOURS PROJECTS='${PROJECTS:-<all>}' BATCH_NO='${BATCH_NO:-}'" | tee -a "$LOG"
+while [ "$(date +%s)" -lt "$end" ] && [ "$round" -lt "${MAX_ROUNDS:-12}" ]; do
+  round=$((round + 1))
+  echo "$(date '+%F %T') round $round" | tee -a "$LOG"
+  # one tiny call first: on this endpoint a short call before a long run helped (login/token refresh or limit window)
+  timeout 120 pi --print --no-session ${OSB_PI_MODEL:+--model "$OSB_PI_MODEL"} "Reply with the word OK" >> "$LOG" 2>&1 < /dev/null \
+    || echo "$(date '+%F %T') warm-up call failed" >> "$LOG"
+  ALL=${ALL:-1} bash "$KIT/pi/run_domain.sh" "$STAGE" "$WS" >> "$LOG" 2>&1 < /dev/null
+  rc=$?
+  tail -1 "$LOG"
+  if [ "$rc" = 75 ] || tail -40 "$LOG" | grep -q "^STOP: the model endpoint"; then
+    echo "$(date '+%F %T') quota used up: sleeping ${QUOTA_SLEEP:-1800}s" | tee -a "$LOG"
+    sleep "${QUOTA_SLEEP:-1800}"; continue
+  fi
+  # nothing left to do when a round no longer starts any pi step
+  if ! tail -n 200 "$LOG" | sed -n "/round $round\$/,\$p" | grep -qE "^=== (research|tests|build)"; then
+    echo "$(date '+%F %T') nothing left for stage $STAGE: done" | tee -a "$LOG"; break
+  fi
+done
+bash "$KIT/pi/run_domain.sh" report "$WS" >> "$LOG" 2>&1 < /dev/null
+bash "$KIT/pi/run_domain.sh" time "$WS" >> "$LOG" 2>&1 < /dev/null
+echo "$(date '+%F %T') finished after $round round(s); see domain/FUNCTIONAL_TEST_REPORT.md" | tee -a "$LOG"
+KIT_EOF_PI_RUN_OVERNIGHT_SH
+mkdir -p "$(dirname "pi/rate_limit_probe.py")"
+cat > 'pi/rate_limit_probe.py' <<'KIT_EOF_PI_RATE_LIMIT_PROBE_PY'
+#!/usr/bin/env python3
+"""Ask the model endpoint for its rate limits: ONE tiny request, then print only the status and the rate-limit
+headers (x-ratelimit-*, retry-after, ...). Never prints the API key, the URL's credentials or the answer text.
+
+    python rate_limit_probe.py [--model fast] [--models ~/.pi/agent/models.json]
+
+Reads the provider of the model from pi's models.json (baseUrl, apiKey or apiKey env name, api type) and sends an
+OpenAI-compatible chat request ("Reply OK", max 5 tokens). Other API styles: prints what it found and stops."""
+import argparse
+import json
+import os
+import ssl
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+
+def find(models: dict, name: str):
+    for pname, prov in (models.get("providers") or {}).items():
+        for m in prov.get("models") or []:
+            if name in (m.get("id"), m.get("name")):
+                return pname, prov, m
+    return None, None, None
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--model", default=os.environ.get("OSB_PI_MODEL", "fast"))
+    ap.add_argument("--models", type=Path, default=Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi/agent")) / "models.json")
+    a = ap.parse_args()
+    models = json.loads(a.models.read_text(encoding="utf-8"))
+    pname, prov, m = find(models, a.model.split("/")[-1])
+    if not prov:
+        print(f"model '{a.model}' not in {a.models}; providers: {list((models.get('providers') or {}).keys())}")
+        return 2
+    base = (prov.get("baseUrl") or prov.get("baseURL") or "").rstrip("/")
+    key = prov.get("apiKey") or ""
+    if key and key.upper() == key and not key.startswith(("sk-", "ey")) and os.environ.get(key):
+        key = os.environ[key]                          # apiKey given as the NAME of an environment variable
+    api = prov.get("api") or m.get("api") or "openai-completions"
+    print(f"provider: {pname}  api: {api}  model id: {m.get('id')}  endpoint host: {base.split('/')[2] if '//' in base else '?'}")
+    if "openai" not in api and "completions" not in api:
+        print("not an OpenAI-compatible endpoint: probe stops here (send this line to the endpoint owner instead)")
+        return 0
+    body = json.dumps({"model": m.get("id"), "messages": [{"role": "user", "content": "Reply OK"}], "max_tokens": 5}).encode()
+    req = urllib.request.Request(base + "/chat/completions", data=body, method="POST",
+                                 headers={"Content-Type": "application/json", **({"Authorization": f"Bearer {key}"} if key else {}),
+                                          **(prov.get("headers") or {})})
+    t0 = time.time()
+    try:
+        r = urllib.request.urlopen(req, timeout=60, context=ssl.create_default_context())
+        status, headers = r.status, dict(r.headers)
+    except urllib.error.HTTPError as e:
+        status, headers = e.code, dict(e.headers)
+    except Exception as e:                              # noqa: BLE001
+        print(f"request failed: {type(e).__name__}")
+        return 1
+    print(f"status: {status}  in {time.time() - t0:.1f}s")
+    shown = {k: v for k, v in headers.items() if any(w in k.lower() for w in ("ratelimit", "rate-limit", "retry-after", "quota", "x-ms-region", "apim"))}
+    for k, v in sorted(shown.items()):
+        print(f"  {k}: {v}")
+    if not shown:
+        print("  no rate-limit headers sent by the endpoint: only its owner can tell the limits")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+KIT_EOF_PI_RATE_LIMIT_PROBE_PY
 mkdir -p "$(dirname ".pi/prompts/osb-research.md")"
 cat > '.pi/prompts/osb-research.md' <<'KIT_EOF__PI_PROMPTS_OSB_RESEARCH_MD'
 ---
@@ -964,4 +1081,4 @@ Use skill osb-research on the OSB export $1 for proxy $2 (scenarios from $3/trac
 Write research/$2/RESEARCH.md and research/$2/research.json, run the share check until it passes, then give the five-line report.
 KIT_EOF__PI_PROMPTS_OSB_RESEARCH_MD
 chmod +x .pi/skills/osb-research/scripts/*.py pi/run_research.sh 2>/dev/null || true
-echo "installed: 13 files (skill osb-research)"
+echo "installed: 15 files (skill osb-research)"

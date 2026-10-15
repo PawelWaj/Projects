@@ -65,6 +65,8 @@ Payload table for 0b (Splunk, export as CSV): `index=<e2e_index> sourcetype="<os
 | rex "Project (?<project>\S+) :: for PS (?<proxy>\S+)" | eval payload=case(match(_raw, "::\s*\{"), "json", match(_raw, "::\s*<"), "xml", true(), "none") | stats count by project, proxy, payload`
 What was tested and how: [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
 
+Unattended: `bash $KIT/pi/run_overnight.sh <stage> [hours]` repeats the stage in rounds (finished flows skipped), sleeps when the quota is used up, makes one tiny warm-up call per round and stops at the deadline; log in `domain/overnight.log`. What the endpoint allows: `python $KIT/pi/rate_limit_probe.py` (one tiny call, prints only the rate-limit headers).
+
 Rate limit: the model endpoint answers `429 Too Many Requests` when calls come too fast. The runners wait and retry
 (`PI_RETRIES`, default 5; `PI_BACKOFF`, first pause 60 s, doubled) and pause between flows (`PI_PAUSE`, default 30 s;
 raise it, e.g. `PI_PAUSE=120`, if 429s keep coming). A pi stage with more than 10 proxies needs `ALL=1`.
