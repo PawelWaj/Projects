@@ -753,6 +753,14 @@ PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --to
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
 "${PI[@]}" "Use skill osb-research. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." \
   > "$LOG/research.out" 2> "$LOG/research.err" || true
+for try in 2; do   # pi sometimes ends without writing the files: one more attempt, logs kept per attempt
+  [ -s "$OUT/RESEARCH.md" ] && [ -s "$OUT/research.json" ] && break
+  echo "   pi wrote no answer files, attempt $try (see $LOG/research.err)"
+  cp "$LOG/research.err" "$LOG/research.attempt1.err" 2>/dev/null || true
+  "${PI[@]}" "Use skill osb-research. A previous attempt ended without writing RESEARCH.md and research.json: write both files. OSB export: $PROJECT. Proxy: $PROXY. Today is $(date +%F). facts.json and SOURCES.txt are already in $OUT (step 1 done). Do steps 2-5: read the sources, answer every question of references/questions.md into $OUT/RESEARCH.md (assets/RESEARCH_TEMPLATE.md) and $OUT/research.json (assets/research.schema.json), run '$PY $SK/scripts/research_check.py $OUT' until it prints PASS. Write nothing outside $OUT." \
+  > "$LOG/research.out" 2> "$LOG/research.err" || true
+done
+
 [ "$(fp "$PROJECT")" = "$before" ] || { echo "VIOLATION: the OSB export was changed during research"; exit 1; }
 
 echo "== 3 share check"

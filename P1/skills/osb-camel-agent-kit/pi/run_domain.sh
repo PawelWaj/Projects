@@ -136,6 +136,15 @@ do_matrix() {   # mutation check on every green module (MUTATE=0 skips it), then
   "$PY" "$SK/test_matrix.py" --domain "$WS/modules" -o "$WS/domain"
 }
 
+# pi runs are slow and cost tokens: show the selection, and require ALL=1 for more than 10 flows
+case "$STAGE" in research|tests|build|auto)
+  n=$(flows | wc -l | tr -d ' ')
+  echo "selected: $n proxies (PROJECTS='${PROJECTS:-<all>}')"
+  if [ "$n" -gt 10 ] && [ "${ALL:-0}" != 1 ]; then
+    echo "more than 10 proxies for a pi stage: set PROJECTS='a-prj|b-prj' on the SAME line, or ALL=1 to run them all"; exit 2
+  fi;;
+esac
+
 case "$STAGE" in
   list) flows | awk '{print} END{print NR " proxies"}' ;;
   coverage)
