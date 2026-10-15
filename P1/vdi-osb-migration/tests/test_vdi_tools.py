@@ -395,3 +395,35 @@ class SyntheticAndReplyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LoggedOutputOracleTests(unittest.TestCase):
+    """A '... for BS x ... ::<body>' line in the same trace becomes expected-output.* of that case."""
+
+    def test_outbound_line_becomes_expected_output(self):
+        src = list(csv.DictReader(open(ROOT / "osb-log-replay/samples/splunk-export-synthetic.csv", encoding="utf-8")))[0]
+        raw = src["_raw"]
+        pre = raw[:raw.index("[sample-change-pipelinepairnode")]
+        with tempfile.TemporaryDirectory() as d:
+            rows = []
+            for i in range(2):
+                tid = f"99999999-8888-4777-8666-55555555555{i}"
+                rows.append({"_time": src["_time"], "_raw": pre + "[p, r, s, REQUEST] Request Received to Project sample-change-prj :: for PS "
+                             f"sample-adjustment from JMS t for Resource Name: R event with TraceID - {tid} ::" + '{"data":{"k":"A"}}'})
+                rows.append({"_time": src["_time"], "_raw": pre + "[p, r, RouteNode, REQUEST] Request from Project sample-change-prj :: for BS "
+                             f"bs to be posted to Q with TraceID: {tid} ::<x:R xmlns:x=\"urn:x\"><x:n>{i}</x:n></x:R>"})
+            with open(Path(d, "ex.csv"), "w", newline="", encoding="utf-8") as fh:
+                w = csv.DictWriter(fh, fieldnames=["_time", "_raw"])
+                w.writeheader()
+                w.writerows(rows)
+            r = subprocess.run([sys.executable, str(ROOT / "vdi-osb-migration/bin/batch_task1.py"), str(Path(d, "ex.csv")), "-o", str(Path(d, "b"))],
+                               capture_output=True, text=True, env={**os.environ, "MASK_KEY": "t"})
+            self.assertIn('"flows": 1', r.stdout, r.stdout + r.stderr)
+            outs = sorted(Path(d, "b").rglob("expected-output.xml"))
+            self.assertEqual(len(outs), 2)
+            self.assertIn("<x:n>", outs[0].read_text())
+            self.assertFalse(list(Path(d, "b").rglob("input.payload"))[0].read_text().startswith("<"), "input stays the request")
+
+
+if __name__ == "__main__":
+    unittest.main()

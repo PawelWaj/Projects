@@ -44,7 +44,8 @@ import static org.junit.jupiter.api.Assertions.fail;
  * messages from task 1 (src/test/resources/parity/**, copied on the VDI, never committed). For each case:
  *   - the scenario (SCENARIO.txt) is looked up in scenario_mapping (research Q5) -> the outputs it must reach;
  *   - no other output receives anything; the correlation header is carried through;
- *   - if expected-output.json/.xml exists (original XQuery result, golden_runner), the body must equal it.
+ *   - if expected-output.json/.xml exists, the body must equal it: the body OSB itself logged on its way out (task 1),
+ *     or the original XQuery run on the input (golden_runner). XML is compared by namespace, not by prefix.
  * Backends are mock endpoints answering with src/test/resources/stubs/<backend>.* (shape from research Q8).
  * Cases come from Splunk (parity/<flow>/) or, where the flow logs no payload, are synthetic (parity/<flow>-synthetic/,
  * fake values from the message schema, written by the tester before the route and frozen like this file).
@@ -206,13 +207,15 @@ class FlowParityTest {
         Path xml = c.resolve("expected-output.xml");
         Assumptions.assumeTrue(Files.exists(json) || Files.exists(xml), "expected output pending (golden_runner on the VDI)");
         JsonNode expected = JSON.readTree(c.resolve("expected.json").toFile());
-        List<Message> outs = send(c, expectedOutputs(c, expected));
+        List<String> targets = expectedOutputs(c, expected);
+        List<Message> outs = send(c, targets);
         assertFalse(outs.isEmpty(), "golden output exists but the scenario maps to no output");
-        String body = outs.get(0).getBody(String.class);
+        // the body that is compared: the reply to the caller if the flow has one, else the first queue output
+        String body = outs.get(targets.contains(REPLY) ? targets.indexOf(REPLY) : 0).getBody(String.class);
         if (Files.exists(json)) {
             assertEquals(JSON.readTree(json.toFile()), JSON.readTree(body));
         } else {
-            assertTrue(xmlEqual(Files.readString(xml), body), "body differs from the original XQuery result");
+            assertTrue(xmlEqual(Files.readString(xml), body), "body differs from the OSB result (logged by OSB or the original XQuery)");
         }
     }
 
@@ -243,7 +246,48 @@ class FlowParityTest {
         strip(db);
         da.normalizeDocument();
         db.normalizeDocument();
-        return da.getDocumentElement().isEqualNode(db.getDocumentElement());
+        return sameXml(da.getDocumentElement(), db.getDocumentElement());
+    }
+
+    /** Same elements (namespace + local name, prefixes ignored), same attributes, same text, same order. */
+    static boolean sameXml(Node a, Node b) {
+        if (a.getNodeType() != b.getNodeType()) {
+            return false;
+        }
+        if (a.getNodeType() == Node.TEXT_NODE || a.getNodeType() == Node.CDATA_SECTION_NODE) {
+            return a.getNodeValue().strip().equals(b.getNodeValue().strip());
+        }
+        if (!java.util.Objects.equals(a.getNamespaceURI(), b.getNamespaceURI())
+            || !java.util.Objects.equals(a.getLocalName(), b.getLocalName())) {
+            return false;
+        }
+        var aa = attrs(a);
+        if (!aa.equals(attrs(b))) {
+            return false;
+        }
+        var ca = a.getChildNodes();
+        var cb = b.getChildNodes();
+        if (ca.getLength() != cb.getLength()) {
+            return false;
+        }
+        for (int i = 0; i < ca.getLength(); i++) {
+            if (!sameXml(ca.item(i), cb.item(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static Map<String, String> attrs(Node n) {
+        Map<String, String> m = new HashMap<>();
+        var at = n.getAttributes();
+        for (int i = 0; at != null && i < at.getLength(); i++) {
+            Node x = at.item(i);
+            if (!"http://www.w3.org/2000/xmlns/".equals(x.getNamespaceURI())) {      // namespace declarations: prefixes only
+                m.put(x.getNamespaceURI() + "|" + x.getLocalName(), x.getNodeValue());
+            }
+        }
+        return m;
     }
 
     static void strip(Node n) {

@@ -350,7 +350,7 @@ def model(r: dict, facts: dict, corr: str) -> dict:
     for o in r.get("outputs") or []:
         dest = o.get("destination") or ""
         owner = next((b for b in raw_backends if dest and dest in (b.get("operation") or "", b.get("destination") or "")), None)
-        key = slug(owner.get("name") if owner else o.get("name"))
+        key = slug(o.get("business_service") or (owner.get("name") if owner else o.get("name")))
         outputs[key] = {"name": o.get("name"), "destination": dest, "on_path": o.get("on_path") or o.get("on") or "",
                         "headers": o.get("headers") or [], "backend": owner.get("name") if owner else None}
         for a in (o.get("name"), dest, owner.get("name") if owner else None, key):
@@ -385,7 +385,8 @@ def model(r: dict, facts: dict, corr: str) -> dict:
     for x in r.get("scenario_mapping") or []:
         outs = x.get("outputs") if isinstance(x.get("outputs"), list) else [x.get("output")]
         outs = [resolve(o) for o in outs if o and str(o).lower() not in ("none", "-")]
-        mapping.append({"scenario": x.get("scenario", ""), "outputs": outs, "branch": x.get("branch", ""), "path": x.get("path", "")})
+        sc = x.get("scenario", "")
+        mapping.append({"scenario": sc if "=" in sc else "*", "outputs": outs, "branch": x.get("branch", ""), "path": x.get("path", "")})
     dims = [(d.lstrip("/").split(".")[-1], d) for d in r.get("scenario_dims") or [] if d]
     fmt = ((r.get("entry") or {}).get("payload_format") or "UNKNOWN").lower()
     return {"outputs": outputs, "error": err, "backends": backends, "paths": paths, "mapping": mapping, "dims": dims,
@@ -905,7 +906,8 @@ import static org.junit.jupiter.api.Assertions.fail;
  * messages from task 1 (src/test/resources/parity/**, copied on the VDI, never committed). For each case:
  *   - the scenario (SCENARIO.txt) is looked up in scenario_mapping (research Q5) -> the outputs it must reach;
  *   - no other output receives anything; the correlation header is carried through;
- *   - if expected-output.json/.xml exists (original XQuery result, golden_runner), the body must equal it.
+ *   - if expected-output.json/.xml exists, the body must equal it: the body OSB itself logged on its way out (task 1),
+ *     or the original XQuery run on the input (golden_runner). XML is compared by namespace, not by prefix.
  * Backends are mock endpoints answering with src/test/resources/stubs/<backend>.* (shape from research Q8).
  * Cases come from Splunk (parity/<flow>/) or, where the flow logs no payload, are synthetic (parity/<flow>-synthetic/,
  * fake values from the message schema, written by the tester before the route and frozen like this file).
@@ -1067,13 +1069,15 @@ class FlowParityTest {
         Path xml = c.resolve("expected-output.xml");
         Assumptions.assumeTrue(Files.exists(json) || Files.exists(xml), "expected output pending (golden_runner on the VDI)");
         JsonNode expected = JSON.readTree(c.resolve("expected.json").toFile());
-        List<Message> outs = send(c, expectedOutputs(c, expected));
+        List<String> targets = expectedOutputs(c, expected);
+        List<Message> outs = send(c, targets);
         assertFalse(outs.isEmpty(), "golden output exists but the scenario maps to no output");
-        String body = outs.get(0).getBody(String.class);
+        // the body that is compared: the reply to the caller if the flow has one, else the first queue output
+        String body = outs.get(targets.contains(REPLY) ? targets.indexOf(REPLY) : 0).getBody(String.class);
         if (Files.exists(json)) {
             assertEquals(JSON.readTree(json.toFile()), JSON.readTree(body));
         } else {
-            assertTrue(xmlEqual(Files.readString(xml), body), "body differs from the original XQuery result");
+            assertTrue(xmlEqual(Files.readString(xml), body), "body differs from the OSB result (logged by OSB or the original XQuery)");
         }
     }
 
@@ -1104,7 +1108,48 @@ class FlowParityTest {
         strip(db);
         da.normalizeDocument();
         db.normalizeDocument();
-        return da.getDocumentElement().isEqualNode(db.getDocumentElement());
+        return sameXml(da.getDocumentElement(), db.getDocumentElement());
+    }
+
+    /** Same elements (namespace + local name, prefixes ignored), same attributes, same text, same order. */
+    static boolean sameXml(Node a, Node b) {
+        if (a.getNodeType() != b.getNodeType()) {
+            return false;
+        }
+        if (a.getNodeType() == Node.TEXT_NODE || a.getNodeType() == Node.CDATA_SECTION_NODE) {
+            return a.getNodeValue().strip().equals(b.getNodeValue().strip());
+        }
+        if (!java.util.Objects.equals(a.getNamespaceURI(), b.getNamespaceURI())
+            || !java.util.Objects.equals(a.getLocalName(), b.getLocalName())) {
+            return false;
+        }
+        var aa = attrs(a);
+        if (!aa.equals(attrs(b))) {
+            return false;
+        }
+        var ca = a.getChildNodes();
+        var cb = b.getChildNodes();
+        if (ca.getLength() != cb.getLength()) {
+            return false;
+        }
+        for (int i = 0; i < ca.getLength(); i++) {
+            if (!sameXml(ca.item(i), cb.item(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static Map<String, String> attrs(Node n) {
+        Map<String, String> m = new HashMap<>();
+        var at = n.getAttributes();
+        for (int i = 0; at != null && i < at.getLength(); i++) {
+            Node x = at.item(i);
+            if (!"http://www.w3.org/2000/xmlns/".equals(x.getNamespaceURI())) {      // namespace declarations: prefixes only
+                m.put(x.getNamespaceURI() + "|" + x.getLocalName(), x.getNodeValue());
+            }
+        }
+        return m;
     }
 
     static void strip(Node n) {
@@ -1827,12 +1872,12 @@ source does not say. No code, no hosts, no data (see SKILL.md rules).
 | Q2 | **Message format.** What arrives (JSON or XML; root element or top-level keys), is there an nXSD/JSON-to-XML translation (which one, is the file in the export), what `$body` contains after it | short text + field list |
 | Q3 | **Flow overview.** The pipeline in order: stage → action type → what it does in one sentence. Include route nodes, branches, publish, service callouts, Java callouts, reply/resume | numbered list |
 | Q4 | **Branches.** For each branch/if-then: condition in plain words, the condition expression (one line), which values lead to which path, what happens on each path, default path | table per branch |
-| Q5 | **Scenario mapping.** Branches decide on payload fields: list those fields in `scenario_dims` (JSON path such as `data.hasPPAEngagement`, or the element name). Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
+| Q5 | **Scenario mapping.** Branches decide on payload fields: list those fields in `scenario_dims` (JSON path such as `data.hasPPAEngagement`, or the element name). Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). A flow without branches has one row with scenario `*` (every message). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
 | Q6 | **Outputs.** Request-response proxies (HTTP, local, SOAP): the answer to the caller is an output named `reply` (use it in branches and scenario_mapping). Name each other output after the business service that writes it (the same name in branches, scenario_mapping and backends). Every destination the flow writes to (business service → queue/topic/HTTP path/operation): on which path, which body (built by which transform), which JMS properties / transport headers / HTTP headers are set and from where | table |
 | Q7 | **Transforms.** For each XQuery/XSLT/assign/replace that builds a message: purpose, inputs (external params), output root, field mapping `source path → target path → rule` (copy, constant, format, lookup, condition), fn-bea functions used, constants | table per transform |
 | Q8 | **Backends.** Each business service / service callout: type, operation, when it is called, request built from, how the response is used, retry count/interval, timeout, load balancing, result caching, what happens on fault | table |
 | Q9 | **Errors.** Each error handler scope (stage, pipeline, service): what it catches, what it logs, where the message goes (error queue, reply, resume, re-raise), headers/fields set (errorCode, errorMessage, traceId ...), redelivery/retry behaviour of the transport | table |
-| Q10 | **Logging.** Each Log action: stage, level, the message template with placeholders (e.g. `Request Received to Project {project} :: for PS {proxy} ... TraceID - {uuid} ::{body}`), what `{...}` are | table |
+| Q10 | **Logging.** Say explicitly when a Log action logs the OUTGOING body (e.g. "... for BS x to be posted ... ::$body"): that logged body is OSB's own output and becomes the expected result of the tests. Each Log action: stage, level, the message template with placeholders (e.g. `Request Received to Project {project} :: for PS {proxy} ... TraceID - {uuid} ::{body}`), what `{...}` are | table |
 | Q11 | **Dependencies.** Shared resources from other projects, DVM lookups (name, columns used), Java callouts (class, method, what for), customisation/env properties used (names only), alerts, reporting, throttling, SLA | table |
 | Q12 | **Open questions.** Everything UNKNOWN, ambiguous or missing from the export, each with why it matters for the migration | numbered list |
 KIT_EOF__PI_SKILLS_OSB_RESEARCH_REFERENCES_QUESTIONS_MD

@@ -66,7 +66,7 @@ def model(r: dict, facts: dict, corr: str) -> dict:
     for o in r.get("outputs") or []:
         dest = o.get("destination") or ""
         owner = next((b for b in raw_backends if dest and dest in (b.get("operation") or "", b.get("destination") or "")), None)
-        key = slug(owner.get("name") if owner else o.get("name"))
+        key = slug(o.get("business_service") or (owner.get("name") if owner else o.get("name")))
         outputs[key] = {"name": o.get("name"), "destination": dest, "on_path": o.get("on_path") or o.get("on") or "",
                         "headers": o.get("headers") or [], "backend": owner.get("name") if owner else None}
         for a in (o.get("name"), dest, owner.get("name") if owner else None, key):
@@ -101,7 +101,8 @@ def model(r: dict, facts: dict, corr: str) -> dict:
     for x in r.get("scenario_mapping") or []:
         outs = x.get("outputs") if isinstance(x.get("outputs"), list) else [x.get("output")]
         outs = [resolve(o) for o in outs if o and str(o).lower() not in ("none", "-")]
-        mapping.append({"scenario": x.get("scenario", ""), "outputs": outs, "branch": x.get("branch", ""), "path": x.get("path", "")})
+        sc = x.get("scenario", "")
+        mapping.append({"scenario": sc if "=" in sc else "*", "outputs": outs, "branch": x.get("branch", ""), "path": x.get("path", "")})
     dims = [(d.lstrip("/").split(".")[-1], d) for d in r.get("scenario_dims") or [] if d]
     fmt = ((r.get("entry") or {}).get("payload_format") or "UNKNOWN").lower()
     return {"outputs": outputs, "error": err, "backends": backends, "paths": paths, "mapping": mapping, "dims": dims,

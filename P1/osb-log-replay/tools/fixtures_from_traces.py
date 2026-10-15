@@ -104,8 +104,18 @@ def main() -> int:
                             "business_keys": {k: v for k, v in merged.items() if k.startswith("body_")},
                             "expected_headers": out_cfg.get("expect_headers", []),
                             "body_oracle": "original XQuery on input.payload (golden test), not the logs"}
-                files = {"input.payload": merged["body"], "headers.json": json.dumps(headers, indent=2, ensure_ascii=False),
-                         "expected.json": json.dumps(expected, indent=2, ensure_ascii=False)}
+                files = {"input.payload": merged["body"], "headers.json": json.dumps(headers, indent=2, ensure_ascii=False)}
+                # OSB often logs the message again before sending it on (e.g. "... for BS x to be posted ... ::$body"):
+                # a later, different body in the same trace is OSB's own output, the best oracle there is.
+                later = [e["fields"]["body"] for e in t["events"] if e["fields"].get("body")
+                         and e["fields"]["body"].strip() != merged["body"].strip() and e.get("pipeline_type") != "error"]
+                if len(later) == 1:
+                    ext = "xml" if later[0].lstrip().startswith("<") else "json"
+                    files[f"expected-output.{ext}"] = later[0]
+                    expected["body_oracle"] = "OSB log: the body OSB logged after the request in the same trace (check the log line on the card)"
+                elif len(later) > 1:
+                    expected["body_oracle"] = f"{len(later)} later bodies logged in this trace: none taken, choose on the card"
+                files["expected.json"] = json.dumps(expected, indent=2, ensure_ascii=False)
                 if flow not in flows_written:
                     rows = [r for r in rows if r.get("flow") != flow]
                     flows_written.add(flow)

@@ -38,6 +38,8 @@ LENIENT = json.JSONDecoder(strict=False)
 FLOW_RE = re.compile(r"Project\s+(\S+)\s+::\s+for\s+PS\s+(\S+)")
 APP_RE = re.compile(r"\[APP: ([^\]]+)\]")
 TOPIC_RE = re.compile(r"from\s+JMS\s+(\S+)")
+BS_RE = re.compile(r"Project\s+(\S+)\s+::\s+for\s+BS\s+(\S+)")          # outbound log line: "... for BS x ... ::$body"
+UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 RESOURCE_RE = re.compile(r"Resource Name:\s*(.+?)\s+event\b")
 CODE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9 _.\-]{0,48}$")
 HINT_RE = re.compile(r"transaction|type|event|action|status|decision|approv|operation|category|reason|channel|mode|kind",
@@ -278,8 +280,19 @@ def main() -> int:
         sys.exit(f"{rep}: residue findings are not 0; fix the masking first")
     wanted = load_flow_list(a.flows)
     flows, skipped = {}, Counter()
-    for row in read_rows(masked):
+    rows_all = read_rows(masked)
+    by_trace = {}                                  # (project, trace id) -> flow, from the proxy's own lines
+    for row in rows_all:
+        msg = osb_message(row.get("_raw", ""))[0]
+        m, u = FLOW_RE.search(msg), UUID_RE.search(msg)
+        if m and u:
+            by_trace[(m.group(1), u.group(0).lower())] = f"{m.group(1)}/{m.group(2)}"
+    for row in rows_all:
         f, topic, res = flow_of(row.get("_raw", ""))
+        msg = osb_message(row.get("_raw", ""))[0]
+        b, u = BS_RE.search(msg), UUID_RE.search(msg)
+        if b and u and (b.group(1), u.group(0).lower()) in by_trace:   # outbound line belongs to the proxy that sent it
+            f, topic, res = by_trace[(b.group(1), u.group(0).lower())], None, None
         if not f:
             skipped["(no flow id)"] += 1
             continue
