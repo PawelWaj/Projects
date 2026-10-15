@@ -193,6 +193,155 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_CHECK_CAMELK_PY
+mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/domain_report.py")"
+cat > '.pi/skills/osb-camelk-route/scripts/domain_report.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_DOMAIN_REPORT_PY'
+#!/usr/bin/env python3
+"""Functional-testing report for one OSB application (domain): the proof, per flow and in total. Stdlib only.
+
+    domain_report.py <workspace> [-o <workspace>/domain/FUNCTIONAL_TEST_REPORT.md]
+
+Reads only what the other steps wrote (no payloads, no source): research packs, domain/COVERAGE.csv, the modules'
+flow-test.json, case folders (counted), expected-output files (counted), surefire reports, GATES.json, MUTATION.json.
+Per flow it answers the five proof questions:
+  1 inputs     real masked Splunk messages / synthetic messages from the schema / none
+  2 expected   outputs per scenario from the research pack; body: logged by OSB / original XQuery / not compared
+  3 mocks      every queue and backend replaced (count), no broker
+  4 result     tests run / failed against the Camel K route (or "not built yet")
+  5 strength   deliberate route defects caught (mutation check)
+and lists the gaps. Writes FUNCTIONAL_TEST_REPORT.md + functional-test-report.csv (names and counts only)."""
+import argparse
+import csv
+import json
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+
+def load(p: Path, default):
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else default
+    except ValueError:
+        return default
+
+
+def surefire(mod: Path) -> dict | None:
+    reps = list((mod / "target/surefire-reports").glob("TEST-*.xml"))
+    if not reps:
+        return None
+    t = f = s = 0
+    for rep in reps:
+        r = ET.parse(rep).getroot()
+        t += int(r.get("tests", 0))
+        f += int(r.get("failures", 0)) + int(r.get("errors", 0))
+        s += int(r.get("skipped", 0))
+    return {"tests": t, "failed": f, "skipped": s}
+
+
+def flow_row(ws: Path, project: str, proxy: str, coverage: dict) -> dict:
+    res = load(ws / "research" / project / proxy / "research.json", {})
+    share = load(ws / "research" / project / proxy / "SHARE_CHECK.json", {})
+    mod = ws / "modules" / project / proxy
+    cfg = load(mod / "src/test/resources/flow-test.json", {})
+    par = mod / "src/test/resources/parity"
+    cases = [p.parent for p in par.glob("**/input.payload")] if par.is_dir() else []
+    real = [c for c in cases if "-synthetic" not in c.as_posix()]
+    syn = [c for c in cases if "-synthetic" in c.as_posix()]
+    logged = sum(1 for c in cases if any(c.glob("expected-output.*")))
+    xq = any(t.get("mappings") for t in res.get("transforms") or [])
+    gates = load(mod / "GATES.json", {})
+    mut = load(mod / "MUTATION.json", {})
+    sf = surefire(mod)
+    card = (mod / "FLOW_CARD.md").read_text(encoding="utf-8") if (mod / "FLOW_CARD.md").is_file() else ""
+    approved = "approved" if "Status: approved" in card else ("POC run" if "Status: poc" in card.lower() else ("draft" if card else "-"))
+    outputs = [o for o in (cfg.get("outputs") or {}) if o != "reply"]
+    body = (f"compared for {logged} cases" if logged else
+            ("XQuery: expected body pending" if xq else "not transformed (forwarded / no body)"))
+    gaps = []
+    if not share.get("pass"):
+        gaps.append("research")
+    if not cases:
+        gaps.append("no test cases")
+    elif not real:
+        gaps.append("synthetic inputs only")
+    if xq and not logged:
+        gaps.append("body oracle")
+    if sf is None:
+        gaps.append("route not built")
+    elif sf["failed"]:
+        gaps.append(f"{sf['failed']} tests failing")
+    if mut and mut.get("killed", 0) < mut.get("total", 0):
+        gaps.append("mutation survived")
+    if res.get("open_questions"):
+        gaps.append(f"{len(res['open_questions'])} open questions")
+    return {"project": project, "proxy": proxy, "group": coverage.get((project, proxy), "?"),
+            "research": "PASS" if share.get("pass") else ("FAIL" if share else "-"),
+            "scenarios": len(cfg.get("scenario_mapping") or []), "real_cases": len(real), "synthetic_cases": len(syn),
+            "mocked_outputs": len(outputs) + len(cfg.get("backends") or {}), "reply": "yes" if "reply" in (cfg.get("outputs") or {}) else "no",
+            "body_oracle": body, "card": approved,
+            "tests": sf["tests"] if sf else "-", "failed": sf["failed"] if sf else "-",
+            "mutations": f"{mut['killed']}/{mut['total']}" if mut else "-",
+            "gates": gates.get("result", "-"), "gaps": "; ".join(gaps) or "none"}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("workspace", type=Path)
+    ap.add_argument("-o", "--out", type=Path)
+    a = ap.parse_args()
+    ws = a.workspace
+    status = ws / "domain/status.csv"
+    if not status.is_file():
+        sys.exit("domain/status.csv missing: run run_domain.sh <app> status first")
+    flows = [(r["project"], r["proxy"]) for r in csv.DictReader(status.open(encoding="utf-8"))]
+    coverage = {}
+    cov = ws / "domain/coverage.csv"
+    if cov.is_file():
+        coverage = {(r["project"], r["proxy"]): r["group"].split(" ")[0] for r in csv.DictReader(cov.open(encoding="utf-8"))}
+    rows = [flow_row(ws, p, x, coverage) for p, x in flows]
+    out = a.out or ws / "domain/FUNCTIONAL_TEST_REPORT.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cols = list(rows[0]) if rows else ["project"]
+    with out.with_name("functional-test-report.csv").open("w", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols)
+        w.writeheader()
+        w.writerows(rows)
+    n = len(rows)
+    num = lambda k: sum(r[k] for r in rows if isinstance(r[k], int))  # noqa: E731
+    built = [r for r in rows if isinstance(r["tests"], int)]
+    green = [r for r in built if r["failed"] == 0]
+    kill = [r["mutations"].split("/") for r in rows if "/" in r["mutations"]]
+    proven = [r for r in green if "/" in r["mutations"] and r["mutations"].split("/")[0] == r["mutations"].split("/")[1]]
+    md = [f"# Functional test report: {ws.resolve().name}", "",
+          "Proof per flow: (1) inputs from production or the schema, (2) expected outputs from the OSB source and, for the "
+          "body, from what OSB logged or the original XQuery, (3) every queue and backend mocked, (4) the Camel K route "
+          "passes, (5) deliberate route defects are caught. Names and counts only.", "",
+          "| Measure | Value |", "|---|---|",
+          f"| Flows | {n} |",
+          f"| Research packs PASS | {sum(r['research'] == 'PASS' for r in rows)} |",
+          f"| Flows with a test pack | {sum((r['real_cases'] + r['synthetic_cases']) > 0 for r in rows)} |",
+          f"| Scenarios / real cases / synthetic cases | {num('scenarios')} / {num('real_cases')} / {num('synthetic_cases')} |",
+          f"| Flows built and run | {len(built)} |",
+          f"| Flows green (0 failed) | {len(green)} |",
+          f"| Tests run / failed | {sum(r['tests'] for r in built)} / {sum(r['failed'] for r in built)} |",
+          f"| Mutations caught | {sum(int(k) for k, _ in kill)} / {sum(int(t) for _, t in kill)} |",
+          f"| **Flows proven (green + every mutation caught)** | **{len(proven)}** |", "",
+          "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
+    md += ["| " + " | ".join(str(r[c]).replace("|", "/") for c in cols) + " |" for r in rows]
+    open_gaps = {}
+    for r in rows:
+        for g in r["gaps"].split("; "):
+            if g != "none":
+                key = g.split(" ", 1)[1] if g[0].isdigit() else g
+                open_gaps[key] = open_gaps.get(key, 0) + 1
+    md += ["", "## Gaps across the domain", ""] + [f"- {k}: {v} flows" for k, v in sorted(open_gaps.items(), key=lambda kv: -kv[1])]
+    out.write_text("\n".join(md) + "\n", encoding="utf-8")
+    print(json.dumps({"flows": n, "built": len(built), "green": len(green), "proven": len(proven), "out": str(out)}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_DOMAIN_REPORT_PY
 mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/mutate_route.py")"
 cat > '.pi/skills/osb-camelk-route/scripts/mutate_route.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_MUTATE_ROUTE_PY'
 #!/usr/bin/env python3
@@ -1395,7 +1544,11 @@ echo "== 1 functional tests: generated tests + mocks, synthetic inputs, frozen (
 bash "$KIT/pi/run_tests.sh" "$RES" "$MOD" "$PRJ" ${TASK1:+"$TASK1"} || echo "some scenarios have no test case yet (gate K9 will fail)"
 
 echo "== 2 approval"
-if ! grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$MOD/FLOW_CARD.md" || ! grep -qE '^Approver:[[:space:]]*[^[:space:]]' "$MOD/FLOW_CARD.md"; then
+if [ "${POC:-0}" = 1 ] && ! grep -qiE '^Status:[[:space:]]*approved' "$MOD/FLOW_CARD.md"; then
+  # proof-of-concept run without a sign-off: build anyway, mark the card, gate K1 stays FAIL
+  sed -i.bak 's/^Status:.*/Status: poc-run (NOT approved)/' "$MOD/FLOW_CARD.md" && rm -f "$MOD/FLOW_CARD.md.bak"
+  echo "   POC=1: card not approved, built for the proof of concept only (gate K1 stays FAIL)"
+elif ! grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$MOD/FLOW_CARD.md" || ! grep -qE '^Approver:[[:space:]]*[^[:space:]]' "$MOD/FLOW_CARD.md"; then
   echo "card not approved: review $MOD/FLOW_CARD.md against $RES/RESEARCH.md, set 'Status: approved' + Approver + Date, rerun"
   exit 3
 fi
@@ -1432,6 +1585,9 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 #                scaffold  same module without the tester step
 #                build     implement + test + gates for every proxy whose card is approved
 #                matrix    mutation check (route broken on purpose) + test matrix per flow and for the domain
+#                functional  the whole proof: research -> task1 -> tests -> build -> matrix -> report
+#                          (build needs approved cards, or POC=1 for a proof-of-concept run: cards marked, K1 FAIL)
+#                report    domain/FUNCTIONAL_TEST_REPORT.md: inputs, expected outputs, mocks, results, mutations per flow
 #                auto      research -> task1 -> tests: the functional test pack for every flow, then stops
 #                          (routes: approve the cards, then build and matrix)
 #                status    only rewrite <ws>/domain/STATUS.md + status.csv
@@ -1452,7 +1608,7 @@ case "$APP" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && APP=$(cygpath -
 [ -d "$APP" ] || { echo "OSB application folder not found: $APP (Git Bash: /e/folder, not E:\\folder)"; exit 2; }
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
 PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
-FILTER=${PROJECTS:-.}
+FILTER=${PROJECTS:-.*}
 mkdir -p "$WS/domain"
 SK="$KIT/skills/osb-camelk-route/scripts"; [ -d "$SK" ] || SK="$KIT/.pi/skills/osb-camelk-route/scripts"
 BATCH=$(for d in "$KIT/../../vdi-osb-migration/bin" "$KIT/bin"; do [ -f "$d/batch_task1.py" ] && echo "$d/batch_task1.py" && break; done)
@@ -1545,8 +1701,8 @@ do_tests() {
 do_build() {
   flows | while read -r p x; do
     m="$WS/modules/$p/$x"; [ -f "$m/FLOW_CARD.md" ] || continue
-    grep -qiE '^Status:[[:space:]]*approved' "$m/FLOW_CARD.md" || { echo "skip $p/$x (card not approved)"; continue; }
-    if [ -f "$m/GATES.json" ] && grep -q '"result": "PASS"' "$m/GATES.json"; then echo "skip $p/$x (gates PASS)"; continue; fi
+    grep -qiE '^Status:[[:space:]]*(approved|poc-run)' "$m/FLOW_CARD.md" || [ "${POC:-0}" = 1 ] || { echo "skip $p/$x (card not approved; POC=1 for a proof-of-concept build)"; continue; }
+    if [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json"; then echo "skip $p/$x (tests green)"; continue; fi
     echo "=== build $p/$x"
     t1=$(task1_of "$p" "$x")
     OSB_SRC="$APP/$p" bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
@@ -1557,7 +1713,7 @@ do_build() {
 do_matrix() {   # mutation check on every green module (MUTATE=0 skips it), then the matrices
   flows | while read -r p x; do
     m="$WS/modules/$p/$x"; [ -f "$m/.scaffold.json" ] || continue
-    if [ "${MUTATE:-1}" = 1 ] && [ -f "$m/GATES.json" ] && grep -q '"result": "PASS"' "$m/GATES.json" && [ ! -f "$m/MUTATION.json" ]; then
+    if [ "${MUTATE:-1}" = 1 ] && [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json" && [ ! -f "$m/MUTATION.json" ]; then
       echo "=== mutations $p/$x"; "$PY" "$SK/mutate_route.py" "$m" --mvn "mvn -B -q ${MVN_ARGS:-}" || echo "MUTATION SURVIVED $p/$x: tests too weak (see $m/MUTATION.json)"
     fi
   done
@@ -1565,7 +1721,7 @@ do_matrix() {   # mutation check on every green module (MUTATE=0 skips it), then
 }
 
 # pi runs are slow and cost tokens: show the selection, and require ALL=1 for more than 10 flows
-case "$STAGE" in research|tests|build|auto)
+case "$STAGE" in research|tests|build|auto|functional)
   n=$(flows | wc -l | tr -d ' ')
   echo "selected: $n proxies (PROJECTS='${PROJECTS:-<all>}')"
   if [ "$n" -gt 10 ] && [ "${ALL:-0}" != 1 ]; then
@@ -1587,6 +1743,8 @@ case "$STAGE" in
   matrix) do_matrix; status ;;
   auto) do_research; do_task1; do_tests; status
         echo "functional test packs: modules/<project>/<proxy>/src/test + TEST_MATRIX.md; domain catalogue: domain/TEST_MATRIX.md" ;;
+  report) status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
+  functional) do_research; do_task1; do_tests; do_build; do_matrix; status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
   status) status ;;
   *) echo "unknown stage: $STAGE"; exit 2 ;;
 esac
@@ -2309,4 +2467,4 @@ cat > '.pi/skills/osb-research/assets/research.schema.json' <<'KIT_EOF__PI_SKILL
 }
 KIT_EOF__PI_SKILLS_OSB_RESEARCH_ASSETS_RESEARCH_SCHEMA_JSON
 chmod +x .pi/skills/osb-camelk-route/scripts/*.py pi/*.sh 2>/dev/null || true
-echo "installed: 22 files (skill osb-camelk-route + domain runner)"
+echo "installed: 23 files (skill osb-camelk-route + domain runner)"

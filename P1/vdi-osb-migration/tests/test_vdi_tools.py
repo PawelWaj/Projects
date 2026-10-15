@@ -427,3 +427,34 @@ class LoggedOutputOracleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DomainReportTests(unittest.TestCase):
+    """domain_report.py: per-flow proof columns and the 'proven' count from status, packs, modules and reports."""
+
+    def test_report_counts_and_gaps(self):
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d)
+            (ws / "domain").mkdir()
+            (ws / "domain/status.csv").write_text("project,proxy,research,open_questions,test_cases,card,gates,tests\np,x,PASS,0,1,approved,PASS,1\np,y,-,-,-,-,-,-\n")
+            (ws / "research/p/x").mkdir(parents=True)
+            (ws / "research/p/x/research.json").write_text(json.dumps({"transforms": [], "open_questions": []}))
+            (ws / "research/p/x/SHARE_CHECK.json").write_text('{"pass": true}')
+            m = ws / "modules/p/x"
+            (m / "src/test/resources/parity/f/s/c1").mkdir(parents=True)
+            (m / "src/test/resources/parity/f/s/c1/input.payload").write_text("{}")
+            (m / "src/test/resources/flow-test.json").write_text(json.dumps({"outputs": {"a": "mock:out-a"}, "scenario_mapping": [{"scenario": "*", "outputs": ["a"]}]}))
+            (m / "target/surefire-reports").mkdir(parents=True)
+            (m / "target/surefire-reports/TEST-a.xml").write_text('<testsuite tests="3" failures="0" errors="0" skipped="0"/>')
+            (m / "MUTATION.json").write_text('{"killed": 2, "total": 2}')
+            (m / "FLOW_CARD.md").write_text("Status: approved\n")
+            r = subprocess.run([sys.executable, str(ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts/domain_report.py"), str(ws)],
+                               capture_output=True, text=True)
+            self.assertIn('"proven": 1', r.stdout, r.stderr)
+            rows = {x["proxy"]: x for x in csv.DictReader((ws / "domain/functional-test-report.csv").open())}
+            self.assertEqual(rows["x"]["gaps"], "none")
+            self.assertIn("route not built", rows["y"]["gaps"])
+
+
+if __name__ == "__main__":
+    unittest.main()

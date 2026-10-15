@@ -714,7 +714,11 @@ echo "== 1 functional tests: generated tests + mocks, synthetic inputs, frozen (
 bash "$KIT/pi/run_tests.sh" "$RES" "$MOD" "$PRJ" ${TASK1:+"$TASK1"} || echo "some scenarios have no test case yet (gate K9 will fail)"
 
 echo "== 2 approval"
-if ! grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$MOD/FLOW_CARD.md" || ! grep -qE '^Approver:[[:space:]]*[^[:space:]]' "$MOD/FLOW_CARD.md"; then
+if [ "${POC:-0}" = 1 ] && ! grep -qiE '^Status:[[:space:]]*approved' "$MOD/FLOW_CARD.md"; then
+  # proof-of-concept run without a sign-off: build anyway, mark the card, gate K1 stays FAIL
+  sed -i.bak 's/^Status:.*/Status: poc-run (NOT approved)/' "$MOD/FLOW_CARD.md" && rm -f "$MOD/FLOW_CARD.md.bak"
+  echo "   POC=1: card not approved, built for the proof of concept only (gate K1 stays FAIL)"
+elif ! grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$MOD/FLOW_CARD.md" || ! grep -qE '^Approver:[[:space:]]*[^[:space:]]' "$MOD/FLOW_CARD.md"; then
   echo "card not approved: review $MOD/FLOW_CARD.md against $RES/RESEARCH.md, set 'Status: approved' + Approver + Date, rerun"
   exit 3
 fi
@@ -751,6 +755,9 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 #                scaffold  same module without the tester step
 #                build     implement + test + gates for every proxy whose card is approved
 #                matrix    mutation check (route broken on purpose) + test matrix per flow and for the domain
+#                functional  the whole proof: research -> task1 -> tests -> build -> matrix -> report
+#                          (build needs approved cards, or POC=1 for a proof-of-concept run: cards marked, K1 FAIL)
+#                report    domain/FUNCTIONAL_TEST_REPORT.md: inputs, expected outputs, mocks, results, mutations per flow
 #                auto      research -> task1 -> tests: the functional test pack for every flow, then stops
 #                          (routes: approve the cards, then build and matrix)
 #                status    only rewrite <ws>/domain/STATUS.md + status.csv
@@ -771,7 +778,7 @@ case "$APP" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && APP=$(cygpath -
 [ -d "$APP" ] || { echo "OSB application folder not found: $APP (Git Bash: /e/folder, not E:\\folder)"; exit 2; }
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
 PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
-FILTER=${PROJECTS:-.}
+FILTER=${PROJECTS:-.*}
 mkdir -p "$WS/domain"
 SK="$KIT/skills/osb-camelk-route/scripts"; [ -d "$SK" ] || SK="$KIT/.pi/skills/osb-camelk-route/scripts"
 BATCH=$(for d in "$KIT/../../vdi-osb-migration/bin" "$KIT/bin"; do [ -f "$d/batch_task1.py" ] && echo "$d/batch_task1.py" && break; done)
@@ -864,8 +871,8 @@ do_tests() {
 do_build() {
   flows | while read -r p x; do
     m="$WS/modules/$p/$x"; [ -f "$m/FLOW_CARD.md" ] || continue
-    grep -qiE '^Status:[[:space:]]*approved' "$m/FLOW_CARD.md" || { echo "skip $p/$x (card not approved)"; continue; }
-    if [ -f "$m/GATES.json" ] && grep -q '"result": "PASS"' "$m/GATES.json"; then echo "skip $p/$x (gates PASS)"; continue; fi
+    grep -qiE '^Status:[[:space:]]*(approved|poc-run)' "$m/FLOW_CARD.md" || [ "${POC:-0}" = 1 ] || { echo "skip $p/$x (card not approved; POC=1 for a proof-of-concept build)"; continue; }
+    if [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json"; then echo "skip $p/$x (tests green)"; continue; fi
     echo "=== build $p/$x"
     t1=$(task1_of "$p" "$x")
     OSB_SRC="$APP/$p" bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
@@ -876,7 +883,7 @@ do_build() {
 do_matrix() {   # mutation check on every green module (MUTATE=0 skips it), then the matrices
   flows | while read -r p x; do
     m="$WS/modules/$p/$x"; [ -f "$m/.scaffold.json" ] || continue
-    if [ "${MUTATE:-1}" = 1 ] && [ -f "$m/GATES.json" ] && grep -q '"result": "PASS"' "$m/GATES.json" && [ ! -f "$m/MUTATION.json" ]; then
+    if [ "${MUTATE:-1}" = 1 ] && [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json" && [ ! -f "$m/MUTATION.json" ]; then
       echo "=== mutations $p/$x"; "$PY" "$SK/mutate_route.py" "$m" --mvn "mvn -B -q ${MVN_ARGS:-}" || echo "MUTATION SURVIVED $p/$x: tests too weak (see $m/MUTATION.json)"
     fi
   done
@@ -884,7 +891,7 @@ do_matrix() {   # mutation check on every green module (MUTATE=0 skips it), then
 }
 
 # pi runs are slow and cost tokens: show the selection, and require ALL=1 for more than 10 flows
-case "$STAGE" in research|tests|build|auto)
+case "$STAGE" in research|tests|build|auto|functional)
   n=$(flows | wc -l | tr -d ' ')
   echo "selected: $n proxies (PROJECTS='${PROJECTS:-<all>}')"
   if [ "$n" -gt 10 ] && [ "${ALL:-0}" != 1 ]; then
@@ -906,6 +913,8 @@ case "$STAGE" in
   matrix) do_matrix; status ;;
   auto) do_research; do_task1; do_tests; status
         echo "functional test packs: modules/<project>/<proxy>/src/test + TEST_MATRIX.md; domain catalogue: domain/TEST_MATRIX.md" ;;
+  report) status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
+  functional) do_research; do_task1; do_tests; do_build; do_matrix; status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
   status) status ;;
   *) echo "unknown stage: $STAGE"; exit 2 ;;
 esac

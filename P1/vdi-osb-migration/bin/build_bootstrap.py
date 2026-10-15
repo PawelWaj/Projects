@@ -105,7 +105,7 @@ def main() -> None:
          [(p, "log-replay/" + rel(REPLAY, p)) for p in lr], ["chmod +x log-replay/tools/*.py log-replay/*.sh log-replay/mock/*.sh 2>/dev/null || true"],
          "log replay tools")
     # 7 this workflow -> bin/ + RUNBOOK.md
-    wf = files_under(VDI, ["bin/*", "RUNBOOK.md", "TASKS.md", "LOGS_END_TO_END.md", "ALL_FLOWS.md", "RESEARCH_PACK.md", "DOMAIN_RUN.md", "HOW_IT_WORKS.md", "CODEGEN_RUNBOOK.md"])
+    wf = files_under(VDI, ["bin/*", "RUNBOOK.md", "TASKS.md", "LOGS_END_TO_END.md", "ALL_FLOWS.md", "RESEARCH_PACK.md", "DOMAIN_RUN.md", "HOW_IT_WORKS.md", "CODEGEN_RUNBOOK.md", "FUNCTIONAL_TESTING.md"])
     emit("7_install_vdi_workflow.sh", "VDI workflow: bin/start_flow.sh (one entry point per flow), preflight, replay-config generator, RUNBOOK.md.",
          [(p, rel(VDI, p)) for p in wf], ["chmod +x bin/*.sh bin/*.py 2>/dev/null || true",
                                           'echo "next: bash bin/preflight_vdi.sh, then read RUNBOOK.md"'], "VDI workflow")
