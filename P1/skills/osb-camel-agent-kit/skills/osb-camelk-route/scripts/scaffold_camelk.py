@@ -330,11 +330,13 @@ def main() -> int:
             if flow_dir.is_dir():
                 shutil.copytree(flow_dir, dst / flow_dir.name, dirs_exist_ok=True)
                 copied += sum(1 for _ in (dst / flow_dir.name).glob("*/*/input.payload"))
+    old_meta = json.loads((o / ".scaffold.json").read_text(encoding="utf-8")) if (o / ".scaffold.json").is_file() else {}
     ids = ([f"branch-{b}" for b in {p["branch"] for p in m["paths"]}] + [p["id"] for p in m["paths"]]
            + [f"out-{k}" for k in m["outputs"]] + [f"backend-{k}" for k in m["backends"]])
     meta = {"proxy": proxy, "project": a.project, "package": pkg, "research_sha256": sha(rp),
             "generated": {tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp)},
             "route_ids": sorted(ids), "errors": len(r.get("errors") or []),
+            "task1": str(a.parity.parent.parent.resolve()) if a.parity and a.parity.is_dir() else (old_meta.get("task1") or ""),
             "backends_with_response": [k for k, b in m["backends"].items()
                                        if (b.get("response_use") or "").strip().lower() not in ("", "none", "ignored", "not used", "-")]}
     (o / ".scaffold.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")

@@ -50,7 +50,12 @@ masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module a
 6. **Run until green:** `mvn -B test` then `python <skill>/scripts/check_camelk.py modules/<project>/<proxy>`. Gates:
    K1 card approved · K2 no TODO(flow-card) in src/main · K3 every route id present · K4 no infrastructure ·
    K5 generated tests untouched, nothing disabled · K6 stubs · K7 error tests ≥ error scopes · K8 tests green.
-7. **Report** (five lines): proxy, gates result, tests run/failed/skipped (skipped = golden outputs pending),
+7. **Prove the tests bite:** `python <skill>/scripts/mutate_route.py modules/<project>/<proxy> --mvn "mvn -B -q -s ~/.m2/settings.xml"`
+   breaks the route on purpose (conditions negated, outputs swapped or dropped, retries removed); every mutation must
+   make a test fail. A survivor means a missing test: add it to FlowErrorTest, never weaken the route to pass.
+8. **Matrix:** `python <skill>/scripts/test_matrix.py modules/<project>/<proxy>` → `TEST_MATRIX.md` (P scenarios with
+   real messages, E error tests, K gates, M mutations).
+9. **Report** (five lines): proxy, gates result, tests run/failed/skipped (skipped = golden outputs pending),
    differences recorded in MIGRATION_NOTES.md, open questions left.
 
 ## What the generated parity test proves
@@ -161,6 +166,93 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_CHECK_CAMELK_PY
+mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/mutate_route.py")"
+cat > '.pi/skills/osb-camelk-route/scripts/mutate_route.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_MUTATE_ROUTE_PY'
+#!/usr/bin/env python3
+"""Mutation check for ONE Camel K module: break the YAML route on purpose, one defect at a time, and prove the tests
+notice. A test suite that stays green on a broken route proves nothing. Stdlib only.
+
+    mutate_route.py modules/<project>/<proxy> [--mvn "mvn -B -q -s ~/.m2/settings.xml"] [--max 12]
+
+Mutations (generic, from the route text):
+  negate      every simple condition: '==' <-> '!=' (a branch taken for the wrong messages)
+  swap-out    every output endpoint {{out.a}} -> another output {{out.b}} (message sent to the wrong queue)
+  drop-out    every output step removed (message silently lost)
+  no-retry    every redelivery count -> 0 (business service retry ignored)
+Each mutation runs `mvn test`; a non-zero exit = caught. The route file is always restored, even on Ctrl-C.
+Writes MUTATION.json (what, killed) next to the pom. Exit 1 if any mutation survived."""
+import argparse
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+
+def mutations(text: str) -> list[tuple[str, str]]:
+    out = []
+    for m in re.finditer(r"(simple:\s*\"[^\"]*?)(==|!=)", text):
+        flip = "!=" if m.group(2) == "==" else "=="
+        ids = re.findall(r"\bid:\s*([\w.-]+)", text[:m.start(2)])
+        out.append((f"negate condition of {ids[-1] if ids else 'a branch'}", text[:m.start(2)] + flip + text[m.end(2):]))
+    outs = re.findall(r"\{\{out\.([\w.-]+)\}\}", text)
+    names = sorted(set(outs))
+    for m in re.finditer(r"\{\{out\.([\w.-]+)\}\}", text):
+        other = next((n for n in names if n != m.group(1)), None)
+        if other:
+            out.append((f"send to out-{other} instead of out-{m.group(1)}", text[:m.start()] + "{{out." + other + "}}" + text[m.end():]))
+    lines = text.splitlines(keepends=True)
+    for i, line in enumerate(lines):
+        if re.match(r"\s*- to:\s*$", line) and i + 2 < len(lines) and "{{out." in "".join(lines[i + 1:i + 3]):
+            ind = len(line) - len(line.lstrip())
+            j = i + 1
+            while j < len(lines) and (len(lines[j]) - len(lines[j].lstrip())) > ind and lines[j].strip():
+                j += 1
+            target = re.search(r"\{\{out\.([\w.-]+)\}\}", "".join(lines[i:j])).group(1)
+            stub = " " * ind + "- log:\n" + " " * (ind + 4) + "message: \"mutation: output removed\"\n"
+            out.append((f"drop the step sending to out-{target}", "".join(lines[:i]) + stub + "".join(lines[j:])))
+    for m in re.finditer(r"(maximumRedeliveries:\s*\")([^\"]+)(\")", text):
+        out.append(("retry count set to 0", text[:m.start(2)] + "0" + text[m.end(2):]))
+    return out
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("module", type=Path)
+    ap.add_argument("--mvn", default="mvn -B -q")
+    ap.add_argument("--max", type=int, default=12)
+    a = ap.parse_args()
+    a.mvn = " ".join(shlex.quote(os.path.expanduser(x)) for x in shlex.split(a.mvn))   # ~ in -s ~/.m2/settings.xml
+    routes = sorted((a.module / "src/main/resources/routes").glob("*.camel.yaml"))
+    if not routes:
+        sys.exit("no *.camel.yaml route in the module")
+    base = subprocess.run(shlex.split(a.mvn) + ["-f", str(a.module / "pom.xml"), "test"], capture_output=True, text=True)
+    if base.returncode:
+        sys.exit("tests are not green on the unchanged route: fix that first (mutation check needs a green baseline)")
+    results = []
+    for route in routes:
+        orig = route.read_text(encoding="utf-8")
+        try:
+            for what, text in mutations(orig)[:a.max]:
+                route.write_text(text, encoding="utf-8")
+                r = subprocess.run(shlex.split(a.mvn) + ["-f", str(a.module / "pom.xml"), "test"], capture_output=True, text=True)
+                results.append({"route": route.name, "what": what, "killed": r.returncode != 0})
+                print(f"{'caught  ' if r.returncode else 'MISSED  '}{what}", flush=True)
+        finally:
+            route.write_text(orig, encoding="utf-8")
+    subprocess.run(shlex.split(a.mvn) + ["-f", str(a.module / "pom.xml"), "test"], capture_output=True)   # leave green reports
+    killed = sum(m["killed"] for m in results)
+    (a.module / "MUTATION.json").write_text(json.dumps({"killed": killed, "total": len(results), "mutations": results}, indent=2) + "\n",
+                                            encoding="utf-8")
+    print(f"mutations caught {killed}/{len(results)}")
+    return 0 if killed == len(results) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_MUTATE_ROUTE_PY
 mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/scaffold_camelk.py")"
 cat > '.pi/skills/osb-camelk-route/scripts/scaffold_camelk.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_SCAFFOLD_CAMELK_PY'
 #!/usr/bin/env python3
@@ -495,11 +587,13 @@ def main() -> int:
             if flow_dir.is_dir():
                 shutil.copytree(flow_dir, dst / flow_dir.name, dirs_exist_ok=True)
                 copied += sum(1 for _ in (dst / flow_dir.name).glob("*/*/input.payload"))
+    old_meta = json.loads((o / ".scaffold.json").read_text(encoding="utf-8")) if (o / ".scaffold.json").is_file() else {}
     ids = ([f"branch-{b}" for b in {p["branch"] for p in m["paths"]}] + [p["id"] for p in m["paths"]]
            + [f"out-{k}" for k in m["outputs"]] + [f"backend-{k}" for k in m["backends"]])
     meta = {"proxy": proxy, "project": a.project, "package": pkg, "research_sha256": sha(rp),
             "generated": {tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp)},
             "route_ids": sorted(ids), "errors": len(r.get("errors") or []),
+            "task1": str(a.parity.parent.parent.resolve()) if a.parity and a.parity.is_dir() else (old_meta.get("task1") or ""),
             "backends_with_response": [k for k, b in m["backends"].items()
                                        if (b.get("response_use") or "").strip().lower() not in ("", "none", "ignored", "not used", "-")]}
     (o / ".scaffold.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
@@ -512,6 +606,175 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_SCAFFOLD_CAMELK_PY
+mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/test_matrix.py")"
+cat > '.pi/skills/osb-camelk-route/scripts/test_matrix.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_TEST_MATRIX_PY'
+#!/usr/bin/env python3
+"""Test matrix: what was tested, with which inputs, and the result, per flow and for a whole domain. Stdlib only.
+
+    test_matrix.py modules/<project>/<proxy>            -> <module>/TEST_MATRIX.md + test-matrix.csv
+    test_matrix.py --domain modules -o domain           -> domain/TEST_MATRIX.md + test-matrix.csv (one row per flow)
+
+Per flow it joins: flow-test.json (expected outputs per scenario, from the research pack), the case folders
+(SCENARIO.txt: which real masked messages were used), the surefire XML reports (display name "route <case>" /
+"body <case>" per message), GATES.json (K1-K8) and MUTATION.json (route mutations the tests caught). Rows:
+  P<n>  one per scenario seen in the logs: messages in the export, cases tested, expected outputs, passed/failed
+  E<n>  every other test method (error handler, retries, headers, invalid payload)
+  K<n>  the gates;  M<n>  the mutations
+No payload values are read or written: only folder names, scenario keys and counts."""
+import argparse
+import csv
+import json
+import re
+import sys
+import xml.etree.ElementTree as ET
+from collections import defaultdict
+from pathlib import Path
+
+
+def results(mod: Path) -> dict:
+    """testcase display name -> pass / fail / skip."""
+    out = {}
+    for rep in (mod / "target/surefire-reports").glob("TEST-*.xml"):
+        for tc in ET.parse(rep).getroot().iter("testcase"):
+            st = "fail" if tc.find("failure") is not None or tc.find("error") is not None else \
+                 "skip" if tc.find("skipped") is not None else "pass"
+            out[f"{tc.get('classname', '').split('.')[-1]}::{tc.get('name', '')}"] = st
+    return out
+
+
+def load(p: Path, default):
+    return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else default
+
+
+def flow_matrix(mod: Path) -> tuple[list[dict], dict]:
+    cfg = load(mod / "src/test/resources/flow-test.json", {})
+    meta = load(mod / ".scaffold.json", {})
+    res = results(mod)
+    parity = mod / "src/test/resources/parity"
+    counts = {}
+    sc_json = Path(meta.get("task1", "")) / "traces/scenarios.json" if meta.get("task1") else None
+    if sc_json and sc_json.is_file():
+        counts = {s["scenario"]: s["count"] for s in json.loads(sc_json.read_text(encoding="utf-8"))}
+    by_scenario = defaultdict(list)
+    for sc in sorted(parity.glob("*/*/SCENARIO.txt")):
+        key = sc.read_text(encoding="utf-8").strip()
+        by_scenario[key] += [c for c in sorted(sc.parent.iterdir()) if (c / "input.payload").is_file()]
+
+    def expected(key: str) -> str:
+        if "|error|" in key:
+            return "out-" + cfg.get("error_output", "?")
+        vals = dict(p.split("=", 1) for p in key.split("|") if "=" in p)
+        for m in cfg.get("scenario_mapping", []):
+            ok = True
+            for p in m["scenario"].split("|"):
+                if "!=" in p:
+                    k, v = p.split("!=", 1)
+                    ok &= vals.get(k) != v
+                elif "=" in p:
+                    k, v = p.split("=", 1)
+                    ok &= vals.get(k) == v
+            if ok and m["scenario"]:
+                return ", ".join("out-" + o for o in m["outputs"]) or "nothing sent"
+        return "NOT MAPPED"
+
+    rows, used = [], set()
+    for i, (key, cases) in enumerate(sorted(by_scenario.items(), key=lambda kv: -counts.get(kv[0], len(kv[1]))), 1):
+        rel = [c.relative_to(parity).as_posix() for c in cases]
+        st = [res.get(f"FlowParityTest::reachesTheSameOutputAsOsb(String, Path) route {r}") for r in rel]
+        body = [res.get(f"FlowParityTest::bodyEqualsOriginalXQueryResult(String, Path) body {r}") for r in rel]
+        used.update(f"FlowParityTest::reachesTheSameOutputAsOsb(String, Path) route {r}" for r in rel)
+        used.update(f"FlowParityTest::bodyEqualsOriginalXQueryResult(String, Path) body {r}" for r in rel)
+        scen = "|".join(p for p in key.split("|")[2:])
+        rows.append({"id": f"P{i:02d}", "kind": "parity (real masked messages)", "what": scen or key,
+                     "inputs": f"{len(cases)} of {counts.get(key, '?')} in export", "expected": expected(key),
+                     "passed": st.count("pass"), "failed": st.count("fail"), "not_run": st.count(None),
+                     "body_check": "pass" if body and all(b == "pass" for b in body) else
+                                   ("pending (no golden)" if body and all(b == "skip" for b in body) else
+                                    ("FAIL" if "fail" in body else "-")),
+                     "result": "PASS" if st and all(s == "pass" for s in st) else ("FAIL" if "fail" in st else "NOT RUN")})
+    other = sorted(k for k in res if k not in used)
+    for j, k in enumerate(other, 1):
+        cls, name = k.split("::", 1)
+        rows.append({"id": f"E{j:02d}", "kind": "error/behaviour" if cls != "FlowParityTest" else "parity (generic)",
+                     "what": re.sub(r"(?<!^)(?=[A-Z])", " ", name.split("(")[0]).lower(), "inputs": "fake values",
+                     "expected": "-", "passed": int(res[k] == "pass"), "failed": int(res[k] == "fail"),
+                     "not_run": 0, "body_check": "-", "result": {"pass": "PASS", "fail": "FAIL", "skip": "SKIP"}[res[k]]})
+    for k, g in load(mod / "GATES.json", {}).get("gates", {}).items():
+        rows.append({"id": k.split("_")[0], "kind": "gate", "what": k.split("_", 1)[1].replace("_", " "), "inputs": "-",
+                     "expected": "ok", "passed": int(g["ok"]), "failed": int(not g["ok"]), "not_run": 0, "body_check": "-",
+                     "result": "PASS" if g["ok"] else "FAIL"})
+    mut = load(mod / "MUTATION.json", {})
+    for n, m in enumerate(mut.get("mutations", []), 1):
+        rows.append({"id": f"M{n:02d}", "kind": "mutation (route broken on purpose)", "what": m["what"], "inputs": "all tests",
+                     "expected": "tests fail", "passed": int(m["killed"]), "failed": int(not m["killed"]), "not_run": 0,
+                     "body_check": "-", "result": "CAUGHT" if m["killed"] else "MISSED"})
+    p = [r for r in rows if r["id"].startswith("P")]
+    summary = {"flow": f"{meta.get('project', '?')}/{meta.get('proxy', mod.name)}",
+               "scenarios": len(p), "scenarios_pass": sum(r["result"] == "PASS" for r in p),
+               "unmapped": sum(r["expected"] == "NOT MAPPED" for r in p),
+               "cases": sum(r["passed"] + r["failed"] + r["not_run"] for r in p),
+               "cases_failed": sum(r["failed"] for r in p),
+               "error_tests": sum(r["kind"] == "error/behaviour" for r in rows),
+               "error_tests_failed": sum(r["kind"] == "error/behaviour" and r["result"] == "FAIL" for r in rows),
+               "gates": load(mod / "GATES.json", {}).get("result", "not run"),
+               "mutations": f"{sum(m['killed'] for m in mut.get('mutations', []))}/{len(mut.get('mutations', []))}" if mut else "not run",
+               "reports": "yes" if res else "no (run mvn test)"}
+    return rows, summary
+
+
+COLS = ["id", "kind", "what", "inputs", "expected", "passed", "failed", "not_run", "body_check", "result"]
+
+
+def write(out_md: Path, title: str, intro: list[str], cols: list[str], rows: list[dict]) -> None:
+    with out_md.with_name("test-matrix.csv").open("w", encoding="utf-8", newline="") as fh:
+        w = csv.DictWriter(fh, fieldnames=cols)
+        w.writeheader()
+        w.writerows(rows)
+    md = [f"# {title}", ""] + intro + ["", "| " + " | ".join(cols) + " |", "|" + "---|" * len(cols)]
+    md += ["| " + " | ".join(str(r.get(c, "")).replace("|", " / ") for c in cols) + " |" for r in rows]
+    out_md.write_text("\n".join(md) + "\n", encoding="utf-8")
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("module", type=Path, nargs="?")
+    ap.add_argument("--domain", type=Path, help="modules root: every */*/.scaffold.json below it")
+    ap.add_argument("-o", "--out", type=Path)
+    a = ap.parse_args()
+    if a.domain:
+        mods = sorted(p.parent for p in a.domain.glob("*/*/.scaffold.json"))
+        sums = []
+        for m in mods:
+            rows, s = flow_matrix(m)
+            write(m / "TEST_MATRIX.md", f"Test matrix: {s['flow']}", [], COLS, rows)
+            sums.append(s)
+        out = a.out or a.domain
+        out.mkdir(parents=True, exist_ok=True)
+        cols = list(sums[0]) if sums else ["flow"]
+        green = sum(s["gates"] == "PASS" and s["cases_failed"] == 0 for s in sums)
+        write(out / "TEST_MATRIX.md", "Test matrix: domain", [
+            f"{len(sums)} flows, {green} fully green (gates PASS, no failed case). Per flow: modules/<project>/<proxy>/TEST_MATRIX.md.",
+            "scenarios = scenarios seen in the Splunk logs; cases = real masked messages run through the Camel route; "
+            "error_tests = error handler / retry / header tests; mutations = route defects inserted on purpose that the tests caught."],
+              cols, sums)
+        print(json.dumps({"flows": len(sums), "green": green, "out": str(out / "TEST_MATRIX.md")}))
+        return 0
+    if not a.module:
+        ap.error("module or --domain required")
+    rows, s = flow_matrix(a.module)
+    write(a.module / "TEST_MATRIX.md", f"Test matrix: {s['flow']}", [
+        f"Scenarios {s['scenarios_pass']}/{s['scenarios']} pass, {s['cases']} real masked messages "
+        f"({s['cases_failed']} failed), error tests {s['error_tests']} ({s['error_tests_failed']} failed), "
+        f"gates {s['gates']}, mutations caught {s['mutations']}.",
+        "P = real messages from Splunk, expected outputs from the research pack (OSB source). E = error handler and "
+        "behaviour tests. K = gates. M = the route broken on purpose: each must make tests fail."], COLS, rows)
+    print(json.dumps(s))
+    return 0 if s["cases_failed"] == 0 and s["error_tests_failed"] == 0 else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_TEST_MATRIX_PY
 mkdir -p "$(dirname ".pi/skills/osb-camelk-route/references/yaml-patterns.md")"
 cat > '.pi/skills/osb-camelk-route/references/yaml-patterns.md' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_REFERENCES_YAML_PATTERNS_MD'
 # OSB pipeline → Camel K YAML DSL (Camel 4.18), patterns proven on the pilot
@@ -709,7 +972,7 @@ class FlowParityTest {
         return out;
     }
 
-    @ParameterizedTest(name = "{0}")
+    @ParameterizedTest(name = "route {0}")
     @MethodSource("cases")
     void reachesTheSameOutputAsOsb(String name, Path c) throws Exception {
         JsonNode expected = JSON.readTree(c.resolve("expected.json").toFile());
@@ -723,7 +986,7 @@ class FlowParityTest {
         }
     }
 
-    @ParameterizedTest(name = "{0}")
+    @ParameterizedTest(name = "body {0}")
     @MethodSource("cases")
     void bodyEqualsOriginalXQueryResult(String name, Path c) throws Exception {
         Path json = c.resolve("expected-output.json");
@@ -925,6 +1188,12 @@ cat > '.pi/skills/osb-camelk-route/assets/templates/pom.xml' <<'KIT_EOF__PI_SKIL
         <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>3.5.3</version>
+        <!-- display names in the XML reports ("route <case folder>"): test_matrix.py maps every result to its case -->
+        <configuration>
+          <statelessTestsetReporter implementation="org.apache.maven.plugin.surefire.extensions.junit5.JUnit5Xml30StatelessReporter">
+            <usePhrasedTestCaseMethodName>true</usePhrasedTestCaseMethodName>
+          </statelessTestsetReporter>
+        </configuration>
       </plugin>
     </plugins>
   </build>
@@ -996,12 +1265,17 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 #   osb-app-dir  e.g. /e/contributor-agreement-mb-app (the folder holding the *-prj projects)
 #   stage        list      projects and proxies found (no agent)
 #                research  research pack per proxy -> <ws>/research/<project>/<proxy>/   (skips packs that PASS)
+#                task1     Splunk test cases for every researched proxy, split by the fields its branches use
+#                          (research scenario_dims) -> <ws>/task1/flows/<project>-<proxy>/   (needs EXPORT, MASK_KEY)
 #                scaffold  module + FLOW_CARD.md per researched proxy -> <ws>/modules/<project>/<proxy>/
 #                build     implement + test + gates for every proxy whose card is approved
+#                matrix    mutation check (route broken on purpose) + test matrix per flow and for the domain
+#                auto      research -> task1 -> scaffold, then stops: approve the cards, then run build and matrix
 #                status    only rewrite <ws>/domain/STATUS.md + status.csv
 #   workspace    default: current folder
-# Env: PROJECTS (regex on project names, e.g. 'beneficiary|cancel-'), TASK1_ROOT (folder with <proxy>/task1 from the
-#      Splunk step), plus the env of run_research.sh / run_camelk.sh (OSB_PI_MODEL, MVN_ARGS, ...).
+# Env: PROJECTS (regex on project names, e.g. 'beneficiary|cancel-'), EXPORT (one Splunk CSV export with all flows of
+#      the domain, raw or *.masked.csv), MASK_KEY, MVN_ARGS (e.g. "-s ~/.m2/settings.xml"), MUTATE=0 to skip mutations,
+#      plus the env of run_research.sh / run_camelk.sh (OSB_PI_MODEL, ...).
 set -uo pipefail
 APP=${1:?usage: run_domain.sh <osb-app-dir> <list|research|scaffold|build|status> [workspace]}
 STAGE=${2:?stage}
@@ -1012,6 +1286,9 @@ KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
 PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
 FILTER=${PROJECTS:-.}
 mkdir -p "$WS/domain"
+SK="$KIT/skills/osb-camelk-route/scripts"; [ -d "$SK" ] || SK="$KIT/.pi/skills/osb-camelk-route/scripts"
+BATCH=$(for d in "$KIT/../../vdi-osb-migration/bin" "$KIT/bin"; do [ -f "$d/batch_task1.py" ] && echo "$d/batch_task1.py" && break; done)
+t1dir() { local d="$WS/task1/flows/$(echo "$1-$2" | tr -cs 'A-Za-z0-9' '-' | sed 's/^-//;s/-$//' | tr 'A-Z' 'a-z' | cut -c1-80)"; [ -d "$d/fixtures/parity" ] && echo "$d"; }
 
 flows() {   # "<project> <proxy>" for every proxy file (12c .proxy, sbconfig .ProxyService) in every project folder
   for prj in "$APP"/*/; do
@@ -1025,48 +1302,92 @@ flows() {   # "<project> <proxy>" for every proxy file (12c .proxy, sbconfig .Pr
 
 status() {
   local csv="$WS/domain/status.csv" md="$WS/domain/STATUS.md"
-  echo "project,proxy,research,card,gates,tests" > "$csv"
+  echo "project,proxy,research,open_questions,test_cases,card,gates,tests" > "$csv"
   flows | while read -r p x; do
     r="$WS/research/$p/$x"; m="$WS/modules/$p/$x"
     rs=-; [ -f "$r/SHARE_CHECK.json" ] && { grep -q '"pass": true' "$r/SHARE_CHECK.json" && rs=PASS || rs=FAIL; }
+    oq=-; [ -s "$r/research.json" ] && oq=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1], encoding='utf-8')).get('open_questions') or []))" "$r/research.json")
+    tc=-; t=$(t1dir "$p" "$x"); [ -n "$t" ] && tc=$(find "$t/fixtures/parity" -name input.payload | wc -l | tr -d ' ')
     cs=-; [ -f "$m/FLOW_CARD.md" ] && { grep -qiE '^Status:[[:space:]]*approved' "$m/FLOW_CARD.md" && cs=approved || cs=draft; }
     gs=-; ts=-; if [ -f "$m/GATES.json" ]; then grep -q '"result": "PASS"' "$m/GATES.json" && gs=PASS || gs=FAIL
       ts=$("$PY" -c "import json,sys; g=json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}); print(f\"{g.get('tests','-')}/{g.get('failures','-')}F/{g.get('skipped','-')}S\")" "$m/GATES.json"); fi
-    echo "$p,$x,$rs,$cs,$gs,$ts" >> "$csv"
+    echo "$p,$x,$rs,$oq,$tc,$cs,$gs,$ts" >> "$csv"
   done
   { echo "# Domain status: $(basename "$APP")"; echo; echo "Generated $(date '+%F %H:%M'). research = pack check, card = FLOW_CARD.md, gates = check_camelk.py, tests = run/failed/skipped."; echo
-    echo "| Project | Proxy | Research | Card | Gates | Tests |"; echo "|---|---|---|---|---|---|"
-    tail -n +2 "$csv" | awk -F, '{printf "| %s | %s | %s | %s | %s | %s |\n",$1,$2,$3,$4,$5,$6}'
-    echo; tail -n +2 "$csv" | awk -F, '{n++; if($3=="PASS")r++; if($4=="approved")c++; if($5=="PASS")g++} END{printf "%d proxies: %d researched, %d cards approved, %d green\n",n,r,c,g}'
+    echo "| Project | Proxy | Research | Open questions | Test cases | Card | Gates | Tests |"; echo "|---|---|---|---|---|---|---|---|"
+    tail -n +2 "$csv" | awk -F, '{printf "| %s | %s | %s | %s | %s | %s | %s | %s |\n",$1,$2,$3,$4,$5,$6,$7,$8}'
+    echo; tail -n +2 "$csv" | awk -F, '{n++; if($3=="PASS")r++; if($5!="-")t++; if($6=="approved")c++; if($7=="PASS")g++} END{printf "%d proxies: %d researched, %d with Splunk test cases, %d cards approved, %d green\n",n,r,t,c,g}'
   } > "$md"
   tail -1 "$md"
 }
 
+task1_of() {   # task-1 folder of a proxy: domain batch first, then TASK1_ROOT/<proxy>/task1
+  local t; t=$(t1dir "$1" "$2"); [ -z "$t" ] && [ -n "${TASK1_ROOT:-}" ] && [ -d "$TASK1_ROOT/$2/task1" ] && t="$TASK1_ROOT/$2/task1"; echo "$t"
+}
+
+do_research() {
+  flows | while read -r p x; do
+    out="$WS/research/$p/$x"
+    if [ -f "$out/SHARE_CHECK.json" ] && grep -q '"pass": true' "$out/SHARE_CHECK.json"; then echo "skip $p/$x (PASS)"; continue; fi
+    echo "=== research $p/$x"
+    t1=$(task1_of "$p" "$x")
+    (cd "$WS" && OUT="research/$p/$x" bash "$KIT/pi/run_research.sh" "$APP/$p" "$x" ${t1:+"$t1"}) < /dev/null || echo "FAILED research $p/$x (continuing)"
+  done
+}
+
+do_task1() {   # one batch over the whole export; scenario fields per flow = what its branches decide on
+  [ -n "${EXPORT:-}" ] && [ -f "$EXPORT" ] || { echo "task1 needs EXPORT=<Splunk CSV of the domain> (DOMAIN_RUN.md)"; return 2; }
+  [ -n "$BATCH" ] || { echo "batch_task1.py not found (vdi-osb-migration/bin)"; return 2; }
+  mkdir -p "$WS/task1"
+  { echo "flow,domain,dims"
+    flows | while read -r p x; do
+      r="$WS/research/$p/$x/research.json"
+      d=$([ -s "$r" ] && "$PY" -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')).get('scenario_dims') or []; print(';'.join(['hdr_resource'] + ['body:' + x.lstrip('/') for x in d]) if d else '')" "$r")
+      echo "$p/$x,$(basename "$APP"),$d"
+    done; } > "$WS/task1/flows.csv"
+  case "$EXPORT" in *.masked.csv) am=--already-masked;; *) am=;; esac
+  "$PY" "$BATCH" "$EXPORT" -o "$WS/task1" --flows "$WS/task1/flows.csv" $am || echo "some flows need a look: $WS/task1/SUMMARY.md"
+}
+
+do_scaffold() {
+  flows | while read -r p x; do
+    r="$WS/research/$p/$x"; [ -s "$r/research.json" ] || continue
+    t1=$(task1_of "$p" "$x")
+    "$PY" "$SK/scaffold_camelk.py" "$r" -o "$WS/modules/$p/$x" --project "$p" ${t1:+--parity "$t1/fixtures/parity"} \
+      || echo "FAILED scaffold $p/$x (continuing)"
+  done
+}
+
+do_build() {
+  flows | while read -r p x; do
+    m="$WS/modules/$p/$x"; [ -f "$m/FLOW_CARD.md" ] || continue
+    grep -qiE '^Status:[[:space:]]*approved' "$m/FLOW_CARD.md" || { echo "skip $p/$x (card not approved)"; continue; }
+    if [ -f "$m/GATES.json" ] && grep -q '"result": "PASS"' "$m/GATES.json"; then echo "skip $p/$x (gates PASS)"; continue; fi
+    echo "=== build $p/$x"
+    t1=$(task1_of "$p" "$x")
+    OSB_SRC="$APP/$p" bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
+  done
+}
+
+do_matrix() {   # mutation check on every green module (MUTATE=0 skips it), then the matrices
+  flows | while read -r p x; do
+    m="$WS/modules/$p/$x"; [ -f "$m/.scaffold.json" ] || continue
+    if [ "${MUTATE:-1}" = 1 ] && [ -f "$m/GATES.json" ] && grep -q '"result": "PASS"' "$m/GATES.json" && [ ! -f "$m/MUTATION.json" ]; then
+      echo "=== mutations $p/$x"; "$PY" "$SK/mutate_route.py" "$m" --mvn "mvn -B -q ${MVN_ARGS:-}" || echo "MUTATION SURVIVED $p/$x: tests too weak (see $m/MUTATION.json)"
+    fi
+  done
+  "$PY" "$SK/test_matrix.py" --domain "$WS/modules" -o "$WS/domain"
+}
+
 case "$STAGE" in
   list) flows | awk '{print} END{print NR " proxies"}' ;;
-  research)
-    flows | while read -r p x; do
-      out="$WS/research/$p/$x"
-      if [ -f "$out/SHARE_CHECK.json" ] && grep -q '"pass": true' "$out/SHARE_CHECK.json"; then echo "skip $p/$x (PASS)"; continue; fi
-      echo "=== research $p/$x"
-      t1="${TASK1_ROOT:+$TASK1_ROOT/$x/task1}"; [ -n "$t1" ] && [ ! -d "$t1" ] && t1=""
-      (cd "$WS" && OUT="research/$p/$x" bash "$KIT/pi/run_research.sh" "$APP/$p" "$x" ${t1:+"$t1"}) < /dev/null || echo "FAILED research $p/$x (continuing)"
-    done; status ;;
-  scaffold)
-    flows | while read -r p x; do
-      r="$WS/research/$p/$x"; [ -s "$r/research.json" ] || continue
-      "$PY" "$KIT/skills/osb-camelk-route/scripts/scaffold_camelk.py" "$r" -o "$WS/modules/$p/$x" --project "$p" \
-        ${TASK1_ROOT:+--parity "$TASK1_ROOT/$x/task1/fixtures/parity"} || echo "FAILED scaffold $p/$x (continuing)"
-    done; status ;;
-  build)
-    flows | while read -r p x; do
-      m="$WS/modules/$p/$x"; [ -f "$m/FLOW_CARD.md" ] || continue
-      grep -qiE '^Status:[[:space:]]*approved' "$m/FLOW_CARD.md" || { echo "skip $p/$x (card not approved)"; continue; }
-      if [ -f "$m/GATES.json" ] && grep -q '"result": "PASS"' "$m/GATES.json"; then echo "skip $p/$x (gates PASS)"; continue; fi
-      echo "=== build $p/$x"
-      t1="${TASK1_ROOT:+$TASK1_ROOT/$x/task1}"; [ -n "$t1" ] && [ ! -d "$t1" ] && t1=""
-      OSB_SRC="$APP/$p" bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
-    done; status ;;
+  research) do_research; status ;;
+  task1) do_task1; status ;;
+  scaffold) do_scaffold; status ;;
+  build) do_build; status ;;
+  matrix) do_matrix; status ;;
+  auto) do_research; do_task1; do_scaffold; status
+        echo "next: approve each modules/<project>/<proxy>/FLOW_CARD.md (open questions in domain/STATUS.md), then: run_domain.sh $APP build, then matrix" ;;
   status) status ;;
   *) echo "unknown stage: $STAGE"; exit 2 ;;
 esac
@@ -1701,4 +2022,4 @@ cat > '.pi/skills/osb-research/assets/research.schema.json' <<'KIT_EOF__PI_SKILL
 }
 KIT_EOF__PI_SKILLS_OSB_RESEARCH_ASSETS_RESEARCH_SCHEMA_JSON
 chmod +x .pi/skills/osb-camelk-route/scripts/*.py pi/*.sh 2>/dev/null || true
-echo "installed: 17 files (skill osb-camelk-route + domain runner)"
+echo "installed: 19 files (skill osb-camelk-route + domain runner)"

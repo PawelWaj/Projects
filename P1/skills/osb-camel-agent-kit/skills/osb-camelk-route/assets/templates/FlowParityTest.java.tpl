@@ -166,7 +166,7 @@ class FlowParityTest {
         return out;
     }
 
-    @ParameterizedTest(name = "{0}")
+    @ParameterizedTest(name = "route {0}")
     @MethodSource("cases")
     void reachesTheSameOutputAsOsb(String name, Path c) throws Exception {
         JsonNode expected = JSON.readTree(c.resolve("expected.json").toFile());
@@ -180,7 +180,7 @@ class FlowParityTest {
         }
     }
 
-    @ParameterizedTest(name = "{0}")
+    @ParameterizedTest(name = "body {0}")
     @MethodSource("cases")
     void bodyEqualsOriginalXQueryResult(String name, Path c) throws Exception {
         Path json = c.resolve("expected-output.json");

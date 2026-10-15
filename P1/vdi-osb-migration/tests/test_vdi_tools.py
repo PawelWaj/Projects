@@ -1,4 +1,5 @@
 """Tests for the VDI workflow tools. Run from the repo root: python3 -m unittest discover -s vdi-osb-migration/tests -v"""
+import csv
 import json
 import os
 import shutil
@@ -306,6 +307,42 @@ class CamelkRouteTests(unittest.TestCase):
             subprocess.run([sys.executable, str(self.SK / "check_camelk.py"), str(m), "--no-surefire"], capture_output=True)
             gates = json.loads((m / "GATES.json").read_text())["gates"]
             self.assertEqual([k for k, g in gates.items() if not g["ok"]], ["K1_card_approved"])
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class TestMatrixTests(unittest.TestCase):
+    """test_matrix.py joins case folders, surefire display names and mapping into P/E rows (no values read)."""
+    SK = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts"
+
+    def test_rows_from_reports(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = Path(d)
+            (m / "src/test/resources").mkdir(parents=True)
+            (m / "src/test/resources/flow-test.json").write_text(json.dumps({
+                "outputs": {"a": "mock:out-a", "err": "mock:out-err"}, "error_output": "err",
+                "scenario_mapping": [{"scenario": "f=true", "outputs": ["a"]}, {"scenario": "f!=true", "outputs": []}]}))
+            (m / ".scaffold.json").write_text(json.dumps({"project": "p", "proxy": "x"}))
+            for sc, val in (("s1", "true"), ("s2", "false")):
+                c = m / "src/test/resources/parity/flow" / sc / "t1"
+                c.mkdir(parents=True)
+                (c / "input.payload").write_text("{}")
+                (c.parent / "SCENARIO.txt").write_text(f"p/x|success|f={val}\n")
+            (m / "target/surefire-reports").mkdir(parents=True)
+            (m / "target/surefire-reports/TEST-a.xml").write_text(
+                '<testsuite><testcase classname="o.FlowParityTest" name="reachesTheSameOutputAsOsb(String, Path) route flow/s1/t1"/>'
+                '<testcase classname="o.FlowParityTest" name="reachesTheSameOutputAsOsb(String, Path) route flow/s2/t1"><failure/></testcase>'
+                '<testcase classname="o.FlowErrorTest" name="retriesThreeTimes"/></testsuite>')
+            r = subprocess.run([sys.executable, str(self.SK / "test_matrix.py"), str(m)], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1, "a failed case fails the matrix")
+            rows = list(csv.DictReader((m / "test-matrix.csv").open()))
+            p = {x["what"]: x for x in rows if x["id"].startswith("P")}
+            self.assertEqual(p["f=true"]["expected"], "out-a")
+            self.assertEqual(p["f=false"]["expected"], "nothing sent")
+            self.assertEqual(p["f=false"]["result"], "FAIL")
+            self.assertTrue(any(x["kind"] == "error/behaviour" and x["result"] == "PASS" for x in rows))
 
 
 if __name__ == "__main__":

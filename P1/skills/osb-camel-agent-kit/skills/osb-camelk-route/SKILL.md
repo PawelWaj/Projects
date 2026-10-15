@@ -44,7 +44,12 @@ masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module a
 6. **Run until green:** `mvn -B test` then `python <skill>/scripts/check_camelk.py modules/<project>/<proxy>`. Gates:
    K1 card approved · K2 no TODO(flow-card) in src/main · K3 every route id present · K4 no infrastructure ·
    K5 generated tests untouched, nothing disabled · K6 stubs · K7 error tests ≥ error scopes · K8 tests green.
-7. **Report** (five lines): proxy, gates result, tests run/failed/skipped (skipped = golden outputs pending),
+7. **Prove the tests bite:** `python <skill>/scripts/mutate_route.py modules/<project>/<proxy> --mvn "mvn -B -q -s ~/.m2/settings.xml"`
+   breaks the route on purpose (conditions negated, outputs swapped or dropped, retries removed); every mutation must
+   make a test fail. A survivor means a missing test: add it to FlowErrorTest, never weaken the route to pass.
+8. **Matrix:** `python <skill>/scripts/test_matrix.py modules/<project>/<proxy>` → `TEST_MATRIX.md` (P scenarios with
+   real messages, E error tests, K gates, M mutations).
+9. **Report** (five lines): proxy, gates result, tests run/failed/skipped (skipped = golden outputs pending),
    differences recorded in MIGRATION_NOTES.md, open questions left.
 
 ## What the generated parity test proves
