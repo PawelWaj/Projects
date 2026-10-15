@@ -1593,6 +1593,8 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 #                matrix    mutation check (route broken on purpose) + test matrix per flow and for the domain
 #                functional  the whole proof: research -> task1 -> tests -> build -> matrix -> report
 #                          (build needs approved cards, or POC=1 for a proof-of-concept run: cards marked, K1 FAIL)
+#                estimate  model load per flow (calls, tokens, minutes) from the OSB source size + measured times
+#                          (domain/timings.csv); quota via PI_RPM / PI_TPM -> domain/PI_LOAD_ESTIMATE.md
 #                report    domain/FUNCTIONAL_TEST_REPORT.md: inputs, expected outputs, mocks, results, mutations per flow
 #                auto      research -> task1 -> tests: the functional test pack for every flow, then stops
 #                          (routes: approve the cards, then build and matrix)
@@ -1608,7 +1610,7 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 set -uo pipefail
 # local client settings, never in Git: $OSB_KIT_ENV, else ./.osb-kit.env, else ~/.osb-kit.env
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
-STAGES='list|batches|coverage|research|task1|tests|scaffold|build|matrix|report|functional|auto|status'
+STAGES='list|batches|coverage|estimate|research|task1|tests|scaffold|build|matrix|report|functional|auto|status'
 if echo "${1:-}" | grep -Eqx "($STAGES)"; then         # short form: run_domain.sh <stage> [workspace], APP from the env file
   STAGE=$1; WS=${2:-${WS:-.}}; APP=${APP:?set APP in .osb-kit.env or use: run_domain.sh <osb-app-dir> <stage>}
 else
@@ -1625,6 +1627,14 @@ mkdir -p "$WS/domain"
 SK="$KIT/skills/osb-camelk-route/scripts"; [ -d "$SK" ] || SK="$KIT/.pi/skills/osb-camelk-route/scripts"
 BATCH=$(for d in "$KIT/../../vdi-osb-migration/bin" "$KIT/bin"; do [ -f "$d/batch_task1.py" ] && echo "$d/batch_task1.py" && break; done)
 t1dir() { local d="$WS/task1/flows/$(echo "$1-$2" | tr -cs 'A-Za-z0-9' '-' | sed 's/^-//;s/-$//' | tr 'A-Z' 'a-z' | cut -c1-80)"; [ -d "$d/fixtures/parity" ] && echo "$d"; }
+
+timed() {   # timed <project> <proxy> <stage> <command...>: run it, append the duration to domain/timings.csv
+  local p=$1 x=$2 st=$3 t0 rc; shift 3; t0=$(date +%s)
+  "$@"; rc=$?
+  [ -f "$WS/domain/timings.csv" ] || echo "project,proxy,stage,seconds,exit" > "$WS/domain/timings.csv"
+  echo "$p,$x,$st,$(( $(date +%s) - t0 )),$rc" >> "$WS/domain/timings.csv"
+  return $rc
+}
 
 projects() {   # project folders (sorted), after PROJECTS; BATCH_NO=n keeps the n-th slice of BATCH_SIZE (default 10)
   local all
@@ -1675,7 +1685,7 @@ do_research() {
     if [ -f "$out/SHARE_CHECK.json" ] && grep -q '"pass": true' "$out/SHARE_CHECK.json"; then echo "skip $p/$x (PASS)"; continue; fi
     echo "=== research $p/$x"
     t1=$(task1_of "$p" "$x")
-    (cd "$WS" && OUT="research/$p/$x" bash "$KIT/pi/run_research.sh" "$APP/$p" "$x" ${t1:+"$t1"}) < /dev/null || echo "FAILED research $p/$x (continuing)"
+    timed "$p" "$x" research bash -c 'cd "$1" && OUT="research/$2/$3" bash "$4/pi/run_research.sh" "$5/$2" "$3" ${6:+"$6"}' _ "$WS" "$p" "$x" "$KIT" "$APP" "$t1" < /dev/null || echo "FAILED research $p/$x (continuing)"
     sleep "${PI_PAUSE:-30}"
   done
 }
@@ -1712,7 +1722,7 @@ do_tests() {
     r="$WS/research/$p/$x"; [ -s "$r/research.json" ] || continue
     echo "=== tests $p/$x"
     t1=$(task1_of "$p" "$x")
-    OSB_SRC="$APP/$p" bash "$KIT/pi/run_tests.sh" "$r" "$WS/modules/$p/$x" "$p" ${t1:+"$t1"} < /dev/null | grep -E "rate limit|^\{" || echo "INCOMPLETE tests $p/$x (continuing)"
+    OSB_SRC="$APP/$p" timed "$p" "$x" tests bash "$KIT/pi/run_tests.sh" "$r" "$WS/modules/$p/$x" "$p" ${t1:+"$t1"} < /dev/null | grep -E "rate limit|^\{" || echo "INCOMPLETE tests $p/$x (continuing)"
     sleep "${PI_PAUSE:-30}"
   done
   "$PY" "$SK/test_matrix.py" --domain "$WS/modules" -o "$WS/domain" > /dev/null || true
@@ -1725,7 +1735,7 @@ do_build() {
     if [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json"; then echo "skip $p/$x (tests green)"; continue; fi
     echo "=== build $p/$x"
     t1=$(task1_of "$p" "$x")
-    OSB_SRC="$APP/$p" bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
+    OSB_SRC="$APP/$p" timed "$p" "$x" build bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
     sleep "${PI_PAUSE:-30}"
   done
 }
@@ -1768,6 +1778,10 @@ case "$STAGE" in
   matrix) do_matrix; status ;;
   auto) do_research; do_task1; do_tests; status
         echo "functional test packs: modules/<project>/<proxy>/src/test + TEST_MATRIX.md; domain catalogue: domain/TEST_MATRIX.md" ;;
+  estimate)
+    [ -d "$WS/domain/inventory/flows" ] || "$PY" "$KIT/skills/osb-to-camel/scripts/osb_inventory.py" "$APP" -o "$WS/domain/inventory" > /dev/null
+    "$PY" "$(dirname "$BATCH")/estimate_pi_load.py" "$WS/domain/inventory" "$APP" --coverage "$WS/domain/coverage.csv" \
+      --timings "$WS/domain/timings.csv" --rpm "${PI_RPM:-20}" --tpm "${PI_TPM:-200000}" -o "$WS/domain/PI_LOAD_ESTIMATE.md" ;;
   report) status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
   functional) do_research; do_task1; do_tests; do_build; do_matrix; status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
   status) status ;;
