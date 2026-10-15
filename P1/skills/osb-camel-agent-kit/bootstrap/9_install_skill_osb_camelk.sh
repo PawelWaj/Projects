@@ -1304,8 +1304,8 @@ KIT_EOF_AGENTS_TESTER_CAMELK_MD
 mkdir -p "$(dirname "pi/run_camelk.sh")"
 cat > 'pi/run_camelk.sh' <<'KIT_EOF_PI_RUN_CAMELK_SH'
 #!/usr/bin/env bash
-# Research pack -> Camel K module for ONE proxy: scaffold (script) -> approval gate -> synthetic inputs where Splunk has
-# none (pi tester) -> implement (pi) -> mvn test -> gates.
+# Research pack -> Camel K module for ONE proxy: functional tests (pi/run_tests.sh) -> approval gate -> implement (pi)
+# -> mvn test -> gates.
 #
 # Usage: pi/run_camelk.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]
 #   research-dir   research/<project>/<proxy> with research.json (+ facts.json), check PASS
@@ -1326,8 +1326,8 @@ SK=$(skill_dir osb-camelk-route); [ -n "$SK" ] || { echo "skill osb-camelk-route
 [ -s "$RES/research.json" ] || { echo "missing $RES/research.json: run pi/run_research.sh first"; exit 1; }
 if [ -f "$RES/SHARE_CHECK.json" ] && ! grep -q '"pass": true' "$RES/SHARE_CHECK.json"; then echo "research pack did not pass its check: $RES/SHARE_CHECK.json"; exit 1; fi
 
-echo "== 1 scaffold"
-"$PY" "$SK/scripts/scaffold_camelk.py" "$RES" -o "$MOD" --project "$PRJ" ${TASK1:+--parity "$TASK1/fixtures/parity"}
+echo "== 1 functional tests: generated tests + mocks, synthetic inputs, frozen (pi/run_tests.sh)"
+bash "$KIT/pi/run_tests.sh" "$RES" "$MOD" "$PRJ" ${TASK1:+"$TASK1"} || echo "some scenarios have no test case yet (gate K9 will fail)"
 
 echo "== 2 approval"
 if ! grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$MOD/FLOW_CARD.md" || ! grep -qE '^Approver:[[:space:]]*[^[:space:]]' "$MOD/FLOW_CARD.md"; then
@@ -1336,25 +1336,14 @@ if ! grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$MOD/FLOW_CARD.md" |
 fi
 
 LOG="$MOD/.agent-logs"; mkdir -p "$LOG"
-echo "== 3 test inputs: scenarios without a real Splunk message get synthetic ones (pi tester, before the route)"
-"$PY" "$SK/scripts/check_camelk.py" "$MOD" --no-surefire > /dev/null || true
-UNCOV=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['gates']['K9_scenarios_covered']['uncovered']))" "$MOD/GATES.json")
-if [ "$UNCOV" != 0 ]; then
-  PT=(pi --print --no-session --thinking "${PI_THINKING:-high}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
-  [ -n "${OSB_PI_MODEL:-}" ] && PT+=(--model "$OSB_PI_MODEL")
-  "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." \
-    > "$LOG/tester.out" 2> "$LOG/tester.err" || true
-fi
-"$PY" "$SK/scripts/scaffold_camelk.py" "$RES" -o "$MOD" --project "$PRJ" --freeze-synthetic
-
-echo "== 4 implement (pi)"
+echo "== 3 implement (pi)"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,edit,write"
     --append-system-prompt "$KIT/agents/implementer-camelk.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
 "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/RESEARCH.md and $RES/research.json. ${OSB_SRC:+OSB source (read only): $OSB_SRC.} Do steps 3-6 of the skill: fill every TODO(flow-card) in the route, write FlowErrorTest (one test per error scope at least) and the backend stubs, run 'mvn -B ${MVN_ARGS:-} -f $MOD/pom.xml test' and '$PY $SK/scripts/check_camelk.py $MOD' until it prints PASS. Never edit FlowParityTest.java or flow-test.json. Write nothing outside $MOD." \
   > "$LOG/implement.out" 2> "$LOG/implement.err" || true
 
-echo "== 5 verify"
+echo "== 4 verify"
 mvn -B -q ${MVN_ARGS:-} -f "$MOD/pom.xml" test > "$LOG/mvn.out" 2>&1 || true
 grep -h "Tests run:" "$LOG/mvn.out" | tail -1 || true
 "$PY" "$SK/scripts/check_camelk.py" "$MOD"
@@ -1373,10 +1362,14 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 #                research  research pack per proxy -> <ws>/research/<project>/<proxy>/   (skips packs that PASS)
 #                task1     Splunk test cases for every researched proxy, split by the fields its branches use
 #                          (research scenario_dims) -> <ws>/task1/flows/<project>-<proxy>/   (needs EXPORT, MASK_KEY)
-#                scaffold  module + FLOW_CARD.md per researched proxy -> <ws>/modules/<project>/<proxy>/
+#                tests     FUNCTIONAL TESTS per researched proxy (no route needed): generated tests + mocks, real Splunk
+#                          cases, synthetic cases from the schema where Splunk has none (pi tester), frozen, catalogue
+#                          -> <ws>/modules/<project>/<proxy>/src/test/** + TEST_MATRIX.md
+#                scaffold  same module without the tester step
 #                build     implement + test + gates for every proxy whose card is approved
 #                matrix    mutation check (route broken on purpose) + test matrix per flow and for the domain
-#                auto      research -> task1 -> scaffold, then stops: approve the cards, then run build and matrix
+#                auto      research -> task1 -> tests: the functional test pack for every flow, then stops
+#                          (routes: approve the cards, then build and matrix)
 #                status    only rewrite <ws>/domain/STATUS.md + status.csv
 #   workspace    default: current folder
 # Env: PROJECTS (regex on project names, e.g. 'beneficiary|cancel-'), EXPORT (one Splunk CSV export with all flows of
@@ -1413,7 +1406,7 @@ status() {
     r="$WS/research/$p/$x"; m="$WS/modules/$p/$x"
     rs=-; [ -f "$r/SHARE_CHECK.json" ] && { grep -q '"pass": true' "$r/SHARE_CHECK.json" && rs=PASS || rs=FAIL; }
     oq=-; [ -s "$r/research.json" ] && oq=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1], encoding='utf-8')).get('open_questions') or []))" "$r/research.json")
-    tc=-; t=$(t1dir "$p" "$x"); [ -n "$t" ] && tc=$(find "$t/fixtures/parity" -name input.payload | wc -l | tr -d ' ')
+    tc=-; [ -d "$m/src/test/resources/parity" ] && tc=$(find "$m/src/test/resources/parity" -name input.payload | wc -l | tr -d ' ')
     cs=-; [ -f "$m/FLOW_CARD.md" ] && { grep -qiE '^Status:[[:space:]]*approved' "$m/FLOW_CARD.md" && cs=approved || cs=draft; }
     gs=-; ts=-; if [ -f "$m/GATES.json" ]; then grep -q '"result": "PASS"' "$m/GATES.json" && gs=PASS || gs=FAIL
       ts=$("$PY" -c "import json,sys; g=json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}); print(f\"{g.get('tests','-')}/{g.get('failures','-')}F/{g.get('skipped','-')}S\")" "$m/GATES.json"); fi
@@ -1464,6 +1457,16 @@ do_scaffold() {
   done
 }
 
+do_tests() {
+  flows | while read -r p x; do
+    r="$WS/research/$p/$x"; [ -s "$r/research.json" ] || continue
+    echo "=== tests $p/$x"
+    t1=$(task1_of "$p" "$x")
+    OSB_SRC="$APP/$p" bash "$KIT/pi/run_tests.sh" "$r" "$WS/modules/$p/$x" "$p" ${t1:+"$t1"} < /dev/null | tail -1 || echo "INCOMPLETE tests $p/$x (continuing)"
+  done
+  "$PY" "$SK/test_matrix.py" --domain "$WS/modules" -o "$WS/domain" > /dev/null || true
+}
+
 do_build() {
   flows | while read -r p x; do
     m="$WS/modules/$p/$x"; [ -f "$m/FLOW_CARD.md" ] || continue
@@ -1493,15 +1496,70 @@ case "$STAGE" in
     "$PY" "$(dirname "$BATCH")/domain_coverage.py" "$WS/domain/inventory" "$SPLUNK_COVERAGE" -o "$WS/domain/COVERAGE.md" ;;
   research) do_research; status ;;
   task1) do_task1; status ;;
+  tests) do_tests; status ;;
   scaffold) do_scaffold; status ;;
   build) do_build; status ;;
   matrix) do_matrix; status ;;
-  auto) do_research; do_task1; do_scaffold; status
-        echo "next: approve each modules/<project>/<proxy>/FLOW_CARD.md (open questions in domain/STATUS.md), then: run_domain.sh $APP build, then matrix" ;;
+  auto) do_research; do_task1; do_tests; status
+        echo "functional test packs: modules/<project>/<proxy>/src/test + TEST_MATRIX.md; domain catalogue: domain/TEST_MATRIX.md" ;;
   status) status ;;
   *) echo "unknown stage: $STAGE"; exit 2 ;;
 esac
 KIT_EOF_PI_RUN_DOMAIN_SH
+mkdir -p "$(dirname "pi/run_tests.sh")"
+cat > 'pi/run_tests.sh' <<'KIT_EOF_PI_RUN_TESTS_SH'
+#!/usr/bin/env bash
+# Functional test creation for ONE proxy, no route needed: research pack + Splunk cases -> generated tests and mocks
+# -> synthetic inputs for scenarios Splunk cannot supply (pi tester) -> frozen test pack + catalogue.
+#
+# Usage: pi/run_tests.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]
+# Env:   OSB_SRC (OSB project folder: the tester reads the message schema there), OSB_PI_MODEL, PI_THINKING, KIT, PYTHON
+# Result: <module>/src/test/** (FlowParityTest + flow-test.json + real and synthetic case folders, frozen),
+#         <module>/TEST_MATRIX.md (catalogue: every scenario, its inputs and expected outputs). Exit 1 if a scenario has no case.
+set -euo pipefail
+RES=${1:?usage: run_tests.sh <research-dir> <module-dir> <osb-project-name> [task1-dir]}
+MOD=${2:?module dir}
+PRJ=${3:?osb project name}
+TASK1=${4:-}
+KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
+SK=$(for d in "$KIT/skills/osb-camelk-route" "$KIT/.pi/skills/osb-camelk-route"; do [ -d "$d" ] && echo "$d" && break; done)
+[ -n "$SK" ] || { echo "skill osb-camelk-route not found under $KIT"; exit 1; }
+[ -s "$RES/research.json" ] || { echo "missing $RES/research.json: run pi/run_research.sh first"; exit 1; }
+
+echo "== 1 generated tests + mocks (script)"
+"$PY" "$SK/scripts/scaffold_camelk.py" "$RES" -o "$MOD" --project "$PRJ" ${TASK1:+--parity "$TASK1/fixtures/parity"}
+
+echo "== 2 synthetic inputs where Splunk has none (pi tester)"
+LOG="$MOD/.agent-logs"; mkdir -p "$LOG"
+"$PY" "$SK/scripts/check_camelk.py" "$MOD" --no-surefire > /dev/null || true
+UNCOV=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1]))['gates']['K9_scenarios_covered']['uncovered']))" "$MOD/GATES.json")
+if [ "$UNCOV" != 0 ]; then
+  PT=(pi --print --no-session --thinking "${PI_THINKING:-high}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
+  [ -n "${OSB_PI_MODEL:-}" ] && PT+=(--model "$OSB_PI_MODEL")
+  "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." \
+    > "$LOG/tester.out" 2> "$LOG/tester.err" || true
+else
+  echo "   every scenario already has a real Splunk case"
+fi
+
+echo "== 3 freeze + catalogue"
+"$PY" "$SK/scripts/scaffold_camelk.py" "$RES" -o "$MOD" --project "$PRJ" --freeze-synthetic
+"$PY" "$SK/scripts/check_camelk.py" "$MOD" --no-surefire > /dev/null || true
+"$PY" "$SK/scripts/test_matrix.py" "$MOD" > /dev/null || true
+"$PY" - "$MOD" <<'PY'
+import json, sys
+from pathlib import Path
+m = Path(sys.argv[1]); par = m / "src/test/resources/parity"
+real = sum(1 for p in par.glob("*/*/*/input.payload") if "-synthetic" not in p.parts[-4])
+syn = sum(1 for p in par.glob("*-synthetic/*/*/input.payload"))
+g = json.loads((m / "GATES.json").read_text())["gates"]["K9_scenarios_covered"]
+cfg = json.loads((m / "src/test/resources/flow-test.json").read_text())
+print(json.dumps({"scenarios": len(cfg["scenario_mapping"]), "real_cases": real, "synthetic_cases": syn,
+                  "uncovered": g["uncovered"], "outputs": sorted(cfg["outputs"]), "catalogue": str(m / "TEST_MATRIX.md")}))
+sys.exit(0 if g["ok"] else 1)
+PY
+KIT_EOF_PI_RUN_TESTS_SH
 mkdir -p "$(dirname "pi/run_research.sh")"
 cat > 'pi/run_research.sh' <<'KIT_EOF_PI_RUN_RESEARCH_SH'
 #!/usr/bin/env bash
@@ -1688,6 +1746,7 @@ Camel K integrations (YAML DSL) that replace Oracle Service Bus flows: one modul
 |---|---|
 | Research pack (source stays, knowledge travels) | `pi/run_research.sh osb-src/<project> <proxy> [task1-dir]` → `research/<proxy>/` (shared only after `research_check.py` PASS) |
 | All proxies of one OSB application | `pi/run_domain.sh <osb-app-dir> <stage>` (stages: list, research, scaffold, build, status) → `domain/STATUS.md` |
+| Functional tests only (no route) | `pi/run_tests.sh research/<project>/<proxy> modules/<project>/<proxy> <project> [task1-dir]` |
 | Research pack → Camel K module + tests | `pi/run_camelk.sh research/<project>/<proxy> modules/<project>/<proxy> <project> [task1-dir]` (stops until the card is approved) |
 | Gates of a Camel K module | `python3 skills/osb-camelk-route/scripts/check_camelk.py modules/<project>/<proxy>` (K1-K8) |
 | Inventory an export | `python3 skills/osb-to-camel/scripts/osb_inventory.py osb-src/<project> -o migration/osb-inventory` |
@@ -2132,4 +2191,4 @@ cat > '.pi/skills/osb-research/assets/research.schema.json' <<'KIT_EOF__PI_SKILL
 }
 KIT_EOF__PI_SKILLS_OSB_RESEARCH_ASSETS_RESEARCH_SCHEMA_JSON
 chmod +x .pi/skills/osb-camelk-route/scripts/*.py pi/*.sh 2>/dev/null || true
-echo "installed: 20 files (skill osb-camelk-route + domain runner)"
+echo "installed: 21 files (skill osb-camelk-route + domain runner)"

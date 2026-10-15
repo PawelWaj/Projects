@@ -37,11 +37,11 @@ unzip to `E:\Pawel\`). `~/.m2/settings.xml` = the team's file with the Nexus mir
 | 0b coverage | `SPLUNK_COVERAGE=<payload table.csv> … coverage` | script | `domain/COVERAGE.md`: per proxy A = real Splunk messages, B = logged without payload, C = not in Splunk; by transport (jms / http / jca) |
 | 1 research | `… research` | pi (researcher) | `research/<project>/<proxy>/` per proxy, share check PASS; packs that passed are skipped on rerun |
 | 2 task1 | `EXPORT=<domain export.csv> MASK_KEY=… … task1` | script | Splunk test messages per proxy, split by the fields its branches use (`scenario_dims` from step 1) → `task1/flows/<project>-<proxy>/` + `task1/SUMMARY.md` |
-| 3 scaffold | `… scaffold` | script | `modules/<project>/<proxy>/`: route skeleton, generated tests, `FLOW_CARD.md` (draft), real masked messages copied in |
+| 3 tests | `… tests` | script + pi (tester) | **the functional test pack per flow, no route needed**: generated tests + mocks, real masked Splunk messages, synthetic messages from the schema where Splunk has none, frozen; `TEST_MATRIX.md` catalogue per flow and `domain/TEST_MATRIX.md` (`scaffold` = same without the tester) |
 | 4 approve | open each `FLOW_CARD.md`, compare with `RESEARCH.md`, settle the open questions, set `Status: approved`, `Approver:`, `Date:` | **human** | only approved cards are built |
 | 5 build | `MVN_ARGS='-s ~/.m2/settings.xml' … build` | pi (implementer) | route implemented, error tests + stubs, `mvn test`, gates K1–K8 → `GATES.json` |
 | 6 matrix | `… matrix` | script | route broken on purpose per green flow (`MUTATION.json`), `TEST_MATRIX.md` per flow + `domain/TEST_MATRIX.md` |
-| auto | `… auto` | pi + scripts | 1 + 2 + 3 in one go, then stops for step 4 |
+| auto | `… auto` | pi + scripts | 1 + 2 + 3 in one go: the functional test pack for every flow. Steps 4–6 (routes) are the next part |
 | status | `… status` | script | `domain/STATUS.md`: research / open questions / test cases / card / gates / tests per proxy |
 
 Domain export for step 2 (Splunk, CSV, Unlimited), all projects of the application:

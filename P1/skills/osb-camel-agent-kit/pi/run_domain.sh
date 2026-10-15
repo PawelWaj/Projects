@@ -10,10 +10,14 @@
 #                research  research pack per proxy -> <ws>/research/<project>/<proxy>/   (skips packs that PASS)
 #                task1     Splunk test cases for every researched proxy, split by the fields its branches use
 #                          (research scenario_dims) -> <ws>/task1/flows/<project>-<proxy>/   (needs EXPORT, MASK_KEY)
-#                scaffold  module + FLOW_CARD.md per researched proxy -> <ws>/modules/<project>/<proxy>/
+#                tests     FUNCTIONAL TESTS per researched proxy (no route needed): generated tests + mocks, real Splunk
+#                          cases, synthetic cases from the schema where Splunk has none (pi tester), frozen, catalogue
+#                          -> <ws>/modules/<project>/<proxy>/src/test/** + TEST_MATRIX.md
+#                scaffold  same module without the tester step
 #                build     implement + test + gates for every proxy whose card is approved
 #                matrix    mutation check (route broken on purpose) + test matrix per flow and for the domain
-#                auto      research -> task1 -> scaffold, then stops: approve the cards, then run build and matrix
+#                auto      research -> task1 -> tests: the functional test pack for every flow, then stops
+#                          (routes: approve the cards, then build and matrix)
 #                status    only rewrite <ws>/domain/STATUS.md + status.csv
 #   workspace    default: current folder
 # Env: PROJECTS (regex on project names, e.g. 'beneficiary|cancel-'), EXPORT (one Splunk CSV export with all flows of
@@ -50,7 +54,7 @@ status() {
     r="$WS/research/$p/$x"; m="$WS/modules/$p/$x"
     rs=-; [ -f "$r/SHARE_CHECK.json" ] && { grep -q '"pass": true' "$r/SHARE_CHECK.json" && rs=PASS || rs=FAIL; }
     oq=-; [ -s "$r/research.json" ] && oq=$("$PY" -c "import json,sys; print(len(json.load(open(sys.argv[1], encoding='utf-8')).get('open_questions') or []))" "$r/research.json")
-    tc=-; t=$(t1dir "$p" "$x"); [ -n "$t" ] && tc=$(find "$t/fixtures/parity" -name input.payload | wc -l | tr -d ' ')
+    tc=-; [ -d "$m/src/test/resources/parity" ] && tc=$(find "$m/src/test/resources/parity" -name input.payload | wc -l | tr -d ' ')
     cs=-; [ -f "$m/FLOW_CARD.md" ] && { grep -qiE '^Status:[[:space:]]*approved' "$m/FLOW_CARD.md" && cs=approved || cs=draft; }
     gs=-; ts=-; if [ -f "$m/GATES.json" ]; then grep -q '"result": "PASS"' "$m/GATES.json" && gs=PASS || gs=FAIL
       ts=$("$PY" -c "import json,sys; g=json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}); print(f\"{g.get('tests','-')}/{g.get('failures','-')}F/{g.get('skipped','-')}S\")" "$m/GATES.json"); fi
@@ -101,6 +105,16 @@ do_scaffold() {
   done
 }
 
+do_tests() {
+  flows | while read -r p x; do
+    r="$WS/research/$p/$x"; [ -s "$r/research.json" ] || continue
+    echo "=== tests $p/$x"
+    t1=$(task1_of "$p" "$x")
+    OSB_SRC="$APP/$p" bash "$KIT/pi/run_tests.sh" "$r" "$WS/modules/$p/$x" "$p" ${t1:+"$t1"} < /dev/null | tail -1 || echo "INCOMPLETE tests $p/$x (continuing)"
+  done
+  "$PY" "$SK/test_matrix.py" --domain "$WS/modules" -o "$WS/domain" > /dev/null || true
+}
+
 do_build() {
   flows | while read -r p x; do
     m="$WS/modules/$p/$x"; [ -f "$m/FLOW_CARD.md" ] || continue
@@ -130,11 +144,12 @@ case "$STAGE" in
     "$PY" "$(dirname "$BATCH")/domain_coverage.py" "$WS/domain/inventory" "$SPLUNK_COVERAGE" -o "$WS/domain/COVERAGE.md" ;;
   research) do_research; status ;;
   task1) do_task1; status ;;
+  tests) do_tests; status ;;
   scaffold) do_scaffold; status ;;
   build) do_build; status ;;
   matrix) do_matrix; status ;;
-  auto) do_research; do_task1; do_scaffold; status
-        echo "next: approve each modules/<project>/<proxy>/FLOW_CARD.md (open questions in domain/STATUS.md), then: run_domain.sh $APP build, then matrix" ;;
+  auto) do_research; do_task1; do_tests; status
+        echo "functional test packs: modules/<project>/<proxy>/src/test + TEST_MATRIX.md; domain catalogue: domain/TEST_MATRIX.md" ;;
   status) status ;;
   *) echo "unknown stage: $STAGE"; exit 2 ;;
 esac
