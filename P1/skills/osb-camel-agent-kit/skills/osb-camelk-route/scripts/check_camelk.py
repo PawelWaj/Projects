@@ -3,7 +3,8 @@
 
     check_camelk.py modules/<project>/<proxy> [--no-surefire]
 
-K1 card approved       FLOW_CARD.md has `Status: approved` and an approver name
+K1 card approved       FLOW_CARD.md has `Status: approved` and an approver name, and was not changed after it was
+                       frozen before the implementation (pi must never edit the card)
 K2 no gaps left        no TODO(flow-card) in src/main (route, properties, beans)
 K3 route ids           every branch-*, out-*, backend-* id from .scaffold.json is in the YAML route
 K4 no infrastructure   no host names, IP addresses, host:port URIs or credentials in src/main
@@ -38,7 +39,11 @@ def main() -> int:
 
     card = (mod / "FLOW_CARD.md").read_text(encoding="utf-8") if (mod / "FLOW_CARD.md").is_file() else ""
     approved = re.search(r"^Status:\s*approved\s*$", card, re.M | re.I) and re.search(r"^Approver:\s*\S+", card, re.M)
-    gates["K1_card_approved"] = {"ok": bool(approved)}
+    sha_now = hashlib.sha256((mod / "FLOW_CARD.md").read_bytes()).hexdigest() if (mod / "FLOW_CARD.md").is_file() else ""
+    frozen = meta.get("card_sha256")
+    card_changed = bool(frozen) and frozen != sha_now
+    gates["K1_card_approved"] = {"ok": bool(approved) and not card_changed,
+                                 **({"card_changed_after_freeze": True} if card_changed else {})}
 
     main_files = [p for p in (mod / "src/main").rglob("*") if p.is_file()]
     todo = [f"{p.relative_to(mod)}:{i}" for p in main_files for i, line in enumerate(p.read_text(encoding="utf-8", errors="replace").splitlines(), 1)

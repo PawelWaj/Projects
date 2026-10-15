@@ -37,11 +37,13 @@ elif ! grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$MOD/FLOW_CARD.md"
 fi
 
 LOG="$MOD/.agent-logs"; mkdir -p "$LOG"
+# freeze the card as it is now (approved by a person, or marked poc-run): pi must not change it (gate K1 checks the hash)
+"$PY" -c "import hashlib,json,sys; p=sys.argv[1]; m=json.load(open(p)); m['card_sha256']=hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest(); json.dump(m,open(p,'w'),indent=2)" "$MOD/.scaffold.json" "$MOD/FLOW_CARD.md"
 echo "== 3 implement (pi)"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,edit,write"
     --append-system-prompt "$KIT/agents/implementer-camelk.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
-pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/RESEARCH.md and $RES/research.json. ${OSB_SRC:+OSB source (read only): $OSB_SRC.} Do steps 3-6 of the skill: fill every TODO(flow-card) in the route, write FlowErrorTest (one test per error scope at least) and the backend stubs, run 'mvn -B ${MVN_ARGS:-} -f $MOD/pom.xml test' and '$PY $SK/scripts/check_camelk.py $MOD' until it prints PASS. Never edit FlowParityTest.java or flow-test.json. Write nothing outside $MOD." || true
+pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/RESEARCH.md and $RES/research.json. ${OSB_SRC:+OSB source (read only): $OSB_SRC.} Do steps 3-6 of the skill: fill every TODO(flow-card) in the route, write FlowErrorTest (one test per error scope at least) and the backend stubs, run 'mvn -B ${MVN_ARGS:-} -f $MOD/pom.xml test' and '$PY $SK/scripts/check_camelk.py $MOD' until it prints PASS. Never edit FlowParityTest.java, flow-test.json, FLOW_CARD.md or any test case folder. Write nothing outside $MOD." || true
 
 echo "== 4 verify"
 mvn -B -q ${MVN_ARGS:-} -f "$MOD/pom.xml" test > "$LOG/mvn.out" 2>&1 || true
