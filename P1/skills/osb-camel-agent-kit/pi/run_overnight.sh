@@ -4,7 +4,7 @@
 #
 # Usage (in the workspace, .osb-kit.env loaded, MASK_KEY exported):
 #   bash <kit>/pi/run_overnight.sh <stage> [hours]          e.g.  POC=1 PROJECTS='a-prj' bash .../run_overnight.sh functional 10
-# Env: QUOTA_SLEEP (seconds to wait after the endpoint refused everything, default 1800), MAX_ROUNDS (default 12),
+# Env: QUIET=1 (output only to domain/overnight.log, not the terminal), QUOTA_SLEEP (seconds to wait after the endpoint refused everything, default 1800), MAX_ROUNDS (default 12),
 #      plus the run_domain.sh env.
 # Every round runs `run_domain.sh <stage>`; finished flows are skipped, so each round only does what is left.
 # Log: domain/overnight.log. At the end: domain/FUNCTIONAL_TEST_REPORT.md and domain/TIME_PROJECTION.md.
@@ -25,9 +25,12 @@ while [ "$(date +%s)" -lt "$end" ] && [ "$round" -lt "${MAX_ROUNDS:-12}" ]; do
   # one tiny call first: on this endpoint a short call before a long run helped (login/token refresh or limit window)
   timeout 120 pi --print --no-session ${OSB_PI_MODEL:+--model "$OSB_PI_MODEL"} "Reply with the word OK" >> "$LOG" 2>&1 < /dev/null \
     || echo "$(date '+%F %T') warm-up call failed" >> "$LOG"
-  ALL=${ALL:-1} bash "$KIT/pi/run_domain.sh" "$STAGE" "$WS" >> "$LOG" 2>&1 < /dev/null
-  rc=$?
-  tail -1 "$LOG"
+  if [ "${QUIET:-0}" = 1 ]; then          # QUIET=1: log file only; default: log file AND this terminal
+    ALL=${ALL:-1} bash "$KIT/pi/run_domain.sh" "$STAGE" "$WS" >> "$LOG" 2>&1 < /dev/null; rc=$?
+    tail -1 "$LOG"
+  else
+    ALL=${ALL:-1} bash "$KIT/pi/run_domain.sh" "$STAGE" "$WS" 2>&1 < /dev/null | tee -a "$LOG"; rc=${PIPESTATUS[0]}
+  fi
   if [ "$rc" = 75 ] || tail -40 "$LOG" | grep -q "^STOP: the model endpoint"; then
     echo "$(date '+%F %T') quota used up: sleeping ${QUOTA_SLEEP:-1800}s" | tee -a "$LOG"
     sleep "${QUOTA_SLEEP:-1800}"; continue
