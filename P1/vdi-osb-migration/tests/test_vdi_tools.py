@@ -496,3 +496,31 @@ class SynthFromSchemaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ScenarioKeyNormalisationTests(unittest.TestCase):
+    """research keys with a path ('data.hasX=true') match Splunk cases labelled with the field name ('hasX=true')."""
+
+    def test_path_keys_match_short_case_keys(self):
+        sk = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts"
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            (d / "res").mkdir()
+            (d / "res/research.json").write_text(json.dumps({
+                "proxy": "x", "entry": {"payload_format": "json"}, "scenario_dims": ["data.hasA"], "branches": [],
+                "outputs": [{"name": "q", "destination": "jndi.q"}, {"name": "e", "destination": "jndi.e", "on": "error"}],
+                "scenario_mapping": [{"scenario": "data.hasA=true", "outputs": ["q"]}, {"scenario": "data.hasA!=true", "outputs": []}],
+                "backends": [], "errors": [], "logs": [], "open_questions": []}))
+            subprocess.run([sys.executable, str(sk / "scaffold_camelk.py"), str(d / "res"), "-o", str(d / "m"), "--project", "p"], capture_output=True)
+            for v in ("true", "false"):
+                c = d / f"m/src/test/resources/parity/p-x/s{v}/c1"
+                c.mkdir(parents=True)
+                (c / "input.payload").write_text("{}")
+                (c.parent / "SCENARIO.txt").write_text(f"p/x|success|hdr_resource=R|hasA={v}\n")
+            subprocess.run([sys.executable, str(sk / "check_camelk.py"), str(d / "m"), "--no-surefire"], capture_output=True)
+            g = json.loads((d / "m/GATES.json").read_text())["gates"]["K9_scenarios_covered"]
+            self.assertEqual(g["uncovered"], [])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -538,6 +538,8 @@ def model(r: dict, facts: dict, corr: str) -> dict:
         outs = x.get("outputs") if isinstance(x.get("outputs"), list) else [x.get("output")]
         outs = [resolve(o) for o in outs if o and str(o).lower() not in ("none", "-")]
         sc = x.get("scenario", "")
+        # keys as the Splunk step labels the cases: last path segment ("data.hasX" / "body:data.hasX" -> "hasX")
+        sc = "|".join(re.sub(r"^(?:body:)?(?:[\w-]+\.)*([\w-]+)(!?=)", r"\1\2", p_.strip()) for p_ in sc.split("|")) if "=" in sc else sc
         mapping.append({"scenario": sc if "=" in sc else "*", "outputs": outs, "branch": x.get("branch", ""), "path": x.get("path", "")})
     dims = [(d.lstrip("/").split(".")[-1], d) for d in r.get("scenario_dims") or [] if d]
     fmt = ((r.get("entry") or {}).get("payload_format") or "UNKNOWN").lower()
