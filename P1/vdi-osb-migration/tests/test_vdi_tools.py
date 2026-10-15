@@ -447,13 +447,17 @@ class DomainReportTests(unittest.TestCase):
             (m / "target/surefire-reports").mkdir(parents=True)
             (m / "target/surefire-reports/TEST-a.xml").write_text('<testsuite tests="3" failures="0" errors="0" skipped="0"/>')
             (m / "MUTATION.json").write_text('{"killed": 2, "total": 2}')
-            (m / "FLOW_CARD.md").write_text("Status: approved\n")
+            (m / "FLOW_CARD.md").write_text("Approve by setting `Status: approved` ...\nStatus: approved\n")
             r = subprocess.run([sys.executable, str(ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts/domain_report.py"), str(ws)],
                                capture_output=True, text=True)
             self.assertIn('"proven": 1', r.stdout, r.stderr)
             rows = {x["proxy"]: x for x in csv.DictReader((ws / "domain/functional-test-report.csv").open())}
             self.assertEqual(rows["x"]["gaps"], "none")
             self.assertIn("route not built", rows["y"]["gaps"])
+            (m / "FLOW_CARD.md").write_text("Status: draft\nApprove by setting `Status: approved`, your name and the date\n")
+            subprocess.run([sys.executable, str(ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts/domain_report.py"), str(ws)], capture_output=True)
+            rows = {x["proxy"]: x for x in csv.DictReader((ws / "domain/functional-test-report.csv").open())}
+            self.assertEqual(rows["x"]["card"], "draft", "the instruction sentence is not an approval")
 
 
 if __name__ == "__main__":

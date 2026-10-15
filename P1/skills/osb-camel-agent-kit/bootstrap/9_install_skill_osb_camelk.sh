@@ -212,6 +212,7 @@ and lists the gaps. Writes FUNCTIONAL_TEST_REPORT.md + functional-test-report.cs
 import argparse
 import csv
 import json
+import re
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -252,7 +253,9 @@ def flow_row(ws: Path, project: str, proxy: str, coverage: dict) -> dict:
     mut = load(mod / "MUTATION.json", {})
     sf = surefire(mod)
     card = (mod / "FLOW_CARD.md").read_text(encoding="utf-8") if (mod / "FLOW_CARD.md").is_file() else ""
-    approved = "approved" if "Status: approved" in card else ("POC run" if "Status: poc" in card.lower() else ("draft" if card else "-"))
+    st = re.search(r"^Status:\s*(.+?)\s*$", card, re.M | re.I)          # the Status line, not the instruction text
+    st = st.group(1).lower() if st else ""
+    approved = "approved" if st == "approved" else ("POC run" if st.startswith("poc") else ("draft" if card else "-"))
     outputs = [o for o in (cfg.get("outputs") or {}) if o != "reply"]
     body = (f"compared for {logged} cases" if logged else
             ("XQuery: expected body pending" if xq else "not transformed (forwarded / no body)"))
