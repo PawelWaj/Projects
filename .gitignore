@@ -2,3 +2,8 @@ __pycache__/
 *.pyc
 .ruff_cache/
 .DS_Store
+
+# local client settings and deny list: never in Git
+.osb-kit.env
+*.osb-kit.env
+.osb-kit-denylist

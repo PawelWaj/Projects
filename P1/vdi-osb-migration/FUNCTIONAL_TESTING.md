@@ -68,21 +68,27 @@ a proof-of-concept run (`POC=1`) builds without it and marks the card `poc-run (
 
 ## 5 Run it for a domain (any OSB application)
 
-Once per machine: `~/.osb-kit.env` from `pi/osb-kit.env.example` (paths, Splunk names, Maven, pi settings), and the
-two Splunk exports from [DOMAIN_RUN.md](DOMAIN_RUN.md) step 2 (payload table, domain export).
-
+Once per workspace: put the two Splunk exports there (`splunk-payload.csv`, `domain-export.csv`, see
+[DOMAIN_RUN.md](DOMAIN_RUN.md) step 2), then let the kit write the local settings (`.osb-kit.env`, ignored by Git):
 ```
-cd $WS
+cd /e/Pawel/work
+bash <kit>/pi/init_env.sh <osb-application-folder>     # finds JDK 21, Maven, the kit; check the printed values
+```
+Every session:
+```
+cd /e/Pawel/work && . ./.osb-kit.env
 export MASK_KEY='<from the data owner>'
-bash $KIT/pi/run_domain.sh $APP list                                          # how many flows
-SPLUNK_COVERAGE=splunk-payload.csv bash $KIT/pi/run_domain.sh $APP coverage   # which flows get real inputs
-# first a small batch, then all (ALL=1 for more than 10 flows):
-POC=1 PROJECTS='a-prj|b-prj|c-prj' EXPORT=domain-export.csv bash $KIT/pi/run_domain.sh $APP functional
-POC=1 ALL=1 EXPORT=domain-export.csv bash $KIT/pi/run_domain.sh $APP functional
+bash $KIT/pi/run_domain.sh list            # all flows -> domain/projects.txt, domain/flows.txt
+bash $KIT/pi/run_domain.sh coverage        # which flows get real inputs
+bash $KIT/pi/run_domain.sh batches         # the domain cut into batches of 10 projects, one command each
+BATCH_NO=1 bash $KIT/pi/run_domain.sh functional
+BATCH_NO=2 bash $KIT/pi/run_domain.sh functional      # ... up to the last batch, or ALL=1 for everything at once
+bash $KIT/pi/run_domain.sh report          # the domain report over everything done so far
 ```
-`functional` = research → task1 → tests → build → matrix → report. Restartable: finished work is skipped, one failing
-flow never stops the others. Result: `domain/FUNCTIONAL_TEST_REPORT.md` (+ `STATUS.md`, `TEST_MATRIX.md`, `COVERAGE.md`).
-Only these reports and `research/*/*` packs that passed the check may leave the VDI.
+No project names to type: `list` and `batches` take them from the application folder. `functional` = research →
+task1 → tests → build → matrix → report; restartable, one failing flow never stops the others. Result:
+`domain/FUNCTIONAL_TEST_REPORT.md` (+ `STATUS.md`, `TEST_MATRIX.md`, `COVERAGE.md`). Only these reports and
+`research/*/*` packs that passed the check may leave the VDI.
 
 If a stage stops: masking residue → add the field with `MASK_JSON_KEYS='field'`; `429` → raise `PI_PAUSE`;
 `FAILED research` → `research/<p>/<x>/agent-logs/research.err`; tests red → `modules/<p>/<x>/target/surefire-reports`.

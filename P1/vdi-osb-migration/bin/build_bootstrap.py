@@ -78,7 +78,7 @@ def main() -> None:
     rs = KIT / "skills" / "osb-research"
     emit("8_install_skill_osb_research.sh", "Skill osb-research (shareable research pack) under .pi/skills/ + researcher role + pi runner.",
          [(p, ".pi/skills/osb-research/" + rel(rs, p)) for p in files_under(rs, ["SKILL.md", "scripts/*.py", "references/*", "assets/*"])]
-         + [(KIT / "agents/researcher.md", "agents/researcher.md"), (KIT / "pi/run_research.sh", "pi/run_research.sh"), (KIT / "pi/pi_call.sh", "pi/pi_call.sh"), (KIT / "pi/osb-kit.env.example", "pi/osb-kit.env.example"),
+         + [(KIT / "agents/researcher.md", "agents/researcher.md"), (KIT / "pi/run_research.sh", "pi/run_research.sh"), (KIT / "pi/pi_call.sh", "pi/pi_call.sh"), (KIT / "pi/osb-kit.env.example", "pi/osb-kit.env.example"), (KIT / "pi/init_env.sh", "pi/init_env.sh"),
             (KIT / "pi/prompts/osb-research.md", ".pi/prompts/osb-research.md")],
          ["chmod +x .pi/skills/osb-research/scripts/*.py pi/run_research.sh 2>/dev/null || true"], "skill osb-research")
     ck = KIT / "skills" / "osb-camelk-route"

@@ -571,6 +571,42 @@ use `@Disabled` without a reason in the record, relax an assertion to make a tes
 
 **Hand-off:** the test sources, `MANIFEST.csv`, and the list of matrix rows that could not be tested with the reason.
 KIT_EOF_AGENTS_TESTER_MD
+mkdir -p "$(dirname "pi/init_env.sh")"
+cat > 'pi/init_env.sh' <<'KIT_EOF_PI_INIT_ENV_SH'
+#!/usr/bin/env bash
+# Writes ./.osb-kit.env for this workspace with what it can find on the machine, so nobody types paths again.
+# Usage (in the workspace, e.g. /e/Pawel/work):  bash <kit>/pi/init_env.sh <osb-application-folder>
+# The file is client-specific: it stays here, .gitignore keeps it out of Git. Edit it afterwards if a value is wrong.
+set -u
+APP_DIR=${1:?usage: init_env.sh <osb-application-folder>}
+case "$APP_DIR" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && APP_DIR=$(cygpath -u "$APP_DIR");; esac
+[ -d "$APP_DIR" ] || { echo "not a folder: $APP_DIR"; exit 2; }
+KIT_DIR=$(cd "$(dirname "$0")/.." && pwd)
+pick() { for d in "$@"; do [ -d "$d" ] && { echo "$d"; return; }; done; }
+JDK=$(pick /c/Program\ Files/Eclipse\ Adoptium/jdk-21* /c/Program\ Files/Java/jdk-21* /c/Program\ Files/Microsoft/jdk-21* "${JAVA_HOME:-/nonexistent}")
+MVN=$(pick /e/Pawel/apache-maven-3.9* "$HOME"/apache-maven-3.9* /c/apache-maven-3.9* "$(dirname "$(dirname "$(command -v mvn 2>/dev/null || echo /x/x/x)")")")
+first() { for f in "$@"; do [ -f "$f" ] && { echo "$f"; return; }; done; }
+cat > .osb-kit.env <<ENV
+# written by init_env.sh on $(date +%F); local only (.gitignore). Command-line values win over these defaults.
+export KIT="\${KIT:-$KIT_DIR}"
+export APP="\${APP:-$APP_DIR}"
+export WS="\${WS:-$(pwd)}"
+export JAVA_HOME="\${JAVA_HOME_21:-$JDK}"
+export PATH="$MVN/bin:\$JAVA_HOME/bin:\$PATH"
+export MVN_ARGS="\${MVN_ARGS:--s $HOME/.m2/settings.xml}"
+export PI_OFFLINE="\${PI_OFFLINE:-1}" PI_TELEMETRY="\${PI_TELEMETRY:-0}" PI_PAUSE="\${PI_PAUSE:-60}"
+export EXPORT="\${EXPORT:-$(first "$(pwd)/domain-export.csv")}"
+export SPLUNK_COVERAGE="\${SPLUNK_COVERAGE:-$(first "$(pwd)/splunk-payload.csv")}"
+export MASK_JSON_KEYS="\${MASK_JSON_KEYS:-reason}"
+export POC="\${POC:-1}"
+export BATCH_SIZE="\${BATCH_SIZE:-10}"
+# MASK_KEY is NOT stored here: export it per session (key from the data owner)
+ENV
+echo "written $(pwd)/.osb-kit.env"
+grep -E '^export (KIT|APP|WS|JAVA_HOME|EXPORT|SPLUNK_COVERAGE)=' .osb-kit.env | sed 's/^export /  /'
+[ -n "$JDK" ] || echo "  WARNING: no JDK 21 found: edit JAVA_HOME in .osb-kit.env"
+[ -n "$MVN" ] || echo "  WARNING: no Maven 3.9 found: edit PATH in .osb-kit.env"
+KIT_EOF_PI_INIT_ENV_SH
 mkdir -p "$(dirname "pi/pi_call.sh")"
 cat > 'pi/pi_call.sh' <<'KIT_EOF_PI_PI_CALL_SH'
 #!/usr/bin/env bash
@@ -743,7 +779,10 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 #
 # Usage: pi/run_domain.sh <osb-app-dir> <stage> [workspace]
 #   osb-app-dir  e.g. /e/osb-application (the folder holding the *-prj projects)
-#   stage        list      projects and proxies found (no agent)
+# Short form with APP in .osb-kit.env: run_domain.sh <stage> [workspace]
+# BATCH_NO=n (with BATCH_SIZE, default 10): the n-th slice of the project list, no names to type; 'batches' lists them.
+#   stage        list      projects and proxies found (no agent) -> domain/projects.txt, domain/flows.txt
+#                batches   how many batches of BATCH_SIZE projects, with the command for each
 #                coverage  which proxies get real Splunk test messages and which synthetic ones (needs SPLUNK_COVERAGE =
 #                          CSV of the Splunk "stats count by project, proxy, payload" table) -> domain/COVERAGE.md
 #                research  research pack per proxy -> <ws>/research/<project>/<proxy>/   (skips packs that PASS)
@@ -770,10 +809,16 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 #      MASK_JSON_KEYS ('fieldA fieldB': extra JSON/XML fields to mask in task1, when the residue check finds one),
 #      plus the env of run_research.sh / run_camelk.sh (OSB_PI_MODEL, ...).
 set -uo pipefail
-[ -f "${OSB_KIT_ENV:-$HOME/.osb-kit.env}" ] && . "${OSB_KIT_ENV:-$HOME/.osb-kit.env}"   # local client settings, never in Git
-APP=${1:?usage: run_domain.sh <osb-app-dir> <list|research|scaffold|build|status> [workspace]}
-STAGE=${2:?stage}
-WS=${3:-${WS:-.}}
+# local client settings, never in Git: $OSB_KIT_ENV, else ./.osb-kit.env, else ~/.osb-kit.env
+for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
+STAGES='list|batches|coverage|research|task1|tests|scaffold|build|matrix|report|functional|auto|status'
+if echo "${1:-}" | grep -Eqx "($STAGES)"; then         # short form: run_domain.sh <stage> [workspace], APP from the env file
+  STAGE=$1; WS=${2:-${WS:-.}}; APP=${APP:?set APP in .osb-kit.env or use: run_domain.sh <osb-app-dir> <stage>}
+else
+  APP=${1:?usage: run_domain.sh [<osb-app-dir>] <stage> [workspace]   stages: $STAGES}
+  STAGE=${2:?stage}
+  WS=${3:-${WS:-.}}
+fi
 case "$APP" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && APP=$(cygpath -u "$APP");; esac
 [ -d "$APP" ] || { echo "OSB application folder not found: $APP (Git Bash: /e/folder, not E:\\folder)"; exit 2; }
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
@@ -784,10 +829,18 @@ SK="$KIT/skills/osb-camelk-route/scripts"; [ -d "$SK" ] || SK="$KIT/.pi/skills/o
 BATCH=$(for d in "$KIT/../../vdi-osb-migration/bin" "$KIT/bin"; do [ -f "$d/batch_task1.py" ] && echo "$d/batch_task1.py" && break; done)
 t1dir() { local d="$WS/task1/flows/$(echo "$1-$2" | tr -cs 'A-Za-z0-9' '-' | sed 's/^-//;s/-$//' | tr 'A-Z' 'a-z' | cut -c1-80)"; [ -d "$d/fixtures/parity" ] && echo "$d"; }
 
-flows() {   # "<project> <proxy>" for every proxy file (12c .proxy, sbconfig .ProxyService) in every project folder
-  for prj in "$APP"/*/; do
-    p=$(basename "$prj"); case "$p" in .*) continue;; esac
-    echo "$p" | grep -Eqx "($FILTER)" || continue
+projects() {   # project folders (sorted), after PROJECTS; BATCH_NO=n keeps the n-th slice of BATCH_SIZE (default 10)
+  local all
+  all=$(for prj in "$APP"/*/; do p=$(basename "$prj"); [ "${p#.}" != "$p" ] && continue
+        echo "$p" | grep -Eqx "($FILTER)" && find "$prj" -type f \( -name '*.proxy' -o -name '*.ProxyService' \) | grep -q . && echo "$p"; done)
+  if [ -n "${BATCH_NO:-}" ]; then
+    echo "$all" | awk -v n="$BATCH_NO" -v s="${BATCH_SIZE:-10}" 'NR > (n-1)*s && NR <= n*s'
+  else echo "$all"; fi
+}
+
+flows() {   # "<project> <proxy>" for every proxy file (12c .proxy, sbconfig .ProxyService) in the selected projects
+  for p in $(projects); do
+    prj="$APP/$p/"
     find "$prj" -type f \( -name '*.proxy' -o -name '*.ProxyService' \) | sort | while read -r f; do
       n=$(basename "$f"); echo "$p ${n%.*}"
     done
@@ -894,13 +947,18 @@ do_matrix() {   # mutation check on every green module (MUTATE=0 skips it), then
 case "$STAGE" in research|tests|build|auto|functional)
   n=$(flows | wc -l | tr -d ' ')
   echo "selected: $n proxies (PROJECTS='${PROJECTS:-<all>}')"
-  if [ "$n" -gt 10 ] && [ "${ALL:-0}" != 1 ]; then
+  if [ "$n" -gt 10 ] && [ "${ALL:-0}" != 1 ] && [ -z "${BATCH_NO:-}" ]; then
     echo "more than 10 proxies for a pi stage: set PROJECTS='a-prj|b-prj' on the SAME line, or ALL=1 to run them all"; exit 2
   fi;;
 esac
 
 case "$STAGE" in
-  list) flows | awk '{print} END{print NR " proxies"}' ;;
+  list) flows | tee "$WS/domain/flows.txt" | awk '{print} END{print NR " proxies"}'
+        projects > "$WS/domain/projects.txt"
+        echo "$(wc -l < "$WS/domain/projects.txt" | tr -d ' ') projects -> domain/projects.txt, domain/flows.txt" ;;
+  batches) np=$(BATCH_NO= projects | wc -l | tr -d ' '); nb=$(( (np + ${BATCH_SIZE:-10} - 1) / ${BATCH_SIZE:-10} ))
+        echo "$np projects = $nb batches of ${BATCH_SIZE:-10} projects. Run them one after the other:"
+        for b in $(seq 1 "$nb"); do echo "  BATCH_NO=$b bash $KIT/pi/run_domain.sh functional    # $(BATCH_NO=$b projects | paste -sd' ' - | cut -c1-90)"; done ;;
   coverage)
     [ -n "${SPLUNK_COVERAGE:-}" ] && [ -f "$SPLUNK_COVERAGE" ] || { echo "coverage needs SPLUNK_COVERAGE=<csv of the Splunk payload table>"; exit 2; }
     "$PY" "$KIT/skills/osb-to-camel/scripts/osb_inventory.py" "$APP" -o "$WS/domain/inventory" > /dev/null
@@ -1489,4 +1547,4 @@ For each red gate, name the owner role per skill camel-migration-verification St
 KIT_EOF__PI_PROMPTS_OSB_VERIFY_MD
 chmod +x pi/*.sh 2>/dev/null || true
 echo "commands /osb-* installed in .pi/prompts: start pi in this folder and trust the project (or pi --approve)"
-echo "installed: 36 files (agent layer)"
+echo "installed: 37 files (agent layer)"
