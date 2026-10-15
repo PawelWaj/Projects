@@ -596,7 +596,7 @@ if command -v mvn >/dev/null; then pass "maven $(mvn -v 2>/dev/null | head -1 | 
   [ -f "$HOME/.m2/settings.xml" ] && pass "~/.m2/settings.xml present (mirror/proxy)" || wrn "no ~/.m2/settings.xml: Maven will try Maven Central directly"
 else bad "maven not found"; fi
 if docker info >/dev/null 2>&1; then pass "docker"; elif podman info >/dev/null 2>&1; then pass "podman"
-else wrn "no Docker/Podman: gate G5 (Testcontainers Artemis) will be NOT RUN here; run level-2 tests where Docker is available"; fi
+else printf '  [INFO] no Docker/Podman: not needed (functional tests use mocks; Artemis tests run later on the Dev environment)\n'; fi
 
 echo "Kit layout (run from the migration repository root)"
 for p in AGENTS.md agents/analyst.md tools/verify_flow.sh pi/run_flow.sh; do [ -e "$p" ] && pass "$p" || bad "$p missing"; done

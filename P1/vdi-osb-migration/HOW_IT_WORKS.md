@@ -63,8 +63,8 @@ flowchart LR
 
 | Test level | What runs | Proves | Status |
 |---|---|---|---|
-| **L1** route + mocks (`mvn test`) | YAML route in-process, queues = mock endpoints | branching, outputs, headers, body, error handler, retries, log line | ✅ pilot green |
-| L2 containers | route + real Artemis + WireMock | subscription filter (selector), durable subscription, fan-out to the other subscribers, redelivery | needs Docker/Podman |
+| **L1** route + mocks (`mvn test`) — **scope of the VDI work** | YAML route in-process, queues = mock endpoints, no Artemis | branching, outputs, headers, body, error handler, retries, log line | ✅ pilot green |
+| L2 Dev environment | route on the Dev cluster + real Artemis | subscription filter (selector), durable subscription, fan-out to the other subscribers, redelivery | next phase, on Dev (not on the VDI) |
 | L3 replay | built integration, all 751 messages | volume, ordering, no message lost | after L2 |
 | UAT shadow | Camel next to OSB on the same traffic | outputs compared message by message | before cut-over |
 
@@ -119,7 +119,7 @@ flowchart LR
 | O1 | both flags true: does OSB really send to both queues (publish) or only one (route)? 86 messages depend on it | `grep` of the pipeline element names |
 | O2 | errorCode values: OSB fault codes vs Camel exception names | who reads the error queue |
 | O3 | the 3 `{[[` messages: error queue in OSB too? | one run on the OSB test console |
-| L2 | selector `resource='Contributory Wage' AND eventType='update-approved'`, durable subscription, fan-out to `record-contribution` | Docker/Podman on the VDI |
+| L2 | selector `resource='Contributory Wage' AND eventType='update-approved'`, durable subscription, fan-out to `record-contribution` | next phase on the Dev environment |
 | B | body equality vs original XQuery | not applicable here (identity); applies to flows with transforms |
 
 ## 4 The same for the whole domain
