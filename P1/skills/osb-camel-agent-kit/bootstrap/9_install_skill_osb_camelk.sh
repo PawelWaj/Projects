@@ -2058,11 +2058,22 @@ cat > 'pi/pi_call.sh' <<'KIT_EOF_PI_PI_CALL_SH'
 # Runs pi; when the model endpoint answers 429 / rate limit / overloaded, waits and retries with a growing pause.
 # Env: PI_RETRIES (default 5), PI_BACKOFF (first pause in seconds, default 60, doubled each time, max 15 min).
 # Exit 75 when the endpoint still refuses after all retries (quota used up): the runners stop instead of moving on.
+# PI_TIMEOUT (seconds, default 1800): a single pi run that takes longer is killed (a hanging call never returns);
+# exit 124 = timed out.
 pi_call() {
   local out=$1 err=$2; shift 2
   local n=0 wait=${PI_BACKOFF:-60}
   while :; do
-    "$@" > "$out" 2> "$err" && return 0
+    if command -v timeout >/dev/null 2>&1; then
+      timeout --kill-after=30 "${PI_TIMEOUT:-1800}" "$@" > "$out" 2> "$err"
+      local rc=$?
+      [ $rc = 0 ] && return 0
+      if [ $rc = 124 ] || [ $rc = 137 ]; then
+        echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
+      fi
+    else
+      "$@" > "$out" 2> "$err" && return 0
+    fi
     if grep -qiE '(^|[^0-9])429([^0-9]|$)|too many requests|rate.?limit|overloaded|503 service unavailable' "$err" 2>/dev/null \
        && [ "$n" -lt "${PI_RETRIES:-5}" ]; then
       n=$((n + 1))
@@ -2180,6 +2191,7 @@ PY=$(command -v python3 || command -v python || command -v py)
 if [ -n "$PY" ]; then v=$("$PY" -c 'import sys;print("%d.%d"%sys.version_info[:2])'); ver_ge "$v" 3.10 && pass "python $v ($PY)" || bad "python $v < 3.10"
 else bad "python not found"; fi
 command -v git >/dev/null && pass "git" || wrn "git missing (lane checks still work, CI guard needs git)"
+command -v timeout >/dev/null && pass "timeout (a hanging pi call is stopped after PI_TIMEOUT, default 1800 s)" || wrn "no 'timeout' command: a hanging pi call is not stopped automatically"
 
 echo "Build and test"
 if command -v java >/dev/null; then

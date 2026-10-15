@@ -35,6 +35,7 @@ PY=$(command -v python3 || command -v python || command -v py)
 if [ -n "$PY" ]; then v=$("$PY" -c 'import sys;print("%d.%d"%sys.version_info[:2])'); ver_ge "$v" 3.10 && pass "python $v ($PY)" || bad "python $v < 3.10"
 else bad "python not found"; fi
 command -v git >/dev/null && pass "git" || wrn "git missing (lane checks still work, CI guard needs git)"
+command -v timeout >/dev/null && pass "timeout (a hanging pi call is stopped after PI_TIMEOUT, default 1800 s)" || wrn "no 'timeout' command: a hanging pi call is not stopped automatically"
 
 echo "Build and test"
 if command -v java >/dev/null; then
