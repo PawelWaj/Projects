@@ -417,7 +417,7 @@ def main() -> None:
     rs = KIT / "skills" / "osb-research"
     emit("8_install_skill_osb_research.sh", "Skill osb-research (shareable research pack) under .pi/skills/ + researcher role + pi runner.",
          [(p, ".pi/skills/osb-research/" + rel(rs, p)) for p in files_under(rs, ["SKILL.md", "scripts/*.py", "references/*", "assets/*"])]
-         + [(KIT / "agents/researcher.md", "agents/researcher.md"), (KIT / "pi/run_research.sh", "pi/run_research.sh"), (KIT / "pi/pi_call.sh", "pi/pi_call.sh"), (KIT / "pi/osb-kit.env.example", "pi/osb-kit.env.example"), (KIT / "pi/init_env.sh", "pi/init_env.sh"),
+         + [(KIT / "agents/researcher.md", "agents/researcher.md"), (KIT / "pi/run_research.sh", "pi/run_research.sh"), (KIT / "pi/pi_call.sh", "pi/pi_call.sh"), (KIT / "pi/osb-kit.env.example", "pi/osb-kit.env.example"), (KIT / "pi/init_env.sh", "pi/init_env.sh"), (KIT / "pi/make_review_pack.sh", "pi/make_review_pack.sh"),
             (KIT / "pi/prompts/osb-research.md", ".pi/prompts/osb-research.md")],
          ["chmod +x .pi/skills/osb-research/scripts/*.py pi/run_research.sh 2>/dev/null || true"], "skill osb-research")
     ck = KIT / "skills" / "osb-camelk-route"
@@ -2392,6 +2392,13 @@ Each candidate runs in its own copy of the module (`compare/$X/<name>/`, with `m
 | Effort | wall time, model calls, manual fixes needed to reach green | medium |
 
 Decide per flow, then over the 3 flows. A skill that needs manual fixes is scored on the first run and on the fixed run.
+
+## 3b Review package for one flow
+
+`bash $KIT/pi/make_review_pack.sh <project> <proxy> [reference-route-dir]` puts research, card, generated code, tests and
+results of one flow into `review/<project>-<proxy>/` (+ `.tgz`) with `README_REVIEW.md` (summary + reviewer checklist).
+With a reference route (e.g. the hand-written pilot) both are run against the same frozen tests (`6-compare/`).
+Agent logs and build output are left out; the package stays on the client machine.
 
 ## 4 Review list for generated code (both skills)
 

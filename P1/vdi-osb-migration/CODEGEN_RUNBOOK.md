@@ -111,6 +111,13 @@ Each candidate runs in its own copy of the module (`compare/$X/<name>/`, with `m
 
 Decide per flow, then over the 3 flows. A skill that needs manual fixes is scored on the first run and on the fixed run.
 
+## 3b Review package for one flow
+
+`bash $KIT/pi/make_review_pack.sh <project> <proxy> [reference-route-dir]` puts research, card, generated code, tests and
+results of one flow into `review/<project>-<proxy>/` (+ `.tgz`) with `README_REVIEW.md` (summary + reviewer checklist).
+With a reference route (e.g. the hand-written pilot) both are run against the same frozen tests (`6-compare/`).
+Agent logs and build output are left out; the package stays on the client machine.
+
 ## 4 Review list for generated code (both skills)
 
 - [ ] OSB log lines kept with the same text and logName `oracle.osb.logging.pipeline` (tests do not check log text)
