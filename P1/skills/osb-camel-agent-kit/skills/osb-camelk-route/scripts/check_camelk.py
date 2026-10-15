@@ -13,6 +13,10 @@ K6 backend stubs       a stub file per backend whose response is used
 K7 error tests         FlowErrorTest has at least one test per error scope in research.json
 K8 tests green         surefire reports: tests > 0, failures 0, errors 0 (skipped = golden pending, reported)
 K9 scenarios covered   every scenario_mapping row has at least one case (real from Splunk or synthetic)
+K10 properties valid   application.properties: no spaces or notes in a value, no TODO; every {{key}} the route uses
+                       is defined (the tests replace endpoints with mocks, so a broken production value stays green)
+K11 single destination no destination twice: a backend-<x>-bs next to out-<x> (the JMS business service IS the output),
+                       or two keys with the same endpoint value: production would get every message twice
 Writes GATES.json next to the module's pom; exit 1 if any gate fails."""
 import argparse
 import hashlib
@@ -97,6 +101,30 @@ def main() -> int:
         return bool(key)
     uncovered = [m["scenario"] for m in cfg.get("scenario_mapping", []) if not any(hit(m["scenario"], v) for v in scen)]
     gates["K9_scenarios_covered"] = {"ok": not uncovered, "uncovered": uncovered}
+
+    props, bad = {}, []
+    pf = mod / "src/main/resources/application.properties"
+    for i, line in enumerate(pf.read_text(encoding="utf-8").splitlines() if pf.is_file() else [], 1):
+        if not line.strip() or line.lstrip().startswith(("#", "!")) or "=" not in line:
+            continue
+        k, v = (x.strip() for x in line.split("=", 1))
+        props[k] = v
+        if re.search(r"\s|[()]", v) or "TODO" in v or not v:
+            bad.append(f"{k} (line {i})")
+    used = sorted({k for k in re.findall(r"\{\{([\w.-]+)\}\}", route) if not k.startswith(("env:", "sys:"))})
+    undefined = [k for k in used if k not in props]
+    gates["K10_properties_valid"] = {"ok": not bad and not undefined, "bad_values": bad, "undefined": undefined}
+
+    def norm(v: str) -> str:
+        return re.sub(r"^(amqp|jms|activemq|sjms2?):(queue:|topic:)?", "", v).split("?")[0].lower()
+    outs = {k[4:] for k in props if k.startswith("out.")}
+    twice = [k for k in props if k.startswith("backend.") and re.sub(r"-bs$", "", k[8:]) in outs]
+    seen = {}
+    for k, v in props.items():
+        if k.startswith(("out.", "backend.")) and v and not v.startswith(("mock:", "direct:")):
+            seen.setdefault(norm(v), []).append(k)
+    twice += [" = ".join(ks) for ks in seen.values() if len(ks) > 1]
+    gates["K11_single_destination"] = {"ok": not twice, "twice": twice}
 
     if not a.no_surefire:
         t = f = e = s = 0

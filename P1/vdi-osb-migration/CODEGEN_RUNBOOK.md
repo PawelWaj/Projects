@@ -53,7 +53,7 @@ Interactive alternative (same rules): start `pi` in `$KIT`, then `/osb-camelk mo
 
 K1 card approved · K2 no `TODO(flow-card)` left · K3 every branch/output/backend id present · K4 no hosts, ports,
 credentials · K5 generated tests and frozen cases unchanged, nothing disabled · K6 stub per used backend reply ·
-K7 error test per error scope · K8 `mvn test` green · K9 every scenario has a case. Plus the mutation check
+K7 error test per error scope · K8 `mvn test` green · K9 every scenario has a case · K10 property values valid, every key defined · K11 each destination once. Plus the mutation check
 (every deliberate defect must fail a test) and the review list in section 4.
 
 ## 3 Compare with another code-generation skill

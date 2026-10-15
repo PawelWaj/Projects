@@ -37,7 +37,7 @@ flowchart LR
 | synthetic messages for scenarios Splunk cannot supply | **script first** (`synth_from_schema.py`, from the XSD/nXSD, no AI); **pi** (tester) only for what the script cannot build | fake values; the scenario fields get the scenario's values |
 | Camel K route that the tests run against | **pi** (implementer) | writing code; needed to prove the tests (and for the migration itself) |
 | masking, splitting, scenarios, expected outputs, test classes, mocks | script | deterministic; the same input always gives the same tests |
-| running the tests, checks K1–K9, mutation check | script + Maven | the judge must not be an AI |
+| running the tests, checks K1–K11, mutation check | script + Maven | the judge must not be an AI |
 | reports (STATUS, TEST_MATRIX, COVERAGE, FUNCTIONAL_TEST_REPORT) | script | counts from the files, reproducible |
 
 pi never writes or changes a test, an expected result or a report.

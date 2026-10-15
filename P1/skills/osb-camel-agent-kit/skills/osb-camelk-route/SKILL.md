@@ -49,7 +49,9 @@ masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module a
 6. **Run until green:** `mvn -B test` then `python <skill>/scripts/check_camelk.py modules/<project>/<proxy>`. Gates:
    K1 card approved · K2 no TODO(flow-card) in src/main · K3 every route id present · K4 no infrastructure ·
    K5 generated tests and frozen synthetic cases untouched, nothing disabled · K6 stubs · K7 error tests ≥ error scopes ·
-   K8 tests green · K9 every scenario_mapping row has a case.
+   K8 tests green · K9 every scenario_mapping row has a case · K10 every property value a plain endpoint (no notes,
+   no spaces) and every `{{key}}` defined · K11 each destination once: a JMS business service that writes an `out-*`
+   IS that output, so never add a `backend-<x>-bs` send next to `out-<x>` (production would get every message twice).
 7. **Prove the tests bite:** `python <skill>/scripts/mutate_route.py modules/<project>/<proxy> --mvn "mvn -B -q -s ~/.m2/settings.xml"`
    breaks the route on purpose (conditions negated, outputs swapped or dropped, retries removed); every mutation must
    make a test fail. A survivor means a missing test: add it to FlowErrorTest, never weaken the route to pass.

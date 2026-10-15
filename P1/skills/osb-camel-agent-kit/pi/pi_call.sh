@@ -5,7 +5,23 @@
 # Exit 75 when the endpoint still refuses after all retries (quota used up): the runners stop instead of moving on.
 # PI_TIMEOUT (seconds, default 1800): a single pi run that takes longer is killed (a hanging call never returns);
 # exit 124 = timed out.
-pi_call() {
+pi_call() {   # every FLOW_CARD.md is a person's decision: pi may read it, any change it makes is undone
+  local guard c b rc
+  guard=$(mktemp -d 2>/dev/null || { mkdir -p "${TMPDIR:-/tmp}/picards.$$" && echo "${TMPDIR:-/tmp}/picards.$$"; })
+  for c in "${WS:-.}"/modules/*/*/FLOW_CARD.md; do [ -f "$c" ] && cp "$c" "$guard/$(printf '%s' "$c" | tr '/: ' '___')"; done
+  _pi_call_inner "$@"; rc=$?
+  for c in "${WS:-.}"/modules/*/*/FLOW_CARD.md; do
+    b="$guard/$(printf '%s' "$c" | tr '/: ' '___')"
+    if [ -f "$b" ] && ! cmp -s "$b" "$c"; then
+      cp "$b" "$c"; echo "   pi changed $c: change undone (only a person edits a flow card)"
+      [ -n "${WS:-}" ] && echo "$(date '+%F %T') card restored: $c" >> "$WS/domain/card-guard.log" 2>/dev/null
+    fi
+  done
+  rm -rf "${guard:?}"
+  return $rc
+}
+
+_pi_call_inner() {
   local out=$1 err=$2; shift 2
   local n=0 wait=${PI_BACKOFF:-60}
   while :; do
