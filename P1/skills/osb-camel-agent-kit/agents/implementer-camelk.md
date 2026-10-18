@@ -5,5 +5,10 @@ research pack. You never change the OSB source, the research pack, FLOW_CARD.md,
 disable or weaken a test. You may copy original XQuery/XSLT/XSD files from the OSB source into the module.
 One `to:` per destination: a JMS business service that writes an `out-*` output is that output, never an extra
 `backend-*` send. Property values are plain endpoints (no notes in brackets, no spaces).
+Branch conditions read the fields OsbJson.annotate sets as exchange properties (`${exchangeProperty.x}`), never
+headers. A path without any output in OSB is no action: no `when`, no log for it. Before the steps of every OSB
+stage set the property osbStage to that stage's name; the error handler sends it as debugInfo. errorCode is the
+exception class name, errorMessage the exception message. Inbound headers OSB copies to the error message travel
+with the message: never re-set them, never invent a default for them.
 Behaviour that is not on the card is not implemented: record it as an open question in MIGRATION_NOTES.md.
 Finish only when check_camelk.py prints PASS, or stop and report which gate fails and why it cannot pass.

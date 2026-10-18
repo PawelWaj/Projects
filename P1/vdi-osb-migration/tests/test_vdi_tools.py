@@ -334,6 +334,78 @@ class CamelkRouteTests(unittest.TestCase):
             self.assertFalse(gates["K11_single_destination"]["ok"])
             self.assertIn("svc-a", json.dumps(gates["K11_single_destination"]))
 
+    def test_osb_conventions_no_action_path_local_properties_and_refresh(self):
+        """A branch path without output is no action in OSB: no `when`, no id for K3. The correlation id is generated
+        when OSB does (fn-bea:uuid); error headers come from the research; the selector becomes the subscription filter;
+        env/local.properties maps the JNDI names for a local broker; one-way flows send InOnly; --refresh rewrites
+        only the named infrastructure files; plan_queues.py derives the broker objects from env/local.properties."""
+        pack = json.loads(json.dumps(self.PACK))
+        pack["entry"]["selector"] = "(kind='x') AND (type='y')"
+        pack["branches"][0]["paths"].append({"label": "false-default", "condition_plain": "flagA not true", "outputs": []})
+        pack["outputs"][2]["headers"] = [{"name": "errorCode", "source": "$fault errorCode"}, {"name": "debugInfo", "source": "$fault location stage"},
+                                         {"name": "traceId", "source": "$uuId"}, {"name": "resource", "source": "inbound user-header resource"}]
+        with tempfile.TemporaryDirectory() as d:
+            res, mod = Path(d, "res"), Path(d, "mod")
+            res.mkdir()
+            (res / "research.json").write_text(json.dumps(pack), encoding="utf-8")
+            r = subprocess.run([sys.executable, str(self.SK / "scaffold_camelk.py"), str(res), "-o", str(mod), "--project", "p-prj"],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            route = (mod / "src/main/resources/routes/px.camel.yaml").read_text()
+            self.assertNotIn("id: branch-a-check-false-default", route, "no `when` for a path without action")
+            self.assertIn("no output in OSB = no action", route)
+            self.assertIn("id: branch-a-check-a", route)
+            self.assertIn('simple: "${header.traceId} ?: ${uuid(random)}"', route)
+            self.assertIn("name: osbStage", route)
+            self.assertIn('simple: "${exchangeProperty.osbStage}"', route)
+            self.assertIn('simple: "${exception.class.simpleName}"', route)
+            self.assertIn("# resource: inbound header", route)
+            self.assertIn("${exchangeProperty.<field>}", route)
+            meta = json.loads((mod / ".scaffold.json").read_text())
+            self.assertNotIn("branch-a-check-false-default", meta["route_ids"])
+            props = (mod / "src/main/resources/application.properties").read_text()
+            self.assertIn("flow.input.selector=(kind='x') AND (type='y')", props)
+            self.assertIn("flow.input=amqp:queue:jndi.inTopic::px", props)
+            local = (mod / "env/local.properties").read_text()
+            values = [ln for ln in local.splitlines() if ln and not ln.startswith("#")]
+            self.assertIn("flow.input=amqp:queue:inTopic::px", values)
+            self.assertIn("out.svc-a=amqp:queue:qA", values)
+            self.assertIn("camel.beans.amqpConnectionFactory.password={{env:BROKER_PASSWORD:}}", props, "connection from the platform env, no value")
+            self.assertFalse([v for v in values if v.startswith("camel.")], "the local file overrides endpoints only")
+            self.assertFalse([v for v in values if "jndi." in v], "local addresses carry no JNDI prefix")
+            test = next(mod.rglob("FlowParityTest.java")).read_text()
+            self.assertIn("ExchangePattern.InOnly", test)
+            cfg = json.loads((mod / "src/test/resources/flow-test.json").read_text())
+            self.assertTrue(cfg["correlation_generated"])
+            self.assertEqual(cfg["scenario_fields"], ["flagA", "flagB"])
+            bean = next(mod.rglob("OsbJson.java")).read_text()
+            self.assertIn("exchange.setProperty(", bean)
+            self.assertNotIn("setHeader(", bean)
+            pom = (mod / "pom.xml").read_text()
+            self.assertIn("camel-amqp", pom)
+            self.assertIn("<id>run-local</id>", pom)
+            subprocess.run([sys.executable, str(self.SK / "check_camelk.py"), str(mod), "--no-surefire"], capture_output=True)
+            gates = json.loads((mod / "GATES.json").read_text())["gates"]
+            self.assertTrue(gates["K10_properties_valid"]["ok"], gates["K10_properties_valid"])
+            self.assertTrue(gates["K3_route_ids"]["ok"])
+            # the broker objects a local Artemis needs, from env/local.properties
+            plan = subprocess.run([sys.executable, str(ROOT / "skills/osb-camel-agent-kit/broker/plan_queues.py"), str(mod)],
+                                  capture_output=True, text=True)
+            self.assertEqual(plan.returncode, 0, plan.stderr)
+            objs = {o["name"]: o for o in json.loads(plan.stdout)}
+            self.assertEqual(objs["px"]["address"], "inTopic")
+            self.assertEqual(objs["px"]["routing"], "multicast")
+            self.assertEqual(objs["px"]["filter"], "(kind='x') AND (type='y')")
+            self.assertEqual(objs["qA"]["routing"], "anycast")
+            self.assertEqual(set(objs), {"px", "qA", "qB", "qErr"})
+            # --refresh pom rewrites the pom only; the route and the local properties stay
+            (mod / "pom.xml").write_text("x")
+            (mod / "env/local.properties").write_text("y")
+            subprocess.run([sys.executable, str(self.SK / "scaffold_camelk.py"), str(res), "-o", str(mod), "--project", "p-prj", "--refresh", "pom"],
+                           capture_output=True, text=True)
+            self.assertIn("camel-amqp", (mod / "pom.xml").read_text())
+            self.assertEqual((mod / "env/local.properties").read_text(), "y")
+
     def test_pilot_module_passes_static_gates_except_approval(self):
         mod = ROOT / "pilot/sample-adjustment"
         with tempfile.TemporaryDirectory() as d:

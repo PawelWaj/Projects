@@ -38,7 +38,9 @@ masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module a
    (`agents/tester-camelk.md`): fake values, built from the message schema in the OSB source, under
    `src/test/resources/parity/<project>-<proxy>-synthetic/`. Then
    `scaffold_camelk.py … --freeze-synthetic` records their hashes, so gate K5 also protects them from the implementer.
-3. **Implement the route:** replace every `TODO(flow-card)` from the card. Keep the ids. Log templates become simple
+3. **Implement the route:** replace every `TODO(flow-card)` from the card. Keep the ids. Conditions read
+   `${exchangeProperty.<field>}` (set by OsbJson.annotate), never headers; a path with no output in OSB gets no
+   `when`; set the property `osbStage` before each OSB stage (debugInfo); errorCode = exception class name. Log templates become simple
    expressions with the same literal text. Conditions use the headers the helper bean sets (`${header.x}`).
 4. **Error tests:** `src/test/java/<pkg>/FlowErrorTest.java`, at least one test per error scope on the card: invalid
    payload, each output/backend failing (mock `whenAnyExchangeReceived` throwing), retries counted
@@ -57,6 +59,9 @@ masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module a
    make a test fail. A survivor means a missing test: add it to FlowErrorTest, never weaken the route to pass.
 8. **Matrix:** `python <skill>/scripts/test_matrix.py modules/<project>/<proxy>` → `TEST_MATRIX.md` (P scenarios with
    real messages, E error tests, K gates, M mutations).
+8b. **Against a broker (L2):** `broker/LOCAL_BROKER_TEST.md`: the same route and the same cases on a local Artemis
+   (`artemis_prepare.sh`, `run_local.sh`, `send_case.sh`, `queues.sh`); `env/local.properties` holds the local names.
+   The route never changes for this: endpoints and the connection are properties (`{{env:BROKER_URL}}`, ...).
 9. **Report** (five lines): proxy, gates result, tests run/failed/skipped (skipped = golden outputs pending),
    differences recorded in MIGRATION_NOTES.md, open questions left.
 

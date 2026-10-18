@@ -109,6 +109,8 @@ def main() -> int:
             continue
         k, v = (x.strip() for x in line.split("=", 1))
         props[k] = v
+        if k.endswith(".selector"):                 # a message selector is text, not an endpoint
+            continue
         if re.search(r"\s|[()]", v) or "TODO" in v or not v:
             bad.append(f"{k} (line {i})")
     used = sorted({k for k in re.findall(r"\{\{([\w.-]+)\}\}", route) if not k.startswith(("env:", "sys:"))})

@@ -38,5 +38,10 @@
     }
   ],
   "correlation_header": "traceId",
-  "payload_format": "json"
+  "payload_format": "json",
+  "correlation_generated": true,
+  "scenario_fields": [
+    "hasPartnerEngagement",
+    "hasMainEngagement"
+  ]
 }

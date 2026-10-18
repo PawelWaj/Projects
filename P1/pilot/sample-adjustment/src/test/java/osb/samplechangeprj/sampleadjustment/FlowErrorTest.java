@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
  *  body and the error headers; the main queue send is retried 3 times, the partner send is not. Fake values only. */
 @CamelMainTest(properties = {"flow.input=direct:in", "out.sample-adjustment=mock:out-sample-adjustment",
     "out.partner-engagement=mock:out-partner-engagement", "out.sample-adjustment-error-queue=mock:out-sample-adjustment-error-queue",
-    "retry.sample-adjustment.delay=0"})
+    "retry.sample-adjustment.delay=0", "camel.beans.amqpConnectionFactory.remoteURI=amqp://localhost:5672"})
 class FlowErrorTest {
 
     static final String BOTH = "{\"data\":{\"hasPartnerEngagement\":true,\"hasMainEngagement\":\"true\"}}";

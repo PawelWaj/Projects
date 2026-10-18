@@ -43,7 +43,8 @@ import static org.junit.jupiter.api.Assertions.fail;
  * L1 test of the YAML route with Camel mock endpoints (Maven only, no broker, no cluster). Inputs are the real masked
  * messages from task 1 (src/test/resources/parity/**, copied on the VDI, never committed). For each case:
  *   - the scenario (SCENARIO.txt) is looked up in scenario_mapping (research Q5) -> the outputs it must reach;
- *   - no other output receives anything; the correlation header is carried through;
+ *   - no other output receives anything; the correlation header is carried through (and generated when missing,
+ *     if OSB does: flow-test.json correlation_generated); no scenario field leaves the route as a header;
  *   - if expected-output.json/.xml exists, the body must equal it: the body OSB itself logged on its way out (task 1),
  *     or the original XQuery run on the input (golden_runner). XML is compared by namespace, not by prefix.
  * Backends are mock endpoints answering with src/test/resources/stubs/<backend>.* (shape from research Q8).
@@ -154,20 +155,23 @@ class FlowParityTest {
         return true;
     }
 
-    /** Sends the case (request/reply, so request-response flows return their reply); every output in targets
-     *  receives exactly one message, every other output none. Output "reply" = the answer to the caller. */
+    /** Sends the case (InOnly for one-way flows, as OSB response-required=false; InOut where the flow replies);
+     *  every output in targets receives exactly one message, every other output none. "reply" = the answer to the caller. */
     List<Message> send(Path c, List<String> targets) throws Exception {
+        @SuppressWarnings("unchecked")
+        Map<String, Object> headers = JSON.readValue(c.resolve("headers.json").toFile(), Map.class);
+        return send(Files.readString(c.resolve("input.payload")), headers, targets);
+    }
+
+    List<Message> send(String body, Map<String, Object> headers, List<String> targets) throws Exception {
         for (var it = CFG.path("outputs").fields(); it.hasNext(); ) {
             var o = it.next();
             if (!REPLY.equals(o.getKey())) {
                 mock(o.getValue().asText()).expectedMessageCount(targets.contains(o.getKey()) ? 1 : 0);
             }
         }
-        @SuppressWarnings("unchecked")
-        Map<String, Object> headers = JSON.readValue(c.resolve("headers.json").toFile(), Map.class);
-        String body = Files.readString(c.resolve("input.payload"));
         Exchange ex = in.send(e -> {
-            e.setPattern(ExchangePattern.InOut);
+            e.setPattern(ExchangePattern.@@PATTERN@@);
             e.getMessage().setBody(body);
             e.getMessage().setHeaders(new HashMap<>(headers));
         });
@@ -194,10 +198,36 @@ class FlowParityTest {
         try {
             for (Message out : send(c, expectedOutputs(c, expected))) {
                 assertEquals(expected.path("correlation").asText(), out.getHeader(corr, String.class), corr + " must be carried through");
+                for (JsonNode f : CFG.path("scenario_fields")) {
+                    assertNull(out.getHeader(f.asText()), f.asText() + " is a routing field, OSB sends no such header");
+                }
             }
         } catch (AssertionError e) {
             throw new AssertionError("case " + name + ": " + e.getMessage(), e);   // surefire reports show only [n]
         }
+    }
+
+    /** OSB: correlation id = inbound header, else fn-bea:uuid(). The first case with an output, sent without it. */
+    @Test
+    void correlationIdIsGeneratedWhenMissing() throws Exception {
+        Assumptions.assumeTrue(CFG.path("correlation_generated").asBoolean(false), "OSB does not generate the correlation id here");
+        String corr = CFG.path("correlation_header").asText("traceId");
+        for (Arguments a : cases().toList()) {
+            Path c = (Path) a.get()[1];
+            List<String> targets = expectedOutputs(c, JSON.readTree(c.resolve("expected.json").toFile()));
+            if (targets.isEmpty()) {
+                continue;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> headers = JSON.readValue(c.resolve("headers.json").toFile(), Map.class);
+            headers.remove(corr);
+            for (Message out : send(Files.readString(c.resolve("input.payload")), headers, targets)) {
+                String id = out.getHeader(corr, String.class);
+                assertTrue(id != null && id.length() == 36, corr + " must be a generated UUID, was: " + id);
+            }
+            return;
+        }
+        Assumptions.assumeTrue(false, "no case reaches an output");
     }
 
     @ParameterizedTest(name = "body {0}")

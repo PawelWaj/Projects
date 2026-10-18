@@ -1,12 +1,18 @@
 #!/usr/bin/env bash
-# One review package per flow: research -> card -> generated Camel K code -> tests -> results, with a reviewer checklist.
-# Stays on the client machine (it contains the original XQuery and masked test data).
+# One review package per flow: research -> card -> the module (standard Maven layout, runnable as is) -> results, with
+# a reviewer checklist. Stays on the client machine (it contains the original XQuery and masked test data).
 #
 # Usage (in the workspace):  bash <kit>/pi/make_review_pack.sh <project> <proxy> [reference-route-dir]
 # Env: ROUTE_AUTHOR (default "pi agent (osb-camelk-route)"): who wrote the route, shown in README_REVIEW.md
 #   reference-route-dir  optional: another route for the same flow (e.g. the hand-written pilot) -> compared against
 #                        the SAME frozen tests with compare_codegen.py
 # Result: review/<project>-<proxy>/ + review/<project>-<proxy>.tgz   (agent logs and build output are left out)
+#   1-research/   RESEARCH.md, research.json, facts.json, SHARE_CHECK.json
+#   2-card/       FLOW_CARD.md
+#   module/       pom.xml, src/main (route, properties, beans), src/test (frozen tests, cases, stubs), env/,
+#                 MIGRATION_NOTES.md, .scaffold.json  ->  `mvn test` and the broker scripts work in this folder
+#   5-results/    TEST_MATRIX.md, GATES.json, MUTATION.json, surefire summaries
+#   6-compare/    (optional) generated route vs reference route on the same tests
 set -uo pipefail
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
 MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
@@ -19,12 +25,11 @@ PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
 R="$WS/research/$P/$X"; M="$WS/modules/$P/$X"; O="$WS/review/$P-$X"
 [ -s "$R/research.json" ] || { echo "no research pack in $R: run run_domain.sh research first"; exit 2; }
 [ -d "$M" ] || { echo "no module in $M: run run_domain.sh tests (and build) first"; exit 2; }
-rm -rf "$O"; mkdir -p "$O"/{1-research,2-card,3-code,4-tests,5-results}
+rm -rf "$O"; mkdir -p "$O"/{1-research,2-card,module,5-results}
 cp "$R"/RESEARCH.md "$R"/research.json "$R"/facts.json "$R"/SHARE_CHECK.json "$O/1-research/" 2>/dev/null
 cp "$M/FLOW_CARD.md" "$O/2-card/" 2>/dev/null
-[ -d "$M/src/main" ] && cp -r "$M/src/main" "$O/3-code/"
-cp "$M/MIGRATION_NOTES.md" "$M/pom.xml" "$O/3-code/" 2>/dev/null
-[ -d "$M/src/test" ] && cp -r "$M/src/test" "$O/4-tests/"
+for f in pom.xml FLOW_CARD.md MIGRATION_NOTES.md .scaffold.json .gitignore; do [ -f "$M/$f" ] && cp "$M/$f" "$O/module/"; done
+for d in src env; do [ -d "$M/$d" ] && cp -r "$M/$d" "$O/module/"; done
 cp "$M/GATES.json" "$M/MUTATION.json" "$M/TEST_MATRIX.md" "$M/test-matrix.csv" "$O/5-results/" 2>/dev/null
 [ -d "$M/target/surefire-reports" ] && cp "$M"/target/surefire-reports/*.txt "$O/5-results/" 2>/dev/null
 if [ -n "$REF" ] && [ -d "$REF" ]; then
@@ -48,13 +53,15 @@ k8 = g.get("gates", {}).get("K8_tests_green", {})
 routes = sorted(p_.name for p_ in (m / "src/main/resources/routes").glob("*.yaml")) if (m / "src/main/resources/routes").is_dir() else []
 lines = [f"# Review package: {p} / {x}", "",
          "Everything below stays on the client machine. Read in this order:", "",
-         "| # | Folder | What to check |", "|---|---|---|",
+         "| # | Where | What to check |", "|---|---|---|",
          "| 1 | `1-research/RESEARCH.md` | what the OSB flow does (entry, branches, outputs, errors, logs) with evidence; open questions |",
          "| 2 | `2-card/FLOW_CARD.md` | the behaviour the code must implement; status of the approval |",
-         f"| 3 | `3-code/main/resources/routes/` | **the Camel K route, written by: {author}** (YAML DSL), helper beans in `3-code/main/java`, endpoints in `application.properties`, `MIGRATION_NOTES.md` |",
-         "| 4 | `4-tests/` | generated tests (FlowParityTest, frozen), FlowErrorTest, expected outputs (`flow-test.json`), test messages (`resources/parity`, masked / synthetic), stubs |",
-         "| 5 | `5-results/` | TEST_MATRIX.md, GATES.json (K1-K9), MUTATION.json, surefire summaries |",
+         f"| 3 | `module/src/main/resources/routes/` | **the Camel route, written by: {author}** (YAML DSL); helper beans in `module/src/main/java`; `application.properties` = production descriptor (OSB names, selector, connection from the environment); `MIGRATION_NOTES.md` |",
+         "| 4 | `module/src/test/` | FlowParityTest (generated, frozen), FlowErrorTest, expected outputs (`flow-test.json`), test messages (`resources/parity`, masked / synthetic), stubs |",
+         "| 5 | `5-results/` | TEST_MATRIX.md, GATES.json (K1-K11), MUTATION.json, surefire summaries |",
          "| 6 | `6-compare/COMPARISON.md` | (if present) generated route vs reference route on the same tests |", "",
+         "Run it yourself: `cd module && mvn -B -s <team settings.xml> test` (JDK 21, Maven 3.9); against a local Artemis:",
+         "`broker/LOCAL_BROKER_TEST.md` of the kit (`env/local.properties` is in the module).", "",
          "## Summary", "",
          f"- Route written by: **{author}**",
          f"- Card status: **{st}**",
@@ -67,16 +74,18 @@ lines = [f"# Review package: {p} / {x}", "",
          f"- Open questions in the research: {len(res.get('open_questions') or [])}", "",
          "## Reviewer checklist", "",
          "- [ ] Every branch, output, retry and error header of the card is in the route, nothing that is not on the card",
+         "- [ ] One send per destination (a JMS business service that writes an output IS that output)",
          "- [ ] OSB log lines kept with the same text and logName (the tests do not check log text)",
          "- [ ] Original XQuery/XSLT used unchanged (not rewritten)",
-         "- [ ] Body forwarded unchanged where OSB forwards it",
-         "- [ ] Endpoints only as properties; no hosts, ports, secrets",
+         "- [ ] Body forwarded unchanged where OSB forwards it; routing fields are exchange properties, not headers",
+         "- [ ] Endpoints only as properties with the OSB names; connection only as {{env:...}}; no hosts, ports, secrets",
+         "- [ ] Error message: errorCode / errorMessage / debugInfo (osbStage) / correlation id as on the card",
          "- [ ] Helper beans small and readable; YAML DSL idiomatic for Camel 4.18",
          "- [ ] Differences to OSB listed in MIGRATION_NOTES.md and acceptable",
          "- [ ] Open questions answered or accepted before the card is approved", "",
          "Reviewer: ____________  Date: ________  Result: approve / changes needed"]
 (o / "README_REVIEW.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-print("\n".join(lines[14:24]))
+print("\n".join(lines[16:26]))
 PY
 (cd "$WS/review" && tar -czf "$P-$X.tgz" "$P-$X")
 echo "review package: $O  (+ $WS/review/$P-$X.tgz). Keep it on the client machine."

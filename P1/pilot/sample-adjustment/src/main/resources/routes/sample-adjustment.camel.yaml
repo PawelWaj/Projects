@@ -8,7 +8,8 @@
 #     both, one or none (none = consumed, nothing sent)
 #   - main queue send retried 3x every 10 s (business service retry-count/interval), partner queue not retried
 #   - any failure -> error queue with the original body + errorCode, errorMessage, debugInfo, traceId
-#     (resource and eventType are inbound headers and travel with the message)
+#     (resource and eventType are inbound headers and travel with the message; the routing fields hasX are
+#     exchange properties, so no extra JMS property leaves the route)
 - route:
     id: sample-adjustment
     from:
@@ -19,6 +20,10 @@
             simple: "${header.traceId} ?: ${uuid(random)}"
         - doTry:
             steps:
+              # osbStage = the OSB stage being executed; the error handler reports it as debugInfo ($fault/location/stage)
+              - setProperty:
+                  name: osbStage
+                  constant: "request-logging-stage"
               - log:
                   loggingLevel: INFO
                   logName: oracle.osb.logging.pipeline
@@ -27,11 +32,14 @@
                   beanType: osb.samplechangeprj.sampleadjustment.OsbJson
                   method: annotate
               # --- BEGIN flow logic (from the approved FLOW_CARD.md) ---
+              - setProperty:
+                  name: osbStage
+                  constant: "target-calling-Stage"
               - choice:
                   id: branch-haspartnerengagement-check
                   when:
                     - id: branch-haspartnerengagement-check-partner-path
-                      simple: "${header.hasPartnerEngagement} == 'true'"
+                      simple: "${exchangeProperty.hasPartnerEngagement} == 'true'"
                       steps:
                         - to:
                             id: out-partner-engagement
@@ -40,7 +48,7 @@
                   id: branch-hasmainengagement-check
                   when:
                     - id: branch-hasmainengagement-check-main-path
-                      simple: "${header.hasMainEngagement} == 'true'"
+                      simple: "${exchangeProperty.hasMainEngagement} == 'true'"
                       steps:
                         - to:
                             uri: "direct:send-sample-adjustment"
@@ -61,9 +69,7 @@
                       simple: "${exception.message}"
                   - setHeader:
                       name: debugInfo
-                      constant: "target-calling-Stage"
-                  - removeHeaders:
-                      pattern: "hasPartnerEngagement|hasMainEngagement"
+                      simple: "${exchangeProperty.osbStage}"
                   - to:
                       id: out-sample-adjustment-error-queue
                       uri: "{{out.sample-adjustment-error-queue}}"

@@ -1,0 +1,57 @@
+{
+  "proxy": "sample-adjustment",
+  "project": "sample-change-prj",
+  "result": "FAIL",
+  "gates": {
+    "K1_card_approved": {
+      "ok": false
+    },
+    "K2_no_gaps": {
+      "ok": true,
+      "left": 0,
+      "where": []
+    },
+    "K3_route_ids": {
+      "ok": true,
+      "missing": []
+    },
+    "K4_no_infrastructure": {
+      "ok": true,
+      "findings": []
+    },
+    "K5_tests_untouched": {
+      "ok": true,
+      "changed": [],
+      "disabled": []
+    },
+    "K6_backend_stubs": {
+      "ok": true,
+      "missing": []
+    },
+    "K7_error_tests": {
+      "ok": true,
+      "tests": 4,
+      "error_scopes": 1
+    },
+    "K9_scenarios_covered": {
+      "ok": true,
+      "uncovered": []
+    },
+    "K10_properties_valid": {
+      "ok": true,
+      "bad_values": [],
+      "undefined": []
+    },
+    "K11_single_destination": {
+      "ok": true,
+      "twice": []
+    },
+    "K8_tests_green": {
+      "ok": true,
+      "tests": 19,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 6
+    }
+  }
+}

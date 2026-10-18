@@ -22,7 +22,7 @@ SK=$(for d in "$KIT/skills/osb-camelk-route" "$KIT/.pi/skills/osb-camelk-route";
 [ -s "$RES/research.json" ] || { echo "missing $RES/research.json: run pi/run_research.sh first"; exit 1; }
 
 echo "== 1 generated tests + mocks (script)"
-"$PY" "$SK/scripts/scaffold_camelk.py" "$RES" -o "$MOD" --project "$PRJ" ${TASK1:+--parity "$TASK1/fixtures/parity"}
+"$PY" "$SK/scripts/scaffold_camelk.py" "$RES" -o "$MOD" --project "$PRJ" ${TASK1:+--parity "$TASK1/fixtures/parity"} ${REFRESH:+--refresh "$REFRESH"}
 
 echo "== 2 synthetic inputs where Splunk has none (script from the schema first, pi tester only for the rest)"
 LOG="$MOD/.agent-logs"; mkdir -p "$LOG"

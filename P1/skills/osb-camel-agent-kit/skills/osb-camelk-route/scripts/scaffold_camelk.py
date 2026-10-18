@@ -119,9 +119,12 @@ def model(r: dict, facts: dict, corr: str) -> dict:
         mapping.append({"scenario": sc if "=" in sc else "*", "outputs": outs, "branch": x.get("branch", ""), "path": x.get("path", "")})
     dims = [(d.lstrip("/").split(".")[-1], d) for d in r.get("scenario_dims") or [] if d]
     fmt = ((r.get("entry") or {}).get("payload_format") or "UNKNOWN").lower()
+    hdr_src = json.dumps({"o": [o.get("headers") for o in r.get("outputs") or []], "e": r.get("errors")}).lower()
     return {"outputs": outputs, "error": err, "backends": backends, "paths": paths, "mapping": mapping, "dims": dims,
             "format": fmt, "corr": corr, "logs": r.get("logs") or [], "transforms": r.get("transforms") or [],
-            "branches": r.get("branches") or [], "entry": r.get("entry") or {}}
+            "branches": r.get("branches") or [], "entry": r.get("entry") or {}, "errors": r.get("errors") or [],
+            "corr_generated": "uuid" in hdr_src,                       # OSB: traceId = inbound header, else fn-bea:uuid()
+            "selector": str((r.get("entry") or {}).get("selector") or "").strip()}
 
 
 def route_yaml(proxy: str, project: str, pkg: str, m: dict) -> str:
@@ -130,9 +133,16 @@ def route_yaml(proxy: str, project: str, pkg: str, m: dict) -> str:
          "# using FLOW_CARD.md; ids branch-*, out-*, backend-* must stay (check_camelk.py and the tests rely on them).",
          "# Endpoints are properties: production values in application.properties (Camel K: traits.camel.properties),",
          "# tests replace them with direct:/mock: endpoints.",
-         "- route:", f"    id: {proxy}", "    from:", '      uri: "{{flow.input}}"', "      steps:",
-         "        - doTry:", "            steps:"]
+         "- route:", f"    id: {proxy}", "    from:", '      uri: "{{flow.input}}"', "      steps:"]
+    if m.get("corr_generated"):
+        L += [f"        # OSB: {m['corr']} = inbound header, else fn-bea:uuid()", "        - setHeader:", f"            name: {m['corr']}",
+              f"            simple: \"${{header.{m['corr']}}} ?: ${{uuid(random)}}\""]
+    L += ["        - doTry:", "            steps:"]
     ind = " " * 14
+    stages = [lg.get("stage") for lg in m["logs"] if lg.get("stage") and not re.search(r"error", lg.get("stage"), re.I)]
+    L += [f"{ind}# osbStage = the OSB stage being executed: set it again before the steps of every further stage (names in",
+          f"{ind}# FLOW_CARD section 8). The error handler reports it as debugInfo (OSB: $fault/location/stage).",
+          f"{ind}- setProperty:", f"{ind}    name: osbStage", f"{ind}    constant: {q(stages[0] if stages else 'request-pipeline')}"]
     if m["format"] == "json":
         L += [f"{ind}- bean:", f"{ind}    beanType: {pkg}.OsbJson", f"{ind}    method: annotate"]
     main_logs = [lg for lg in m["logs"] if not re.search(r"error", lg.get("stage") or "", re.I)]
@@ -152,20 +162,23 @@ def route_yaml(proxy: str, project: str, pkg: str, m: dict) -> str:
         by_branch.setdefault(p["branch"], []).append(p)
     placed = set()
     for b, ps in by_branch.items():
-        L += [f"{ind}- choice:", f"{ind}    id: branch-{b}", f"{ind}    when:"]
         for p in ps:
-            L += [f"{ind}      - id: {p['id']}", f"{ind}        simple: {q(TODO + ' ' + (p['plain'] or p['label']))}",
+            if not p["outputs"]:
+                L.append(f"{ind}# path {p['id']} ({p['plain'] or p['label']}): no output in OSB = no action, so no `when` and no log for it")
+        active = [p for p in ps if p["outputs"]]
+        if not active:
+            continue
+        L += [f"{ind}- choice:", f"{ind}    id: branch-{b}", f"{ind}    when:"]
+        for p in active:
+            L += [f"{ind}      - id: {p['id']}", f"{ind}        simple: {q(TODO + ' ' + (p['plain'] or p['label']) + ' (fields set by OsbJson.annotate: ${exchangeProperty.<field>}, never headers)')}",
                   f"{ind}        steps:"]
-            outs = p["outputs"] or []
-            for o in outs:
+            for o in p["outputs"]:
                 if o == "reply":
                     L += [f"{ind}          - log:", f"{ind}              message: {q(TODO + ' build the reply to the caller here (body at the end of the route)')}"]
                     placed.add(o)
                     continue
                 L += [f"{ind}          - to:", f"{ind}              id: out-{o}", f'{ind}              uri: "{{{{out.{o}}}}}"']
                 placed.add(o)
-            if not outs:
-                L += [f"{ind}          - log:", f"{ind}              message: {q(TODO + ' path ' + p['label'] + ': no output in research')}"]
     rest = [o for o in m["outputs"] if o not in placed and o not in (m["error"], "reply")]
     if rest and not by_branch:
         for o in rest:
@@ -177,11 +190,45 @@ def route_yaml(proxy: str, project: str, pkg: str, m: dict) -> str:
     for lg in err_logs:
         L += ["                  - log:", "                      loggingLevel: INFO", "                      logName: oracle.osb.logging.pipeline",
               f"                      message: {q(TODO + ' convert to simple: ' + (lg.get('template') or ''))}"]
-    L += ["                  - setHeader:", "                      name: errorCode",
-          f"                      constant: {q(TODO + ' errorCode per research Q9')}",
-          "                  - setHeader:", "                      name: errorMessage", '                      simple: "${exception.message}"',
-          "                  - to:", f"                      id: out-{m['error']}", f'                      uri: "{{{{out.{m["error"]}}}}}"']
+    L += error_header_steps(m)
+    L += ["                  - to:", f"                      id: out-{m['error']}", f'                      uri: "{{{{out.{m["error"]}}}}}"']
     return "\n".join(L) + "\n"
+
+
+def error_header_steps(m: dict) -> list[str]:
+    """Headers OSB sets on the error message (research: error output headers / errors[].headers), as route steps.
+    errorCode: OSB fault codes have no Camel equivalent -> exception class name (FLOW_CARD open question for the readers
+    of the error queue). debugInfo: the osbStage property. Inbound headers travel with the message and are not re-set."""
+    ind = " " * 18
+    names: list[tuple[str, str]] = []
+    for h in (m["outputs"].get(m["error"]) or {}).get("headers") or []:
+        n = h.get("name") if isinstance(h, dict) else str(h)
+        if n and n not in [x for x, _ in names]:
+            names.append((n, (h.get("source") if isinstance(h, dict) else "") or ""))
+    for e in m.get("errors") or []:
+        for h in e.get("headers") or []:
+            n = h.get("name") if isinstance(h, dict) else str(h)
+            if n and n not in [x for x, _ in names]:
+                names.append((n, (h.get("source") if isinstance(h, dict) else "") or ""))
+    if not names:
+        names = [("errorCode", "$fault errorCode"), ("errorMessage", "$fault reason"), ("debugInfo", "$fault location stage")]
+    L = []
+    for n, src in names:
+        if n == m["corr"]:
+            L.append(f"{ind}# {n}: already on the message (set at the start of the route)")
+        elif "inbound" in src.lower():
+            L.append(f"{ind}# {n}: inbound header ({src}), travels with the message: not re-set")
+        elif n.lower() == "errorcode":
+            L += [f"{ind}# OSB {src or '$fault errorCode'} (BEA-xxxxxx) has no Camel equivalent: exception class name, see FLOW_CARD",
+                  f"{ind}- setHeader:", f"{ind}    name: {n}", f'{ind}    simple: "${{exception.class.simpleName}}"']
+        elif n.lower() == "errormessage":
+            L += [f"{ind}- setHeader:", f"{ind}    name: {n}", f'{ind}    simple: "${{exception.message}}"']
+        elif n.lower() == "debuginfo":
+            L += [f"{ind}# OSB {src or '$fault location stage'}: the osbStage property set along the route",
+                  f"{ind}- setHeader:", f"{ind}    name: {n}", f'{ind}    simple: "${{exchangeProperty.osbStage}}"']
+        else:
+            L += [f"{ind}- setHeader:", f"{ind}    name: {n}", f"{ind}    constant: {q(TODO + ' ' + n + ' <- ' + (src or 'see FLOW_CARD section 7'))}"]
+    return L
 
 
 def properties(proxy: str, m: dict) -> str:
@@ -202,15 +249,46 @@ def properties(proxy: str, m: dict) -> str:
          "# credentials here: HTTP hosts come from env, broker connection from the platform config.",
          "# Durable topic subscription = subscription queue consumed by FQQN <address>::<subscription> (AGENTS.md).",
          f"camel.main.name={proxy}", "camel.main.routes-include-pattern=classpath:routes/*.camel.yaml", f"flow.input={inp}"]
+    if m.get("selector"):
+        L += ["# OSB message selector = broker-side filter of the subscription queue (the platform register creates it with this filter)",
+              f"flow.input.selector={m['selector']}"]
     L += [f"out.{k}={endpoint(o['destination'], k)}" for k, o in m["outputs"].items() if k != "reply"]
     L += [f"backend.{k}={endpoint(b.get('operation') if (b.get('type') or '').lower().startswith('http') else b.get('name'), k)}"
           for k, b in m["backends"].items()]
+    L += BROKER_LINES
+    return "\n".join(L) + "\n"
+
+
+# the broker connection comes from the platform environment (Secret / ConfigMap) on every environment, and from
+# ARTEMIS_* via broker/run_local.sh on a developer machine: never a value in this file (gate K4)
+BROKER_LINES = ["# broker connection (AMQP 1.0, Qpid JMS): the environment of the pod provides BROKER_URL (e.g. failover:(amqp://a:5672,",
+                "# amqp://b:5672)), BROKER_USER and BROKER_PASSWORD (Secret); broker/run_local.sh sets them for a local Artemis.",
+                "# The L1 tests override the URL with a dummy (no connection is opened). Never a value here.",
+                "camel.beans.amqpConnectionFactory=#class:org.apache.qpid.jms.JmsConnectionFactory",
+                "camel.beans.amqpConnectionFactory.remoteURI={{env:BROKER_URL}}",
+                "camel.beans.amqpConnectionFactory.username={{env:BROKER_USER:}}",
+                "camel.beans.amqpConnectionFactory.password={{env:BROKER_PASSWORD:}}",
+                "camel.component.amqp.connectionFactory=#bean:amqpConnectionFactory"]
+TEST_BROKER_LINES = ["camel.beans.amqpConnectionFactory.remoteURI=amqp://localhost:5672"]   # parsed only, never connected
+
+
+def local_properties(proxy: str, m: dict) -> str:
+    """env/local.properties: the same keys against an Artemis broker on this machine (broker/LOCAL_BROKER_TEST.md).
+    ASSUMPTION: local address = JNDI name without the 'jndi.' prefix; the real mapping per environment is the platform's."""
+    strip = lambda v: re.sub(r"^(amqp:(queue|topic):)jndi\.", r"\1", v)  # noqa: E731
+    prod = dict(ln.split("=", 1) for ln in properties(proxy, m).splitlines() if ln and not ln.startswith("#") and "=" in ln)
+    L = ["# LOCAL run against an Artemis broker on this machine: broker/run_local.sh passes every line below as -D, so it",
+         "# overrides the endpoints of application.properties; the connection comes from BROKER_* (set by the script from",
+         "# ARTEMIS_*, the password never in a file). Not read by the L1 tests. ASSUMPTION: local address = JNDI name",
+         "# without the 'jndi.' prefix; the mapping JNDI name -> Artemis address per environment belongs to the platform."]
+    L += [f"{k}={strip(v) if k == 'flow.input' or k.startswith(('out.', 'backend.')) else v}" for k, v in prod.items()
+          if k == "flow.input" or k.startswith(("flow.input.", "out.", "backend."))]
     return "\n".join(L) + "\n"
 
 
 def test_props(m: dict) -> list[str]:
     return (["flow.input=direct:in"] + [f"out.{k}=mock:out-{k}" for k in m["outputs"] if k != "reply"]
-            + [f"backend.{k}=mock:backend-{k}" for k in m["backends"]])
+            + [f"backend.{k}=mock:backend-{k}" for k in m["backends"]] + TEST_BROKER_LINES)
 
 
 def unmapped_scenarios(m: dict, facts: dict) -> list[str]:
@@ -295,6 +373,7 @@ def main() -> int:
     ap.add_argument("--parity", type=Path, help="task1/fixtures/parity (masked cases; copied, never committed)")
     ap.add_argument("--correlation-header", default="traceId")
     ap.add_argument("--force", action="store_true", help="also overwrite route, properties and card")
+    ap.add_argument("--refresh", default="", help="comma list of generated infrastructure files to overwrite: pom,env,gitignore,bean")
     ap.add_argument("--freeze-synthetic", action="store_true",
                     help="only record hashes of the tester's synthetic cases (parity/*-synthetic/**) so gate K5 protects them")
     a = ap.parse_args()
@@ -342,27 +421,31 @@ def main() -> int:
                                             for d in deps) or "<!-- no transform dependencies -->")
     written = []
     jdir = pkg.replace(".", "/")
-    for path, text, once in [
-        (o / "pom.xml", pom, True),
-        (o / f"src/main/resources/routes/{proxy}.camel.yaml", route_yaml(proxy, a.project, pkg, m), True),
-        (o / "src/main/resources/application.properties", properties(proxy, m), True),
-        (o / "FLOW_CARD.md", card(proxy, a.project, r, facts, m, sha(rp)), True),
-        (o / ".gitignore", "target/\nsrc/test/resources/parity/\n", True),
+    refresh = {x.strip() for x in a.refresh.split(",") if x.strip()}
+    for path, text, key in [
+        (o / "pom.xml", pom, "pom"),
+        (o / f"src/main/resources/routes/{proxy}.camel.yaml", route_yaml(proxy, a.project, pkg, m), "route"),
+        (o / "src/main/resources/application.properties", properties(proxy, m), "properties"),
+        (o / "env/local.properties", local_properties(proxy, m), "env"),
+        (o / "FLOW_CARD.md", card(proxy, a.project, r, facts, m, sha(rp)), "card"),
+        (o / ".gitignore", "target/\nsrc/test/resources/parity/\n.camel-jbang/\n", "gitignore"),
     ]:
-        if write_once(path, text, a.force):
+        if write_once(path, text, a.force or key in refresh):
             written.append(path.relative_to(o).as_posix())
     if m["format"] == "json":
         bean = (TPL / "OsbJson.java.tpl").read_text(encoding="utf-8").replace("@@PACKAGE@@", pkg).replace(
             "@@HEADER_PATHS@@", ", ".join("{" + q(h) + ", " + q(p) + "}" for h, p in m["dims"]))
-        if write_once(o / f"src/main/java/{jdir}/OsbJson.java", bean, a.force):
+        if write_once(o / f"src/main/java/{jdir}/OsbJson.java", bean, a.force or "bean" in refresh):
             written.append(f"src/main/java/{jdir}/OsbJson.java")
     test = (TPL / "FlowParityTest.java.tpl").read_text(encoding="utf-8").replace("@@PACKAGE@@", pkg).replace(
         "@@PROJECT@@", a.project).replace("@@PROXY@@", proxy).replace("@@INPUT@@", "direct:in").replace(
+        "@@PATTERN@@", "InOut" if "reply" in m["outputs"] else "InOnly").replace(
         "@@TEST_PROPERTIES@@", ", ".join(q(p) for p in test_props(m)))
     cfg = {"outputs": {k: ("reply" if k == "reply" else f"mock:out-{k}") for k in m["outputs"]}, "error_output": m["error"],
            "backends": {k: {"mock": f"mock:backend-{k}", "response_use": b.get("response_use", "")} for k, b in m["backends"].items()},
            "scenario_mapping": [{"scenario": x["scenario"], "outputs": x["outputs"]} for x in m["mapping"]],
-           "correlation_header": m["corr"], "payload_format": m["format"]}
+           "correlation_header": m["corr"], "correlation_generated": bool(m.get("corr_generated")),
+           "scenario_fields": [h for h, _ in m["dims"]], "payload_format": m["format"]}
     tp = o / f"src/test/java/{jdir}/FlowParityTest.java"
     cp = o / "src/test/resources/flow-test.json"
     for path, text in [(tp, test), (cp, json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")]:
@@ -381,7 +464,8 @@ def main() -> int:
                 shutil.copytree(flow_dir, dst / flow_dir.name, dirs_exist_ok=True)
                 copied += sum(1 for _ in (dst / flow_dir.name).glob("*/*/input.payload"))
     old_meta = json.loads((o / ".scaffold.json").read_text(encoding="utf-8")) if (o / ".scaffold.json").is_file() else {}
-    ids = ([f"branch-{b}" for b in {p["branch"] for p in m["paths"]}] + [p["id"] for p in m["paths"]]
+    active = [p for p in m["paths"] if p["outputs"]]              # a path without output is no action: no id in the route
+    ids = ([f"branch-{b}" for b in {p["branch"] for p in active}] + [p["id"] for p in active]
            + [f"out-{k}" for k in m["outputs"] if k != "reply"] + [f"backend-{k}" for k in m["backends"]])
     meta = {"proxy": proxy, "project": a.project, "package": pkg, "research_sha256": sha(rp),
             "generated": {**{k: v for k, v in (old_meta.get("generated") or {}).items() if "-synthetic/" in k},

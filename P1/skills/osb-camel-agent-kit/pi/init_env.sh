@@ -25,7 +25,10 @@ export SPLUNK_COVERAGE="\${SPLUNK_COVERAGE:-$(first "$(pwd)/splunk-payload.csv")
 export MASK_JSON_KEYS="\${MASK_JSON_KEYS:-reason}"
 export POC="\${POC:-1}"
 export BATCH_SIZE="\${BATCH_SIZE:-10}"
-# MASK_KEY is NOT stored here: export it per session (key from the data owner)
+export ARTEMIS_HOME="\${ARTEMIS_HOME:-$(ls -d "$(dirname "$(pwd)")"/apache-artemis-* 2>/dev/null | head -1)}"   # local broker (broker/)
+export ARTEMIS_BROKER="\${ARTEMIS_BROKER:-$(dirname "$(pwd)")/artemis-broker}"
+export ARTEMIS_USER="\${ARTEMIS_USER:-artemis}"
+# MASK_KEY and ARTEMIS_PASSWORD are NOT stored here: export them per session (data owner / broker password)
 ENV
 echo "written $(pwd)/.osb-kit.env"
 grep -E '^export (KIT|APP|WS|JAVA_HOME|EXPORT|SPLUNK_COVERAGE)=' .osb-kit.env | sed 's/^export /  /'

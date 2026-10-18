@@ -93,6 +93,17 @@ task1 → tests → build → matrix → report; restartable, one failing flow n
 If a stage stops: masking residue → add the field with `MASK_JSON_KEYS='field'`; `429` → raise `PI_PAUSE`;
 `FAILED research` → `research/<p>/<x>/agent-logs/research.err`; tests red → `modules/<p>/<x>/target/surefire-reports`.
 
+## 5b One flow against a local broker (L2)
+
+The L1 tests mock every queue. `skills/osb-camel-agent-kit/broker/LOCAL_BROKER_TEST.md` runs the same route, unchanged,
+on Camel Main against a local Apache ActiveMQ Artemis and sends it the same masked cases: `artemis_setup.sh`
+(install, create, start), `artemis_prepare.sh <module>` (subscription queue with the OSB selector as filter, one queue
+per output), `run_local.sh <module>`, `send_case.sh <module> <case>`, `queues.sh <module>` (counts = the evidence).
+Local names come from `env/local.properties` (JNDI names without `jndi.`, an assumption until the platform's mapping
+is known); the connection from `BROKER_URL` / `BROKER_USER` / `BROKER_PASSWORD`, which the platform provides on a
+cluster. Older modules: `REFRESH=pom,env … run_domain.sh tests` rewrites their pom (camel-amqp, profile run-local)
+and writes `env/local.properties`; the route itself is untouched.
+
 ## 6 Known limits (and their next step)
 
 - Selector, durable subscription, fan-out and transactions need a real broker: next phase on the Dev environment.

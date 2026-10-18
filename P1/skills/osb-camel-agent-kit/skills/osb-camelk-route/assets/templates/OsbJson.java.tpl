@@ -10,7 +10,8 @@ import org.apache.camel.Exchange;
 /**
  * Helper bean for the YAML route: reads the payload the way OSB accepts it. OSB logs showed raw control
  * characters inside strings and text after the closing brace; Jackson rejects both by default, so this bean is
- * lenient on exactly those two points and nothing else. It also lifts the scenario fields into headers.
+ * lenient on exactly those two points and nothing else. It also lifts the scenario fields into exchange properties
+ * (not headers: a header would leave the route as a JMS property on every output, which OSB does not send).
  */
 public final class OsbJson {
 
@@ -41,15 +42,15 @@ public final class OsbJson {
         }
     }
 
-    /** Fields lifted into headers so branch conditions can use ${header.x}; set by the scaffold from research
-     *  scenario_dims. "a.b.c" = that path; "//name" = first field with that name at any depth (OSB //*:name). */
-    static final String[][] HEADERS = {@@HEADER_PATHS@@};
+    /** Fields lifted into exchange properties so branch conditions can use ${exchangeProperty.x}; set by the scaffold
+     *  from research scenario_dims. "a.b.c" = that path; "//name" = first field with that name at any depth (OSB //*:name). */
+    static final String[][] FIELDS = {@@HEADER_PATHS@@};
 
-    /** Route step: checks the payload parses like OSB accepts it and sets the scenario headers. The body is NOT
+    /** Route step: checks the payload parses like OSB accepts it and sets the scenario properties. The body is NOT
      *  changed: OSB forwards the original text ($requestDoc), so the outputs must carry it byte for byte. */
     public static void annotate(Exchange exchange) throws Exception {
         JsonNode root = parse(exchange.getMessage().getBody(String.class));
-        for (String[] h : HEADERS) {
+        for (String[] h : FIELDS) {
             JsonNode n;
             if (h[1].startsWith("//")) {
                 n = root.findValue(h[1].substring(2));
@@ -59,7 +60,7 @@ public final class OsbJson {
                     n = n.path(part);
                 }
             }
-            exchange.getMessage().setHeader(h[0], n == null || n.isMissingNode() || n.isNull() ? null : n.asText());
+            exchange.setProperty(h[0], n == null || n.isMissingNode() || n.isNull() ? null : n.asText());
         }
     }
 }
