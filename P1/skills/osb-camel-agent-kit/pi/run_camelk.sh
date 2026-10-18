@@ -40,11 +40,25 @@ fi
 LOG="$MOD/.agent-logs"; mkdir -p "$LOG"
 # freeze the card as it is now (approved by a person, or marked poc-run): pi must not change it (gate K1 checks the hash)
 "$PY" -c "import hashlib,json,sys; p=sys.argv[1]; m=json.load(open(p)); m['card_sha256']=hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest(); json.dump(m,open(p,'w'),indent=2)" "$MOD/.scaffold.json" "$MOD/FLOW_CARD.md"
-echo "== 3 implement (pi)"
+echo "== 3 implement (pi), in small calls"
+# Every pi call starts fresh (--no-session) and never sees raw Maven output: verify_module.py prints ~30 lines.
+# An agent re-sends its whole conversation with every model request, so big tool output is paid for again and again;
+# small calls with a short summary keep each request small (the endpoint's limit is per minute).
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,edit,write"
     --append-system-prompt "$KIT/agents/implementer-camelk.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
-pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/RESEARCH.md and $RES/research.json. ${OSB_SRC:+OSB source (read only): $OSB_SRC.} Do steps 3-6 of the skill: fill every TODO(flow-card) in the route, write FlowErrorTest (one test per error scope at least) and the backend stubs, run 'mvn -B ${MVN_ARGS:-} -f $MOD/pom.xml test' and '$PY $SK/scripts/check_camelk.py $MOD' until it prints PASS. Never edit FlowParityTest.java, flow-test.json, FLOW_CARD.md or any test case folder. Write nothing outside $MOD." || true
+VERIFY="$PY $SK/scripts/verify_module.py $MOD"
+RULES="Never run mvn directly: '$VERIFY' runs the tests and the gates and prints a short summary. Never edit FlowParityTest.java, flow-test.json, FLOW_CARD.md or any test case folder. Write nothing outside $MOD. Do not read target/ or the parity cases."
+export VERIFY_MVN="mvn -B -q ${MVN_ARGS:-}"
+pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route, write FlowErrorTest (one test per error scope at least) and the backend stubs. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
+for round in $(seq 1 "${PI_FIX_ROUNDS:-3}"); do
+  SUMMARY=$($VERIFY 2>&1) && { echo "   verify: PASS after $round call(s)"; break; }
+  echo "   verify round $round: $(echo "$SUMMARY" | head -1)"
+  sleep "${PI_PAUSE:-30}"
+  pi_call "$LOG/fix-$round.out" "$LOG/fix-$round.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD (card $MOD/FLOW_CARD.md). The last verify printed:
+$SUMMARY
+Fix exactly these failures in the route, the helper beans, FlowErrorTest or the stubs: read only the files you change and the card. Then run '$VERIFY' once and stop. $RULES" || true
+done
 
 echo "== 4 verify"
 mvn -B -q ${MVN_ARGS:-} -f "$MOD/pom.xml" test > "$LOG/mvn.out" 2>&1 || true

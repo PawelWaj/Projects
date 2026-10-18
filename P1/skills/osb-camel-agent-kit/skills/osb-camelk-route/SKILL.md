@@ -48,7 +48,8 @@ masked task-1 cases. Output: `modules/<project>/<proxy>/`, a Maven test module a
    to 0 through properties in the test, never by changing production defaults.
 5. **Stubs:** one file per backend whose response is used: `src/test/resources/stubs/<backend>.json|xml|txt`,
    shape from research Q8, fake values only.
-6. **Run until green:** `mvn -B test` then `python <skill>/scripts/check_camelk.py modules/<project>/<proxy>`. Gates:
+6. **Run until green:** `python <skill>/scripts/verify_module.py modules/<project>/<proxy>` (mvn test + gates, ~30
+   lines; the full Maven log stays in target/verify-mvn.log: never read it whole, never run raw mvn). Gates:
    K1 card approved · K2 no TODO(flow-card) in src/main · K3 every route id present · K4 no infrastructure ·
    K5 generated tests and frozen synthetic cases untouched, nothing disabled · K6 stubs · K7 error tests ≥ error scopes ·
    K8 tests green · K9 every scenario_mapping row has a case · K10 every property value a plain endpoint (no notes,

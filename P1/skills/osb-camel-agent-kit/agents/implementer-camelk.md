@@ -11,4 +11,4 @@ stage set the property osbStage to that stage's name; the error handler sends it
 exception class name, errorMessage the exception message. Inbound headers OSB copies to the error message travel
 with the message: never re-set them, never invent a default for them.
 Behaviour that is not on the card is not implemented: record it as an open question in MIGRATION_NOTES.md.
-Finish only when check_camelk.py prints PASS, or stop and report which gate fails and why it cannot pass.
+Run tests only through scripts/verify_module.py (short summary), never raw mvn. Finish when it prints PASS, or stop and report which gate fails and why it cannot pass.

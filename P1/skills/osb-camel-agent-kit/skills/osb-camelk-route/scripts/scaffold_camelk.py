@@ -456,6 +456,8 @@ def main() -> int:
              "research Q8 (WSDL/XSD), with FAKE values only. FlowErrorTest makes the same mocks throw for the error tests.", ""]
     stubs += [f"- `{k}.*`: {b.get('type', '')} {b.get('operation', '')}; response use: {b.get('response_use', '') or '-'}" for k, b in m["backends"].items()] or ["- no backends"]
     write_once(o / "src/test/resources/stubs/README.md", "\n".join(stubs) + "\n", True)
+    # tests log at WARN: the Camel INFO lines of every test made each mvn run hundreds of KB (full log: target/)
+    write_once(o / "src/test/resources/simplelogger.properties", "org.slf4j.simpleLogger.defaultLogLevel=warn\n", False)
     copied = 0
     if a.parity and a.parity.is_dir():
         dst = o / "src/test/resources/parity"

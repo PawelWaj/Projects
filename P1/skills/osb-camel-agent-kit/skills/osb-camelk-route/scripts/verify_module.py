@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""mvn test + gates for ONE module, with a SHORT answer: what an agent needs to fix, nothing else. Stdlib only.
+
+    verify_module.py modules/<project>/<proxy> [--mvn "mvn -B -q -s ~/.m2/settings.xml"] [--max 8]
+
+Why: an agent re-sends its whole conversation with every model call. The full Maven output (Camel logs of every test)
+is hundreds of KB; once it is in the conversation it is paid for on every later call, which is what exhausts the model
+endpoint's token quota. This script writes the full output to target/verify-mvn.log and prints at most ~30 lines:
+totals, the failing tests (name + first line of the message, cut at 200 characters), the failing gates.
+Exit 0 = tests green and gates PASS except K1 (approval is a person's step), 1 = something to fix, 2 = could not run."""
+import argparse
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("module", type=Path)
+    ap.add_argument("--mvn", default=os.environ.get("VERIFY_MVN", "mvn -B -q " + os.environ.get("MVN_ARGS", "")))
+    ap.add_argument("--max", type=int, default=8, help="failing tests listed")
+    a = ap.parse_args()
+    mod = a.module
+    args = [os.path.expanduser(x) for x in shlex.split(a.mvn)]
+    exe = shutil.which(args[0]) or shutil.which(args[0] + ".cmd")
+    if not exe:
+        print(f"cannot find {args[0]} on PATH")
+        return 2
+    rep = mod / "target/surefire-reports"
+    if rep.is_dir():
+        for f in rep.glob("TEST-*.xml"):
+            f.unlink()
+    (mod / "target").mkdir(exist_ok=True)
+    log = mod / "target/verify-mvn.log"
+    r = subprocess.run([exe] + args[1:] + ["-f", str(mod / "pom.xml"), "test"], capture_output=True, text=True)
+    log.write_text(r.stdout + r.stderr, encoding="utf-8")
+    t = f = e = s = 0
+    fails = []
+    for x in sorted(rep.glob("TEST-*.xml")) if rep.is_dir() else []:
+        root = ET.parse(x).getroot()
+        t += int(root.get("tests", 0)); f += int(root.get("failures", 0)); e += int(root.get("errors", 0)); s += int(root.get("skipped", 0))
+        for tc in root.iter("testcase"):
+            bad = tc.find("failure") if tc.find("failure") is not None else tc.find("error")
+            if bad is not None:
+                msg = (bad.get("message") or bad.get("type") or "").strip().splitlines()
+                fails.append(f"{tc.get('classname', '').split('.')[-1]}.{tc.get('name')}: {(msg[0] if msg else '')[:200]}")
+    if t == 0:
+        lines = [ln for ln in (r.stdout + r.stderr).splitlines() if re.search(r"ERROR|error:|Caused by", ln)]
+        print("BUILD/COMPILE FAILED (no test ran). First errors:")
+        for ln in lines[:12]:
+            print("  " + ln.strip()[:220])
+        print(f"full output: {log}")
+        return 1
+    print(f"tests {t}, failures {f}, errors {e}, skipped {s}")
+    for x in fails[: a.max]:
+        print("  FAIL " + x)
+    if len(fails) > a.max:
+        print(f"  ... {len(fails) - a.max} more (full output: {log})")
+    g = subprocess.run([sys.executable, str(Path(__file__).with_name("check_camelk.py")), str(mod)], capture_output=True, text=True)
+    gates = json.loads((mod / "GATES.json").read_text(encoding="utf-8"))["gates"] if (mod / "GATES.json").is_file() else {}
+    bad_gates = {k: v for k, v in gates.items() if not v.get("ok") and k != "K1_card_approved"}
+    for k, v in bad_gates.items():
+        print(f"  GATE {k} " + json.dumps({x: y for x, y in v.items() if x != "ok"})[:220])
+    ok = f == 0 and e == 0 and not bad_gates
+    print("PASS (K1 = approval, a person's step)" if ok else "FIX NEEDED")
+    return 0 if ok else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
