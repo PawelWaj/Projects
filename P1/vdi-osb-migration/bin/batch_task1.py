@@ -166,6 +166,25 @@ def process_flow(flow: str, info: dict, d: Path, a, peers: dict, base_report: di
     if tr.returncode:
         row.update(status="FAIL", problems=[f"traces: {tr.stderr.strip()[-200:]}"])
         return row
+    # a scenario field found in NO message means the research named the wrong path: every case would be labelled
+    # '?', no scenario row would match, and the route's helper bean would read the same wrong path
+    tj = d / "traces/traces.jsonl"
+    if tj.is_file():
+        seen = Counter()
+        n = 0
+        for ln in tj.read_text(encoding="utf-8").splitlines():
+            try:
+                br = json.loads(ln).get("branch") or {}
+            except ValueError:
+                continue
+            n += 1
+            for k, v in br.items():
+                if v not in ("", "?", None):
+                    seen[k] += 1
+        missing = [k for k in dims if not k.startswith("hdr_") and n and seen[k.split(":")[-1].split(".")[-1]] == 0 and seen[k] == 0]
+        if missing:
+            row["problems"].append(f"scenario field {', '.join(missing)} found in none of {n} messages: check scenario_dims in "
+                                   "research.json (wrong path?) before building tests")
     (d / "replay-config.json").write_text(json.dumps(replay_config(flow, info["topic"]), indent=2), encoding="utf-8")
     fx = run([TOOLS / "fixtures_from_traces.py", d / "traces/traces.jsonl", d / "replay-config.json", "-o", d / "fixtures",
               "--per-scenario", a.per_scenario])

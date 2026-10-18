@@ -215,6 +215,13 @@ class BatchTask1Tests(unittest.TestCase):
             dims = json.loads((Path(d) / "out/flows/a-prj-a/dims.json").read_text(encoding="utf-8"))["chosen"]
             self.assertIn("body:data.businessTransaction", dims)
             self.assertTrue((Path(d) / "out/SUMMARY.md").is_file())
+            # a scenario field path the messages do not have (research named the wrong path) is flagged, not built
+            fl = Path(d) / "flows.csv"
+            fl.write_text("flow,domain,dims\na-prj/a,a,hdr_resource;body:data.notThere\n", encoding="utf-8")
+            r = subprocess.run([sys.executable, str(BIN / "batch_task1.py"), str(f), "-o", str(Path(d) / "out2"), "--flows", str(fl)],
+                               capture_output=True, text=True, env=dict(os.environ, MASK_KEY="k"))
+            self.assertEqual(r.returncode, 1, r.stdout)
+            self.assertIn("scenario field body:data.notThere found in none of", r.stdout)
 
 
 class ResearchPackTests(unittest.TestCase):
