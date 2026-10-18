@@ -104,6 +104,14 @@ is known); the connection from `BROKER_URL` / `BROKER_USER` / `BROKER_PASSWORD`,
 cluster. Older modules: `REFRESH=pom,env … run_domain.sh tests` rewrites their pom (camel-amqp, profile run-local)
 and writes `env/local.properties`; the route itself is untouched.
 
+## 5c When the model platform answers 429
+
+The platform's gateway limits requests per time; an agent fires its requests back to back and pi aborts the whole run
+on a 429. `pi/llm_pacer.py` sits between pi and the platform on the VDI: one request at a time, a minimum gap, and a
+429/502/503/504 is waited out and the same request sent again, so the run continues. Window 1:
+`python $KIT/pi/llm_pacer.py pi-on` once, then `python $KIT/pi/llm_pacer.py` (stays open, one log line per request);
+window 2: the usual `run_domain.sh` / `run_overnight.sh`. Back to direct: `python $KIT/pi/llm_pacer.py pi-off`.
+
 ## 6 Known limits (and their next step)
 
 - Selector, durable subscription, fan-out and transactions need a real broker: next phase on the Dev environment.
