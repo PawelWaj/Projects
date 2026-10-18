@@ -26,6 +26,8 @@
 #                time      MEASURED time per pi step (work vs rate-limit waiting) and the projection for TOTAL_FLOWS
 #                          (default 450) -> domain/TIME_PROJECTION.md
 #                report    domain/FUNCTIONAL_TEST_REPORT.md: inputs, expected outputs, mocks, results, mutations per flow
+#                flat      delivery/<app>/: Common-setup kamelets + per project ONE <domain>-route.yaml, <Flow>Transformer.java,
+#                          <Flow>TransformerTest.java (assemble_flat.py; also the last step of functional)
 #                auto      research -> task1 -> tests: the functional test pack for every flow, then stops
 #                          (routes: approve the cards, then build and matrix)
 #                status    only rewrite <ws>/domain/STATUS.md + status.csv
@@ -223,7 +225,9 @@ case "$STAGE" in
   time) "$PY" "$(dirname "$BATCH")/time_projection.py" "$WS/domain/timings.csv" --flows "${TOTAL_FLOWS:-450}" \
           --coverage "$WS/domain/coverage.csv" -o "$WS/domain/TIME_PROJECTION.md" ;;
   report) status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
-  functional) do_research || { status > /dev/null; exit 75; }; do_task1; do_tests; do_build; do_matrix; status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
+  flat) "$PY" "$SK/assemble_flat.py" "$WS" --app "$(basename "${APP:-osb-app}")" ${PROJECTS:+--projects "$PROJECTS"} ;;
+  functional) do_research || { status > /dev/null; exit 75; }; do_task1; do_tests; do_build; do_matrix; status > /dev/null; "$PY" "$SK/domain_report.py" "$WS"
+              "$PY" "$SK/assemble_flat.py" "$WS" --app "$(basename "${APP:-osb-app}")" ${PROJECTS:+--projects "$PROJECTS"} ;;
   status) status ;;
   *) echo "unknown stage: $STAGE"; exit 2 ;;
 esac

@@ -8,13 +8,15 @@ set -u
 M=${1:?usage: run_local.sh <module>}
 need_module "$M"; need_password
 export BROKER_URL="amqp://localhost:$ARTEMIS_AMQP_PORT" BROKER_USER="$ARTEMIS_USER" BROKER_PASSWORD="$ARTEMIS_PASSWORD"
+# flat delivery project: the common kamelets sit next to it (assemble_flat.py), as an absolute path for java
+[ -d "$M/../Common-setup" ] && export KAMELET_LOCATION="file:$(wpath "$(cd "$M/../Common-setup" && pwd)")"
 args=()
 while IFS= read -r line; do
   case $line in *.selector=*) continue;; esac              # the filter lives on the broker (artemis_prepare.sh), not in the route
   args+=("-D$line")
 done < <(module_props "$M")
 echo "route of $M against $ARTEMIS_URL (AMQP :$ARTEMIS_AMQP_PORT):"
-printf '   %s\n' "${args[@]}" | grep -E '^   -D(flow\.input|out\.|backend\.)' | sed 's/^   -D/   /'
+printf '   %s\n' "${args[@]}" | grep -E '(flow\.input|out\.|backend\.)[^=]*=' | sed 's/^   -D/   /'
 echo "starting (Ctrl+C stops it) ..."
 # no -q: exec:java logs through Maven's own SLF4J, and quiet mode would hide every Camel log line
 exec mvn -B ${MVN_ARGS:-} -f "$M/pom.xml" -Prun-local compile exec:java "${args[@]}"

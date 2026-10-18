@@ -8,6 +8,8 @@
   flow.input=amqp:queue:<queue>                              -> anycast queue
   flow.input.selector=<text>                                 -> filter of that subscription queue (the OSB message selector)
   out.* / backend.* = amqp:queue:<queue>                     -> anycast queue;   amqp:topic:<address> -> multicast address
+Flat delivery projects (assemble_flat.py, src/env/local.properties): keys <proxy>.flow.input / <proxy>.out.* and values
+kamelet:osb-jms-source|sink?destination=queue:<name> are read the same way.
 Prints a JSON list of {name, address, routing (multicast|anycast|address), filter}; --tsv prints one line per object
 (name, address, routing, filter) for the shell. HTTP backends and non-AMQP values are ignored."""
 import argparse
@@ -25,15 +27,21 @@ def plan(props: dict) -> list[dict]:
             seen.add(o["name"])
             out.append(o)
 
-    sel = props.get("flow.input.selector", "").strip() or None
+    for k, v in list(props.items()):                         # kamelet values of a flat project -> amqp form
+        km = re.match(r"kamelet:osb-jms-(?:source|sink)\?destination=(.+)$", v)
+        if km:
+            props[k] = "amqp:" + km.group(1)
     for k, v in props.items():
         if not v.startswith("amqp:"):
             continue
+        is_input = k == "flow.input" or k.endswith(".flow.input")
+        is_output = k.startswith(("out.", "backend.")) or ".out." in k or ".backend." in k
+        sel = props.get(k + ".selector", "").strip() or None if is_input else None
         m = re.match(r"amqp:(queue|topic):([^?]+)(?:\?(.*))?$", v)
         if not m:
             continue
         kind, name, query = m.group(1), m.group(2), m.group(3) or ""
-        if k == "flow.input":
+        if is_input:
             if "::" in name:
                 addr, sub = name.split("::", 1)
                 add({"name": sub, "address": addr, "routing": "multicast", "filter": sel})
@@ -46,7 +54,7 @@ def plan(props: dict) -> list[dict]:
                     add({"name": name, "address": name, "routing": "address", "filter": None})
             else:
                 add({"name": name, "address": name, "routing": "anycast", "filter": None})
-        elif k.startswith(("out.", "backend.")):
+        elif is_output:
             if kind == "topic":
                 add({"name": name, "address": name, "routing": "address", "filter": None})
             else:
@@ -61,7 +69,9 @@ def main() -> int:
     a = ap.parse_args()
     f = a.module / "env/local.properties"
     if not f.is_file():
-        sys.exit(f"missing {f}")
+        f = a.module / "src/env/local.properties"
+    if not f.is_file():
+        sys.exit(f"missing {a.module}/env/local.properties or src/env/local.properties")
     props = {}
     for ln in f.read_text(encoding="utf-8").splitlines():
         if ln.strip() and not ln.lstrip().startswith(("#", "!")) and "=" in ln:

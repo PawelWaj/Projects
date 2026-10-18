@@ -31,8 +31,10 @@ open(p, "w", encoding="utf-8").write(re.sub(rf'^export {re.escape(k)}=.*$', f'ex
 PY
   else printf 'export %s="%s"\n' "$1" "$2" >> "$f"; fi; echo "   .osb-kit.env: $1=$2"; }
 need_password() { [ -n "${ARTEMIS_PASSWORD:-}" ] || { echo "export ARTEMIS_PASSWORD='<the broker password>' first (per session, never in a file)"; exit 2; }; }
-need_module() { [ -f "$1/env/local.properties" ] \
-  || { echo "no $1/env/local.properties: python \$KIT/skills/osb-camelk-route/scripts/scaffold_camelk.py <research> -o $1 --project <p> --refresh env"; exit 2; }; }
+# local broker settings of a module (env/local.properties) or of a flat delivery project (src/env/local.properties)
+local_props() { if [ -f "$1/env/local.properties" ]; then echo "$1/env/local.properties"; else echo "$1/src/env/local.properties"; fi; }
+need_module() { [ -f "$(local_props "$1")" ] \
+  || { echo "no $1/env/local.properties (module) or $1/src/env/local.properties (flat project): scaffold_camelk.py ... --refresh env, or assemble_flat.py"; exit 2; }; }
 
 # the Artemis CLI of the distribution: artemis <command...>   (queue create|stat, producer, consumer, create, ...)
 artemis() { need_home; "$JAVA" -classpath "$(wpath "$ARTEMIS_HOME/lib/artemis-boot.jar")" -Dartemis.home="$(wpath "$ARTEMIS_HOME")" \
@@ -40,5 +42,5 @@ artemis() { need_home; "$JAVA" -classpath "$(wpath "$ARTEMIS_HOME/lib/artemis-bo
 # the same with the connection of this session
 artemis_client() { need_password; artemis "$@" --user "$ARTEMIS_USER" --password "$ARTEMIS_PASSWORD" --url "$ARTEMIS_URL"; }
 # key=value lines of <module>/env/local.properties (no comments, no blank lines)
-module_props() { grep -vE '^[[:space:]]*(#|$)' "$1/env/local.properties"; }
+module_props() { grep -vE '^[[:space:]]*(#|$)' "$(local_props "$1")"; }
 console_up() { curl -s -o /dev/null -w '%{http_code}' "$ARTEMIS_CONSOLE/" 2>/dev/null | grep -qE '^(200|30[0-9]|401)$'; }

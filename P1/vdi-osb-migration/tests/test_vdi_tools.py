@@ -1,6 +1,7 @@
 """Tests for the VDI workflow tools. Run from the repo root: python3 -m unittest discover -s vdi-osb-migration/tests -v"""
 import csv
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -405,6 +406,53 @@ class CamelkRouteTests(unittest.TestCase):
                            capture_output=True, text=True)
             self.assertIn("camel-amqp", (mod / "pom.xml").read_text())
             self.assertEqual((mod / "env/local.properties").read_text(), "y")
+
+    def test_assemble_flat_merges_flows_of_a_project(self):
+        """Two proxies of one project -> one flat folder: one route file with prefixed placeholders and unique ids,
+        <Flow>Transformer/<Flow>TransformerTest, kamelet endpoints, every test knows the other flow's endpoints."""
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d)
+            for px in ("first-flow", "second-flow"):
+                pack = json.loads(json.dumps(self.PACK)); pack["proxy"] = px
+                res = ws / "research" / px; res.mkdir(parents=True)
+                (res / "research.json").write_text(json.dumps(pack), encoding="utf-8")
+                r = subprocess.run([sys.executable, str(self.SK / "scaffold_camelk.py"), str(res), "-o", str(ws / "modules/p-prj" / px),
+                                    "--project", "p-prj"], capture_output=True, text=True)
+                self.assertEqual(r.returncode, 0, r.stderr)
+            r = subprocess.run([sys.executable, str(self.SK / "assemble_flat.py"), str(ws), "--app", "the-app"], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(json.loads(r.stdout)["flows"], 2)
+            root = ws / "delivery/the-app"
+            self.assertTrue((root / "Common-setup/osb-jms-source.kamelet.yaml").is_file())
+            flat = root / "p-prj"
+            names = sorted(p.name for p in flat.iterdir() if p.is_file())
+            for n in ("p-route.yaml", "FirstFlowTransformer.java", "FirstFlowTransformerTest.java", "SecondFlowTransformer.java",
+                      "SecondFlowTransformerTest.java", "application.properties", "pom.xml"):
+                self.assertIn(n, names)
+            route = (flat / "p-route.yaml").read_text()
+            self.assertIn('uri: "{{first-flow.flow.input}}"', route)
+            self.assertIn('uri: "{{second-flow.out.svc-a}}"', route)
+            self.assertIn("beanType: osb.pprj.FirstFlowTransformer", route)
+            ids = re.findall(r"^\s*(?:-\s+)?id:\s*(\S+)\s*$", route, re.M)
+            self.assertEqual(len(ids), len(set(ids)), "ids unique across flows")
+            props = (flat / "application.properties").read_text()
+            self.assertIn("first-flow.flow.input=kamelet:osb-jms-source?destination=queue:jndi.inTopic::first-flow", props)
+            self.assertIn("second-flow.out.svc-a=kamelet:osb-jms-sink?destination=queue:jndi.qA", props)
+            self.assertIn("camel.main.routes-include-pattern=classpath:p-route.yaml", props)
+            test = (flat / "FirstFlowTransformerTest.java").read_text()
+            self.assertIn("package osb.pprj;", test)
+            self.assertIn("class FirstFlowTransformerTest", test)
+            self.assertIn('"first-flow.flow.input=direct:in-first-flow"', test)
+            self.assertIn('"second-flow.flow.input=direct:in-second-flow"', test)
+            self.assertIn('@Produce("direct:in-first-flow")', test)
+            self.assertIn('"src/test/resources/first-flow/', test)
+            cfg = json.loads((flat / "src/test/resources/first-flow/flow-test.json").read_text())
+            self.assertTrue(all(v.startswith("mock:first-flow-out-") for k, v in cfg["outputs"].items() if v != "reply"))
+            local = (flat / "src/env/local.properties").read_text()
+            self.assertIn("first-flow.flow.input=kamelet:osb-jms-source?destination=queue:inTopic::first-flow", local)
+            plan = subprocess.run([sys.executable, str(ROOT / "skills/osb-camel-agent-kit/broker/plan_queues.py"), str(flat)],
+                                  capture_output=True, text=True)
+            self.assertEqual({o["name"] for o in json.loads(plan.stdout)}, {"first-flow", "second-flow", "qA", "qB", "qErr"})
 
     def test_pilot_module_passes_static_gates_except_approval(self):
         mod = ROOT / "pilot/sample-adjustment"

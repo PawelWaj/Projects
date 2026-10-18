@@ -78,3 +78,20 @@ visible in the console (`http://localhost:8161`, Queues → queue → Browse).
 - Transport retries (business service retry-count/interval) and transactions are visible here for the first time:
   compare the error queue message with the card.
 - `queues.sh --drain <queue>` empties a queue between runs.
+
+## 6 Flat delivery projects (all flows of one OSB project in one route file)
+
+`bash $KIT/pi/run_domain.sh flat` (also the last step of `functional`) writes `delivery/<app>/Common-setup/` (the two
+kamelets `osb-jms-source` / `osb-jms-sink`) and per project one folder with `<domain>-route.yaml`,
+`<Flow>Transformer.java`, `<Flow>TransformerTest.java`, `application.properties`, `pom.xml`, `src/`. The same scripts
+take that folder; `send_case.sh` then needs `--flow <proxy>`:
+```
+F=delivery/<app>/<project>
+cd $F && mvn -B $MVN_ARGS test && cd -          # every flow's frozen tests on the merged route file
+bash $KIT/broker/artemis_prepare.sh $F           # queues of all flows
+bash $KIT/broker/run_local.sh $F                 # all routes of the project, kamelets from ../Common-setup
+bash $KIT/broker/send_case.sh $F --flow <proxy> $F/src/test/resources/<proxy>/parity/<flow>/<scenario>/case1
+bash $KIT/broker/queues.sh $F
+```
+Verified with a two-flow project on Artemis 2.44.0: one route file, 38 tests green, both subscriptions consumed, every
+output and error queue reached. Transport binding (D1) = the two kamelet files only.
