@@ -20,6 +20,11 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
+def win_path(arg: str) -> str:
+    """Git Bash path (/c/Users/x) -> Windows path (c:/Users/x) when running natively on Windows; else unchanged."""
+    return re.sub(r"^/([a-zA-Z])/", r"\1:/", arg) if os.name == "nt" else arg
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("module", type=Path)
@@ -27,7 +32,7 @@ def main() -> int:
     ap.add_argument("--max", type=int, default=8, help="failing tests listed")
     a = ap.parse_args()
     mod = a.module
-    args = [os.path.expanduser(x) for x in shlex.split(a.mvn)]
+    args = [win_path(os.path.expanduser(x)) for x in shlex.split(a.mvn)]
     exe = shutil.which(args[0]) or shutil.which(args[0] + ".cmd")
     if not exe:
         print(f"cannot find {args[0]} on PATH")
@@ -38,7 +43,11 @@ def main() -> int:
             f.unlink()
     (mod / "target").mkdir(exist_ok=True)
     log = mod / "target/verify-mvn.log"
-    r = subprocess.run([exe] + args[1:] + ["-f", str(mod / "pom.xml"), "test"], capture_output=True, text=True)
+    env = dict(os.environ)
+    if os.name == "nt" and env.get("JAVA_HOME"):
+        env["JAVA_HOME"] = win_path(env["JAVA_HOME"])          # mvn.cmd needs C:/..., Git Bash exports /c/...
+    r = subprocess.run([exe] + args[1:] + ["-f", str(mod / "pom.xml"), "test"], capture_output=True, text=True,
+                       errors="replace", env=env)
     log.write_text(r.stdout + r.stderr, encoding="utf-8")
     t = f = e = s = 0
     fails = []
@@ -51,10 +60,12 @@ def main() -> int:
                 msg = (bad.get("message") or bad.get("type") or "").strip().splitlines()
                 fails.append(f"{tc.get('classname', '').split('.')[-1]}.{tc.get('name')}: {(msg[0] if msg else '')[:200]}")
     if t == 0:
-        lines = [ln for ln in (r.stdout + r.stderr).splitlines() if re.search(r"ERROR|error:|Caused by", ln)]
-        print("BUILD/COMPILE FAILED (no test ran). First errors:")
-        for ln in lines[:12]:
-            print("  " + ln.strip()[:220])
+        out = [re.sub(r"\x1b\[[0-9;]*m", "", ln).strip() for ln in (r.stdout + r.stderr).splitlines()]
+        lines = [ln for ln in out if re.search(r"ERROR|[Ee]rror:|Caused by|cannot find|does not exist|not defined", ln)]
+        lines = lines or [ln for ln in out if ln][-15:]        # never an empty answer: the agent needs a reason
+        print(f"BUILD/COMPILE FAILED (no test ran, maven exit {r.returncode}). First errors:")
+        for ln in lines[:15] or ["(maven printed nothing: is mvn 3.9 / JAVA_HOME right? run the same mvn by hand)"]:
+            print("  " + ln[:220])
         print(f"full output: {log}")
         return 1
     print(f"tests {t}, failures {f}, errors {e}, skipped {s}")
