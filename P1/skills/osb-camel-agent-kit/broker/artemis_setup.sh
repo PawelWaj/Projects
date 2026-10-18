@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # A local Apache ActiveMQ Artemis for the L2 run of a flow (broker/LOCAL_BROKER_TEST.md). Git Bash on Windows, macOS, Linux.
-#   bash <kit>/broker/artemis_setup.sh install    # unpack ARTEMIS_ZIP next to the workspace (skipped when ARTEMIS_HOME exists)
+#   bash <kit>/broker/artemis_setup.sh setup [<unzipped apache-artemis folder>]
+#                                                 # unzipped by hand: remembers the folder in .osb-kit.env, creates the instance, starts it
+#   bash <kit>/broker/artemis_setup.sh install    # or: unpack ARTEMIS_ZIP next to the workspace (skipped when ARTEMIS_HOME exists)
 #   bash <kit>/broker/artemis_setup.sh create     # one broker instance in ARTEMIS_BROKER: user ARTEMIS_USER, password ARTEMIS_PASSWORD,
 #                                                 # login required, ports 61616 (core, CLI) / 5672 (AMQP, the routes) / 8161 (console)
 #   bash <kit>/broker/artemis_setup.sh start|stop|status
@@ -9,6 +11,14 @@ set -u
 . "$(dirname "$0")/lib.sh"
 CMD=${1:-status}
 case "$CMD" in
+  setup)
+    [ -n "${2:-}" ] && ARTEMIS_HOME=${2%/}
+    [ -n "$ARTEMIS_HOME" ] && [ -f "$ARTEMIS_HOME/lib/artemis-boot.jar" ] \
+      || { echo "give the unzipped folder (it contains bin/ and lib/artemis-boot.jar):  artemis_setup.sh setup /e/<path>/apache-artemis-<version>"; exit 2; }
+    need_password
+    echo "Artemis: $ARTEMIS_HOME ($(ls "$ARTEMIS_HOME/lib" | grep -oE 'artemis-server-[0-9.]+' | head -1 | sed 's/artemis-server-//; s/\.$//'))"
+    remember ARTEMIS_HOME "$ARTEMIS_HOME"; remember ARTEMIS_BROKER "$ARTEMIS_BROKER"
+    "$0" create && "$0" start;;
   install)
     if [ -n "$ARTEMIS_HOME" ] && [ -f "$ARTEMIS_HOME/lib/artemis-boot.jar" ]; then echo "already installed: $ARTEMIS_HOME"; exit 0; fi
     [ -n "${ARTEMIS_ZIP:-}" ] && [ -f "$ARTEMIS_ZIP" ] || { echo "ARTEMIS_ZIP=<apache-artemis-<version>-bin.zip> (download from artemis.apache.org, or the team's share)"; exit 2; }
@@ -20,6 +30,7 @@ case "$CMD" in
     echo "installed: $home"; echo "add to .osb-kit.env:  export ARTEMIS_HOME=\"$home\"";;
   create)
     need_home; need_password
+    [ -n "${ARTEMIS_HOME:-}" ] && export ARTEMIS_HOME ARTEMIS_BROKER
     [ -f "$ARTEMIS_BROKER/etc/broker.xml" ] && { echo "instance exists: $ARTEMIS_BROKER (delete it to recreate)"; exit 0; }
     artemis create --user "$ARTEMIS_USER" --password "$ARTEMIS_PASSWORD" --require-login --name local-broker --silent --no-autotune \
       --host localhost "$(wpath "$ARTEMIS_BROKER")" | grep -vE '^\s*$' | tail -3
@@ -37,5 +48,5 @@ case "$CMD" in
     echo "ARTEMIS_HOME=$ARTEMIS_HOME"; echo "ARTEMIS_BROKER=$ARTEMIS_BROKER"
     "$JAVA" -version 2>&1 | head -1
     if console_up; then echo "running: console $ARTEMIS_CONSOLE, AMQP :$ARTEMIS_AMQP_PORT, core $ARTEMIS_URL"; else echo "not running (artemis_setup.sh start)"; fi;;
-  *) echo "usage: artemis_setup.sh install|create|start|stop|status"; exit 2;;
+  *) echo "usage: artemis_setup.sh setup [<folder>] | install | create | start | stop | status"; exit 2;;
 esac

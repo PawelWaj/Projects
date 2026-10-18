@@ -12,14 +12,16 @@ Verified on macOS with Artemis 2.44.0, Camel 4.18.4, JDK 21 (18 Oct 2026); the s
 
 ## 1 Once per machine
 
+Unzip the Artemis download by hand (any folder, e.g. next to the workspace), then one command:
 ```
-# .osb-kit.env (init_env.sh writes the defaults): ARTEMIS_HOME, ARTEMIS_BROKER, ARTEMIS_ZIP, ARTEMIS_USER
 cd /e/Pawel/work && . ./.osb-kit.env
 export ARTEMIS_PASSWORD='<choose one>'             # per session, never in a file
-export ARTEMIS_ZIP=/e/Pawel/apache-artemis-<version>-bin.zip   # the download (artemis.apache.org, or the team's share)
-bash $KIT/broker/artemis_setup.sh install          # unpacks next to the workspace -> prints the ARTEMIS_HOME line for .osb-kit.env
-bash $KIT/broker/artemis_setup.sh create           # instance in ARTEMIS_BROKER: login required, ports 61616 / 5672 / 8161
+bash $KIT/broker/artemis_setup.sh setup /e/<path>/apache-artemis-<version>
 ```
+`setup` remembers the folder (`ARTEMIS_HOME`) and the instance folder (`ARTEMIS_BROKER`, default next to the
+workspace) in `.osb-kit.env`, creates the instance (user `ARTEMIS_USER`, login required, ports 61616 / 5672 / 8161)
+and starts it. The folder is also found by itself when it sits next to the workspace (`apache-artemis-*`).
+Alternative without unzipping by hand: `ARTEMIS_ZIP=<download> bash $KIT/broker/artemis_setup.sh install`, then `create`.
 `JAVA_HOME` must be the JDK the routes use (JDK 21): the broker and the clients on the same Java.
 
 ## 2 Every session
