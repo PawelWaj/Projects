@@ -43,5 +43,6 @@
   "scenario_fields": [
     "hasPartnerEngagement",
     "hasMainEngagement"
-  ]
+  ],
+  "generated_fields": []
 }

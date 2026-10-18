@@ -243,9 +243,31 @@ class FlowParityTest {
         // the body that is compared: the reply to the caller if the flow has one, else the first queue output
         String body = outs.get(targets.contains(REPLY) ? targets.indexOf(REPLY) : 0).getBody(String.class);
         if (Files.exists(json)) {
-            assertEquals(JSON.readTree(json.toFile()), JSON.readTree(body));
+            JsonNode want = JSON.readTree(json.toFile());
+            JsonNode got = JSON.readTree(body);
+            for (JsonNode g : CFG.path("generated_fields")) {        // OSB generated these (fresh UUID, time): presence only
+                assertFalse(at(got, g.asText()).isMissingNode(), g.asText() + " must be present (OSB generates it)");
+                drop(want, g.asText());
+                drop(got, g.asText());
+            }
+            assertEquals(want, got);
         } else {
             assertTrue(xmlEqual(Files.readString(xml), body), "body differs from the OSB result (logged by OSB or the original XQuery)");
+        }
+    }
+
+    static JsonNode at(JsonNode n, String dotted) {
+        for (String p : dotted.split("\\.")) {
+            n = n.path(p);
+        }
+        return n;
+    }
+
+    static void drop(JsonNode n, String dotted) {
+        int i = dotted.lastIndexOf('.');
+        JsonNode parent = i < 0 ? n : at(n, dotted.substring(0, i));
+        if (parent instanceof com.fasterxml.jackson.databind.node.ObjectNode o) {
+            o.remove(i < 0 ? dotted : dotted.substring(i + 1));
         }
     }
 

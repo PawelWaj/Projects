@@ -46,7 +46,7 @@ def main() -> int:
     env = dict(os.environ)
     if os.name == "nt" and env.get("JAVA_HOME"):
         env["JAVA_HOME"] = win_path(env["JAVA_HOME"])          # mvn.cmd needs C:/..., Git Bash exports /c/...
-    r = subprocess.run([exe] + args[1:] + ["-f", str(mod / "pom.xml"), "test"], capture_output=True, text=True,
+    r = subprocess.run([exe] + args[1:] + ["-f", str(mod / "pom.xml"), "clean", "test"], capture_output=True, text=True,
                        errors="replace", env=env)
     log.write_text(r.stdout + r.stderr, encoding="utf-8")
     t = f = e = s = 0

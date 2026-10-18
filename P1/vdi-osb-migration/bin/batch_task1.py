@@ -181,7 +181,7 @@ def process_flow(flow: str, info: dict, d: Path, a, peers: dict, base_report: di
             for k, v in br.items():
                 if v not in ("", "?", None):
                     seen[k] += 1
-        missing = [k for k in dims if not k.startswith("hdr_") and n and seen[k.split(":")[-1].split(".")[-1]] == 0 and seen[k] == 0]
+        missing = [k for k in dims if not k.startswith("hdr_") and n and seen[re.split(r"[./]", k.split(":", 1)[-1])[-1]] == 0 and seen[k] == 0]
         if missing:
             row["problems"].append(f"scenario field {', '.join(missing)} found in none of {n} messages: check scenario_dims in "
                                    "research.json (wrong path?) before building tests")

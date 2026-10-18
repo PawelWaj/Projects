@@ -291,6 +291,41 @@ def test_props(m: dict) -> list[str]:
             + [f"backend.{k}=mock:backend-{k}" for k in m["backends"]] + TEST_BROKER_LINES)
 
 
+UUID_RX = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+TIME_RX = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
+
+
+def generated_fields(parity: Path) -> list[str]:
+    """Fields of OSB's logged output that OSB generated itself: in EVERY case with an expected-output.json the value is a
+    UUID, an ISO timestamp or an epoch-millis number, and it appears nowhere in that case's input. No route can
+    reproduce such a value; the parity test checks the field is present instead of its value."""
+    dec = json.JSONDecoder(strict=False)
+    load = lambda p: dec.raw_decode(p.read_text(encoding="utf-8").strip())[0]  # noqa: E731
+
+    def flat(x, p=""):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                yield from flat(v, f"{p}.{k}" if p else k)
+        else:
+            yield p, x
+    counts, n = {}, 0
+    for exp in parity.rglob("expected-output.json"):
+        inp = exp.parent / "input.payload"
+        if not inp.is_file():
+            continue
+        try:
+            out, raw_in = dict(flat(load(exp))), inp.read_text(encoding="utf-8")
+        except ValueError:
+            continue
+        n += 1
+        for k, v in out.items():
+            sv = str(v)
+            gen = (UUID_RX.match(sv) or TIME_RX.match(sv) or (isinstance(v, int) and not isinstance(v, bool) and v > 10**12)) and sv not in raw_in
+            if gen:
+                counts[k] = counts.get(k, 0) + 1
+    return sorted(k for k, c in counts.items() if n and c == n)
+
+
 def unmapped_scenarios(m: dict, facts: dict) -> list[str]:
     keys = [x["scenario"] for x in m["mapping"] if x["scenario"]]
     return [s.get("scenario", "") for s in facts.get("log_scenarios") or [] if not any(matches(k, s.get("scenario", "")) for k in keys)]
@@ -445,7 +480,8 @@ def main() -> int:
            "backends": {k: {"mock": f"mock:backend-{k}", "response_use": b.get("response_use", "")} for k, b in m["backends"].items()},
            "scenario_mapping": [{"scenario": x["scenario"], "outputs": x["outputs"]} for x in m["mapping"]],
            "correlation_header": m["corr"], "correlation_generated": bool(m.get("corr_generated")),
-           "scenario_fields": [h for h, _ in m["dims"]], "payload_format": m["format"]}
+           "scenario_fields": [h for h, _ in m["dims"]], "payload_format": m["format"],
+           "generated_fields": generated_fields(o / "src/test/resources/parity") if (o / "src/test/resources/parity").is_dir() else []}
     tp = o / f"src/test/java/{jdir}/FlowParityTest.java"
     cp = o / "src/test/resources/flow-test.json"
     for path, text in [(tp, test), (cp, json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")]:

@@ -107,6 +107,18 @@ def set_path(obj, path: list[str], value) -> bool:
     return True
 
 
+def set_any(obj, name: str, value) -> bool:
+    """//name: set the first field with that name at any depth (where OSB's //*:name would find it)."""
+    if isinstance(obj, dict):
+        if name in obj:
+            obj[name] = value
+            return True
+        return any(set_any(v, name, value) for v in obj.values())
+    if isinstance(obj, list):
+        return any(set_any(v, name, value) for v in obj)
+    return False
+
+
 def to_xml(name: str, value) -> str:
     if isinstance(value, dict):
         return f"<{name}>" + "".join(to_xml(k, v) for k, v in value.items()) + f"</{name}>"
@@ -161,7 +173,7 @@ def main() -> int:
                     continue                                   # header dims (hdr_*) go to headers.json
                 val = {"true": True, "false": False}.get(v, v) if op == "=" else (False if v == "true" else "other")
                 shown[k] = str(val).lower() if isinstance(val, bool) else str(val)
-                ok &= set_path(msg, path, val) or set_path(msg, path[1:], val)
+                ok &= set_path(msg, path, val) or set_path(msg, path[1:], val) or set_any(msg, path[-1], val)
             if not ok:
                 left.append(key)
                 continue
