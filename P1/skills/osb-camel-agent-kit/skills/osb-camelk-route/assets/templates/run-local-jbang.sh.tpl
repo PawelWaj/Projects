@@ -6,6 +6,7 @@
 #   bash run-local.sh run                           start the routes (camel run), Ctrl+C stops them
 #   bash run-local.sh send <proxy> <case folder>    send one case (input.payload + headers.json) as the OSB caller would
 #   bash run-local.sh stat                          message counts of every queue on the broker
+#   bash run-local.sh stop                          stop the routes of this project (camel stop, works on Windows too)
 set -u
 cd "$(dirname "$0")"
 CAMEL_VERSION="${CAMEL_VERSION:-@@CAMEL@@}"
@@ -49,6 +50,8 @@ case "${1:-}" in
     dest=${out%% *}; props=${out#* }
     art producer --protocol CORE --destination "$dest" --message-count 1 --message "$(cat "$c/input.payload")" --properties "$props" 2>&1 \
       | grep -E "Produced|rror|xception" | head -3 ;;
+  stop)
+    camelcli stop "$(grep -E '^camel.main.name=' application.properties | cut -d= -f2 | tr -d '\r')" ;;
   stat)
     art queue stat --maxRows 500 --maxColumnSize -1 2>&1 | grep -E "^\|" ;;
   *) sed -n '2,8p' "$0" ;;

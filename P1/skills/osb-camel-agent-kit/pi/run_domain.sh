@@ -196,12 +196,11 @@ do_matrix() {   # mutation check on every green module (MUTATE=0 skips it), then
   "$PY" "$SK/test_matrix.py" --domain "$WS/modules" -o "$WS/domain"
 }
 
-stop_routes() {   # leftover `camel run` processes of the delivery (a route that started late keeps its folder locked on Windows)
-  if command -v powershell > /dev/null; then
-    powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='java.exe'\" | Where-Object { (\$_.CommandLine -like '*-route.yaml*local.properties*' -or \$_.CommandLine -like '*jbang*') -and \$_.CommandLine -notlike '*artemis*' } | ForEach-Object { Stop-Process -Id \$_.ProcessId -Force; Write-Output ('   stopped a leftover route process ' + \$_.ProcessId) }" 2> /dev/null
-  else
-    pkill -f "run [^ ]*-route.yaml application.properties local.properties" 2> /dev/null && echo "   stopped a leftover route process"
-  fi
+stop_routes() {   # leftover `camel run` of the delivery projects (a route that started late keeps its folder locked on Windows):
+  local d="$1" P            # camel stop <name> per project: file-based, no PowerShell or taskkill needed
+  for P in $(ls -d "$d"/*/ 2>/dev/null | xargs -n1 basename | grep -Ex "($PROJECTS)"); do
+    [ -f "$d/$P/run-local.sh" ] && (cd "$d/$P" && bash run-local.sh stop 2>&1 | grep -E "Shutting down" | sed 's/^/   /')
+  done
   return 0
 }
 
@@ -213,7 +212,7 @@ do_review() {   # tests -> build -> verify -> flat -> mvn test (flat) -> broker 
   if [ "${REVIEW_TESTS:-1}" = 1 ]; then echo "== 1 tests";  do_tests >> "$LOG" 2>&1; grep -E "^\{\"scenarios|INCOMPLETE" "$LOG" | tail -5; else echo "== 1 tests (skipped)"; fi
   echo "== 2-3 (no pi build: the route is generated from the OSB pipeline in step 4)"
   echo "== 4 delivery (no pom: route from the OSB pipeline, Artemis kamelets, JBang tests)"
-  stop_routes
+  stop_routes "$D"
   "$PY" "$SK/assemble_jbang.py" "$WS" --osb-app "$APP" --app "$app" --projects "$PROJECTS" | tee -a "$LOG"
   local stop=0 P
   echo "== 5 tests (jbang test/*Test.java, no broker)"
@@ -246,7 +245,7 @@ do_review() {   # tests -> build -> verify -> flat -> mvn test (flat) -> broker 
           sleep 8; echo "## queues after (MESSAGES ADDED includes earlier runs; compare with stat-before.txt)"; bash run-local.sh stat
           echo "## route log"; grep -oE "(Request Received|Sending to [^ ]*|Error captured)[^:]*" test/broker-run.log | sed -E 's/ with TraceID.*//' | sort | uniq -c; } > test/BROKER_RUN.txt
         fi
-        kill "$pid" 2> /dev/null; stop_routes > /dev/null
+        bash run-local.sh stop > /dev/null 2>&1; sleep 3; kill "$pid" 2> /dev/null
         for x in $(ls docs); do cp test/BROKER_RUN.txt "docs/$x/BROKER_RUN.txt"; done )
       if grep -q "ROUTE DID NOT START" "$D/$P/test/BROKER_RUN.txt"; then echo "   $P: ROUTE DID NOT START (see $D/$P/test/BROKER_RUN.txt)"; sed -n '2,6p' "$D/$P/test/BROKER_RUN.txt" | sed 's/^/      /'
       else echo "   $P: $(grep -c '^send' "$D/$P/test/BROKER_RUN.txt") case(s) sent, see $D/$P/test/BROKER_RUN.txt"; fi
