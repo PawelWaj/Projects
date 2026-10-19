@@ -575,6 +575,28 @@ class SyntheticAndReplyTests(unittest.TestCase):
             self.assertFalse(old.exists())
             self.assertFalse(any("resource-old" in k for k in json.loads((mod / ".scaffold.json").read_text())["generated"]))
 
+    def test_short_output_names_and_default_row(self):
+        """Table outputs written short ('bulk-register') resolve to the output key; 'x=<other>' = OSB default branch."""
+        pack = {**self.PACK, "scenario_dims": ["header.resource"], "entry": {"transport": "jms", "payload_format": "json"},
+                "outputs": [{"name": "a", "business_service": "business-service-bulk-register-bix"},
+                            {"name": "b", "business_service": "business-service-bulk-terminate-bix"},
+                            {"name": "e", "business_service": "business-service-bulk-register-error-queue-bix", "on": "error handler"}],
+                "scenario_mapping": [{"scenario": "resource=Reg", "outputs": ["bulk-register"]},
+                                     {"scenario": "resource=Term", "outputs": ["bulk-terminate"]},
+                                     {"scenario": "resource=<other>", "outputs": ["bulk-terminate"]}]}
+        with tempfile.TemporaryDirectory() as d:
+            res, mod = Path(d, "res"), Path(d, "mod")
+            res.mkdir()
+            (res / "research.json").write_text(json.dumps(pack))
+            r = subprocess.run([sys.executable, str(self.SK / "scaffold_camelk.py"), str(res), "-o", str(mod), "--project", "s-prj"],
+                               capture_output=True, text=True)
+            self.assertNotIn("WARNING", r.stdout)
+            cfg = json.loads((mod / "src/test/resources/flow-test.json").read_text())
+            self.assertEqual([(m["scenario"], m["outputs"]) for m in cfg["scenario_mapping"]],
+                             [("hdr_resource=Reg", ["business-service-bulk-register-bix"]),
+                              ("hdr_resource=Term", ["business-service-bulk-terminate-bix"]),
+                              ("hdr_resource!=Reg|hdr_resource!=Term", ["business-service-bulk-terminate-bix"])])
+
     def test_domain_coverage_groups(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d, "inv")
