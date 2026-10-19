@@ -14,10 +14,15 @@ if [ ! -f "$JAR" ]; then
     || { echo "[jbang.sh] could not fetch the JBang jar: check MVN_ARGS / Nexus, or set JBANG_JAR=<path of jbang-cli-$V-all.jar>" >&2; exit 2; }
 fi
 wp() { if command -v cygpath > /dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
-# the launcher protocol of JBang: exit code 255 = "run the command printed on stdout"
+# the launcher protocol of JBang: exit code 255 = "run the command printed on stdout"; tell JBang the command is run
+# by bash (as its own launcher script does), so Windows paths come out quoted for bash
+export JBANG_RUNTIME_SHELL=bash
 out=$("$JAVA" -jar "$(wp "$JAR")" "$@")
 rc=$?
 if [ "$rc" -eq 255 ]; then
+  if command -v cygpath > /dev/null; then          # Windows: an unquoted @C:\...\x.args argument file -> forward slashes
+    if [[ $out =~ @[A-Za-z]:[^\ \"\']+ ]]; then tok=${BASH_REMATCH[0]}; out=${out/"$tok"/"${tok//\\//}"}; fi
+  fi
   eval "exec $out"
 fi
 [ -n "$out" ] && printf '%s\n' "$out"
