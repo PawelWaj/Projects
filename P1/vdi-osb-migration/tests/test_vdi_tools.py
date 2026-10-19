@@ -602,7 +602,7 @@ class SyntheticAndReplyTests(unittest.TestCase):
         sys.path.insert(0, str(self.SK))
         import scaffold_camelk
         with tempfile.TemporaryDirectory() as d:
-            for i, (inp, out) in enumerate([({"data": {"a": 1, "birthDate": "x1"}}, {"a": 1, "birthDate": "x1", "publishDate": "19/10/2026", "timestamp": 442052055}),
+            for i, (inp, out) in enumerate([({"data": {"a": 1, "birthDate": "x1"}}, {"a": 1, "birthDate": "x1", "publishDate": "19/10/2026", "timestamp": 12345}),
                                             ({"data": {"a": 2, "birthDate": "x2"}}, {"a": 2, "birthDate": "x2", "publishDate": "20/10/2026", "timestamp": 1}),
                                             ({"body": {"a": 3}}, {"body": {"a": 3}})]):
                 c = Path(d, f"s/c{i}")
