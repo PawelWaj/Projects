@@ -49,7 +49,8 @@ def short_ref(ref: str) -> str:
     return ref.rsplit("/", 1)[-1] if ref else ""
 
 
-KNOWN_NXSD = {"id", "type", "sourceExpr", "nxsd", "schemaElement", "xqueryText", "assignVariable"}
+KNOWN_NXSD = {"id", "type", "sourceExpr", "nxsd", "schemaElement", "xqueryText", "assignVariable", "assign-variable",
+              "enforceSchemaOrder"}
 KNOWN_XQT = {"resource", "param", "path", "xqueryText"}
 
 
@@ -91,11 +92,14 @@ class Walker:
                     self.unknown.add(f"nxsdTranslation/{loc(c.tag)}")
             typ = (first(a, "type").text or "").strip() if first(a, "type") is not None else ""
             nx = first(a, "nxsd")
-            step = {"op": "nxsd", "type": typ, "nxsd": short_ref(nx.get("ref", "") if nx is not None else ""),
+            eso = first(a, "enforceSchemaOrder")
+            step = {"op": "nxsd", "type": typ, "enforce_schema_order": (eso.text or "").strip() if eso is not None else "", "nxsd": short_ref(nx.get("ref", "") if nx is not None else ""),
                     "nxsd_ref": nx.get("ref", "") if nx is not None else "", "root": text_of(first(a, "schemaElement")),
                     "source": text_of(first(a, "sourceExpr"))[:200]}
             target = [loc(c.tag) for c in a if loc(c.tag) not in KNOWN_NXSD]
-            var = next((c.text.strip() for c in a.iter() if loc(c.tag) in ("assignVariable", "variable", "var") and c.text), None)
+            var = next(((c.text or "").strip() or c.get("varName") or c.get("name") for c in a.iter()
+                        if loc(c.tag) in ("assignVariable", "assign-variable", "variable", "var")
+                        and ((c.text or "").strip() or c.get("varName") or c.get("name"))), None)
             if var:
                 st["vars"][var] = st["body"] + [step]
             else:                                   # result lands in $body (replace-body-content) or is picked up next
