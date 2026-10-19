@@ -45,6 +45,16 @@ Check before going on:
   a payload field anywhere is `//<name>`), then rerun task1.
 - residue warnings: add the field to `MASK_JSON_KEYS` and rerun task1.
 
+## 2b Check what OSB does to the body (per flow, no agent)
+
+```
+python $KIT/skills/osb-camelk-route/scripts/body_chain.py "$APP/<project>/<...>/<proxy>.pipeline" --summary
+```
+Every route line shows the format the queue gets and the chain, e.g.
+`route -> <bs>: format=xml chain: nxsd(Native-To-XML <schema>) -> xquery(<xqy>)`; error routes `format=native`.
+`unknown_tags` or `format=unknown` = an OSB construct the generator does not know yet: stop and report it. The
+delivery runs exactly this chain with OSB's own files; the agent writes no transformation code.
+
 ## 3 Everything else in one command
 
 ```
@@ -77,6 +87,15 @@ Rerun only what is needed: `REVIEW_TESTS=0` repeats steps 4 to 8 (a few minutes,
    rerun with `REVIEW_TESTS=0`.
 3. Send the archive only through the client's channel: it contains masked log data and the original XQuery logic.
 
+## How the broker test works (step 6)
+
+`run-local.sh run` starts the routes with `camel run`; the source kamelet connects to Artemis (core JMS) and creates
+the shared durable subscription with the OSB selector as its filter. `run-local.sh send <proxy> <case>` publishes one
+case to the topic like the OSB caller (body = input.payload, properties = headers.json, plus selector properties OSB
+does not log, e.g. eventType, with the first allowed value). The broker copies it into every subscription whose filter
+matches; the route transforms and sends to the output queue. Evidence: route log lines `Sending to <queue>`, queue
+counts (`stat`), `test/BROKER_RUN.txt`. `run-local.sh stop` = `camel stop <name>` (works without PowerShell).
+
 ## Known traps (seen on the first two flows)
 
 | Symptom | Cause | Fix |
@@ -88,4 +107,10 @@ Rerun only what is needed: `REVIEW_TESTS=0` repeats steps 4 to 8 (a few minutes,
 | broker: route does not start, "Illegal character" | Windows line endings | fixed in the kit; take the latest download |
 | broker: nothing arrives, 0 past the selector | the selector needs a property OSB does not log (e.g. eventType) | filled automatically with an allowed value, listed in the note |
 | broker: a case "filtered by the subscription selector" | the selector excludes that resource | the case or the selector is wrong: a question for the review, not a route bug |
+| `jbang` not installed, no internet | normal on the client machine | nothing to do: `Common-setup/jbang.sh` takes JBang from Maven/Nexus, Camel JBang from `camel-jbang-main`; an installed jbang/camel is used first |
+| `could not open C:Users...jbang....args` | Windows argument-file path lost its backslashes | fixed in the kit (`JBANG_RUNTIME_SHELL=bash`); take the latest download |
+| broker step: route started late, nothing routed, folder locked afterwards | first `camel run` downloads for minutes | the step waits up to 10 min and sends only after "started"; a leftover route: `bash run-local.sh stop` in that folder |
+| broker step: subscription queue CONSUMER 1 but MESSAGES ADDED 0 | the message properties do not match the selector (wrong value, or spaces lost) | compare `test/resources/<proxy>/parity/**/headers.json` with `<proxy>.flow.input` in local.properties |
+| old subscription queue from an earlier setup | a queue with the same name keeps its old filter | `artemis queue delete --name <proxy>` once; the route recreates it |
+| tests green but the body is "the input" | the logged BS body was OSB's `$request`, not what OSB sent | the body now comes from `body_chain` + OSB's .xqy; golden only from `expected-output.xml` (OSB's real output) |
 | pi call hangs 30 min / 429 | model platform limit | pacer (`llm_pacer.py`), smaller `PI_FIX_ROUNDS`, rerun later: finished flows are skipped |
