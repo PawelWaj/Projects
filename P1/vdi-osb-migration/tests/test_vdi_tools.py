@@ -557,6 +557,24 @@ class SyntheticAndReplyTests(unittest.TestCase):
             self.assertEqual([m["scenario"] for m in cfg["scenario_mapping"]], ["hdr_resource=Bulk A", "hdr_resource=Bulk B"])
             self.assertNotIn('"header.resource"', next(mod.rglob("OsbJson.java")).read_text(), "a header is no payload path")
 
+    def test_stale_synthetic_removed(self):
+        """A synthetic case written for an old mapping row is removed (and unfrozen) when the mapping changes."""
+        with tempfile.TemporaryDirectory() as d:
+            res, mod = Path(d, "res"), Path(d, "mod")
+            res.mkdir()
+            (res / "research.json").write_text(json.dumps(self.PACK))
+            run = lambda *a: subprocess.run([sys.executable, *map(str, a)], capture_output=True, text=True)  # noqa: E731
+            run(self.SK / "scaffold_camelk.py", res, "-o", mod, "--project", "s-prj")
+            old = mod / "src/test/resources/parity/s-prj-get-status-synthetic/resource-old/case1"
+            old.mkdir(parents=True)
+            (old.parent / "SCENARIO.txt").write_text("s-prj/get-status|success|resource=Old\n")
+            (old / "input.payload").write_text("{}")
+            run(self.SK / "scaffold_camelk.py", res, "-o", mod, "--project", "s-prj", "--freeze-synthetic")
+            r = run(self.SK / "synth_from_schema.py", mod, d, "--research", res / "research.json")
+            self.assertIn("removed_stale_synthetic", r.stdout, r.stderr)
+            self.assertFalse(old.exists())
+            self.assertFalse(any("resource-old" in k for k in json.loads((mod / ".scaffold.json").read_text())["generated"]))
+
     def test_domain_coverage_groups(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d, "inv")

@@ -16,6 +16,7 @@ Fake values only, no data. Prints {"written": n, "left_for_pi": [...]}"""
 import argparse
 import json
 import re
+import shutil
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -138,6 +139,16 @@ def main() -> int:
     meta = json.loads((a.module / ".scaffold.json").read_text(encoding="utf-8"))
     res = json.loads(a.research.read_text(encoding="utf-8")) if a.research and a.research.is_file() else {}
     dims = {d.lstrip("/").split(".")[-1]: d.lstrip("/").split(".") for d in res.get("scenario_dims") or []}
+    flow_dir = a.module / "src/test/resources/parity" / f"{meta['project']}-{meta['proxy']}-synthetic"
+    rows = [m["scenario"] for m in cfg.get("scenario_mapping", [])]
+    for sc in sorted(flow_dir.glob("*/SCENARIO.txt")) if flow_dir.is_dir() else []:
+        v = dict(p.split("=", 1) for p in sc.read_text(encoding="utf-8").strip().split("|") if "=" in p)
+        if v and not any(hit(r, v) for r in rows):        # written for a mapping that has changed since: stale
+            shutil.rmtree(sc.parent)
+            gone = sc.parent.relative_to(a.module).as_posix() + "/"
+            meta["generated"] = {k: h for k, h in meta["generated"].items() if not k.startswith(gone)}   # unfreeze only these
+            (a.module / ".scaffold.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+            print(json.dumps({"removed_stale_synthetic": sc.parent.name}))
     have = covered_keys(a.module)
     todo = [m for m in cfg.get("scenario_mapping", []) if not any(hit(m["scenario"], v) for v in have)]
     schema_file = a.schema
@@ -153,7 +164,6 @@ def main() -> int:
             sch = Schema(schema_file)
         except ET.ParseError:
             sch = None
-    flow_dir = a.module / "src/test/resources/parity" / f"{meta['project']}-{meta['proxy']}-synthetic"
     for i, row in enumerate(todo, 1):
         key, outs = row["scenario"], row.get("outputs") or []
         err_only = outs == [cfg.get("error_output")]
