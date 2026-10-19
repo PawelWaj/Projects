@@ -11,6 +11,20 @@ export MASK_KEY='<from the data owner>' ARTEMIS_PASSWORD='<broker password>'
 P='a-prj|b-prj'                     # the projects that go to review together (regex on whole names)
 ```
 
+## Session in one script (also after the VDI was restored)
+
+```
+cd /e/Pawel/work
+bash <kit>/pi/vdi_session.sh setup <osb-application-folder>   # new/restored machine: .osb-kit.env + preflight
+bash <kit>/pi/vdi_session.sh start                            # pacer for pi (rate limit) + local Artemis
+export EXPORT=<Splunk CSV>                                    # only when new projects need test cases (task1)
+bash <kit>/pi/vdi_session.sh flows 'a-prj|b-prj'              # research -> task1 -> body chain -> review archive
+bash <kit>/pi/vdi_session.sh review 'a-prj|b-prj'             # later: delivery + tests + broker + archive, no pi
+bash <kit>/pi/vdi_session.sh status | stop [--broker]
+```
+Passwords (Artemis, MASK_KEY) are asked for, never stored. Logs: `domain/pacer.log`, `domain/session-<date>.log`.
+The steps below are what the script runs; use them one by one when something needs a closer look.
+
 ## 0 Once per session
 
 | Check | Command | Good |

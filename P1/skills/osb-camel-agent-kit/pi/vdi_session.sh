@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# One script for a working session on the client VDI (also after the VDI was restored or rebuilt): settings, model
+# pacer, local broker, then whole projects from research to the review archive. Run it in the workspace (e.g.
+# /e/Pawel/work) in Git Bash.
+#
+#   bash <kit>/pi/vdi_session.sh setup <osb-app-folder>   once per (new) machine: .osb-kit.env + preflight check
+#   bash <kit>/pi/vdi_session.sh start                    pacer (pi -> 127.0.0.1:8765 -> model platform) + broker
+#   bash <kit>/pi/vdi_session.sh status                   what is running, kit version, settings
+#   bash <kit>/pi/vdi_session.sh flows 'a-prj|b-prj'      research (pi) -> task1 (needs EXPORT) -> review archive
+#   bash <kit>/pi/vdi_session.sh review 'a-prj|b-prj'     only the delivery part (no pi): delivery, tests, broker, archive
+#   bash <kit>/pi/vdi_session.sh stop [--broker]          routes stopped, pi back to the platform, pacer stopped
+#
+# Secrets are never written to a file: ARTEMIS_PASSWORD and MASK_KEY are asked for when they are not exported.
+# Logs: domain/pacer.log (one line per model call), domain/session-<date>.log (everything a flows/review run printed).
+set -u
+KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+WS=$(pwd)
+for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
+KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
+PACER_PORT=${PACER_PORT:-8765}
+mkdir -p "$WS/domain"
+LOG="$WS/domain/session-$(date +%F).log"
+
+ask() {   # ask <VAR> <prompt>: read a secret into VAR unless it is exported already
+  if [ -z "${!1:-}" ]; then read -r -s -p "$2: " v; echo; export "$1=$v"; fi
+}
+pacer_up() { "$PY" -c "import socket,sys; s=socket.socket(); s.settimeout(1); sys.exit(0 if s.connect_ex(('127.0.0.1', $PACER_PORT)) == 0 else 1)"; }
+pi_on_pacer() { grep -q "127.0.0.1:$PACER_PORT" "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/models.json" 2> /dev/null; }
+broker_up() { [ -n "${ARTEMIS_PASSWORD:-}" ] && bash "$KIT/broker/artemis_setup.sh" status 2> /dev/null | grep -q "^running"; }
+
+start_pacer() {
+  if pacer_up; then echo "pacer: already running on 127.0.0.1:$PACER_PORT"; else
+    echo "pacer: starting (log $WS/domain/pacer.log)"
+    pi_on_pacer || "$PY" "$KIT/pi/llm_pacer.py" pi-on --port "$PACER_PORT"
+    nohup "$PY" "$KIT/pi/llm_pacer.py" --port "$PACER_PORT" >> "$WS/domain/pacer.log" 2>&1 &
+    echo $! > "$WS/domain/pacer.pid"
+    for i in $(seq 1 20); do pacer_up && break; sleep 1; done
+    pacer_up && echo "pacer: up (gap ${PACER_GAP:-4}s, retries on 429)" || { echo "pacer: did not start, see domain/pacer.log"; tail -5 "$WS/domain/pacer.log"; return 1; }
+  fi
+  pi_on_pacer || "$PY" "$KIT/pi/llm_pacer.py" pi-on --port "$PACER_PORT"
+  echo "pi: models.json -> pacer"
+}
+
+start_broker() {
+  [ -n "${ARTEMIS_HOME:-}" ] || { echo "broker: ARTEMIS_HOME not set in .osb-kit.env (bash \$KIT/broker/artemis_setup.sh setup <folder>)"; return 1; }
+  ask ARTEMIS_PASSWORD "Artemis password (user ${ARTEMIS_USER:-artemis})"
+  if broker_up; then echo "broker: already running"; return 0; fi
+  [ -f "${ARTEMIS_BROKER:-x}/etc/broker.xml" ] || bash "$KIT/broker/artemis_setup.sh" create
+  bash "$KIT/broker/artemis_setup.sh" start
+}
+
+case "${1:-}" in
+  setup)
+    APPDIR=${2:?usage: vdi_session.sh setup <osb-application-folder>}
+    [ -f ./.osb-kit.env ] && echo "keeping ./.osb-kit.env (delete it to regenerate)" || bash "$KIT/pi/init_env.sh" "$APPDIR"
+    . ./.osb-kit.env
+    bash "$KIT/pi/preflight.sh"
+    echo; echo "next: bash $KIT/pi/vdi_session.sh start" ;;
+
+  start)
+    echo "kit: $KIT ($(cd "$KIT/../.." 2>/dev/null && git log --oneline -1 2>/dev/null || ls -l --time-style=+%F "$KIT/pi/run_domain.sh" | awk '{print "downloaded " $6}'))"
+    "${JAVA_HOME:+$JAVA_HOME/bin/}java" -version 2>&1 | grep -v "Picked up" | head -1
+    mvn -v 2> /dev/null | head -1 || echo "mvn not on PATH: check .osb-kit.env"
+    start_pacer
+    start_broker
+    echo; echo "ready. Projects: bash $KIT/pi/vdi_session.sh flows 'a-prj|b-prj'   (export EXPORT=<Splunk CSV> and MASK_KEY for task1)" ;;
+
+  status)
+    echo "workspace $WS · APP=${APP:-<unset>} · kit $KIT"
+    pacer_up && echo "pacer: running on :$PACER_PORT" || echo "pacer: not running"
+    pi_on_pacer && echo "pi: talks to the pacer" || echo "pi: talks to the platform directly"
+    [ -n "${ARTEMIS_PASSWORD:-}" ] && bash "$KIT/broker/artemis_setup.sh" status | tail -1 || echo "broker: (export ARTEMIS_PASSWORD to check)"
+    [ -f domain/STATUS.md ] && tail -1 domain/STATUS.md ;;
+
+  flows)
+    P=${2:?usage: vdi_session.sh flows 'a-prj|b-prj'}
+    pacer_up || start_pacer || exit 1
+    ask ARTEMIS_PASSWORD "Artemis password (user ${ARTEMIS_USER:-artemis})"
+    broker_up || start_broker || echo "broker not running: the review stage skips the broker test"
+    {
+      echo "=== $(date '+%F %T') flows $P"
+      PROJECTS="$P" bash "$KIT/pi/run_domain.sh" research
+      if [ -n "${EXPORT:-}" ] && [ -f "$EXPORT" ]; then
+        ask MASK_KEY "MASK_KEY (from the data owner)"
+        PROJECTS="$P" bash "$KIT/pi/run_domain.sh" task1
+        echo "--- check task1/SUMMARY.md (CHECK lines = wrong scenario field in research.json) before trusting the tests"
+        grep -E "CHECK|FAIL" "$WS/task1/SUMMARY.md" 2> /dev/null | head -10
+      else
+        echo "--- task1 skipped: no EXPORT (Splunk CSV); existing test cases are used"
+      fi
+      for pipe in $(PROJECTS="$P" bash "$KIT/pi/run_domain.sh" list 2>/dev/null | awk 'NF==2 && $2 != "proxies" {print $1 "/" $2}'); do
+        f=$(find "$APP/${pipe%%/*}" -name "${pipe##*/}.pipeline" | head -1)
+        [ -n "$f" ] && "$PY" "$KIT/skills/osb-camelk-route/scripts/body_chain.py" "$f" --summary
+      done
+      PROJECTS="$P" bash "$KIT/pi/run_domain.sh" review
+    } 2>&1 | tee -a "$LOG" ;;
+
+  review)
+    P=${2:?usage: vdi_session.sh review 'a-prj|b-prj'}
+    ask ARTEMIS_PASSWORD "Artemis password (user ${ARTEMIS_USER:-artemis})"
+    broker_up || start_broker || echo "broker not running: the review stage skips the broker test"
+    REVIEW_TESTS=0 PROJECTS="$P" bash "$KIT/pi/run_domain.sh" review 2>&1 | tee -a "$LOG" ;;
+
+  stop)
+    D=$(ls -d "$WS"/delivery/*/ 2>/dev/null | head -1)
+    [ -n "$D" ] && [ -f "$D/run.sh" ] && (cd "$D" && bash run.sh stop)
+    pi_on_pacer && "$PY" "$KIT/pi/llm_pacer.py" pi-off
+    if [ -f "$WS/domain/pacer.pid" ]; then kill "$(cat "$WS/domain/pacer.pid")" 2> /dev/null; rm -f "$WS/domain/pacer.pid"; fi
+    pacer_up && echo "pacer still listening on :$PACER_PORT (close its window)" || echo "pacer: stopped"
+    if [ "${2:-}" = "--broker" ]; then ask ARTEMIS_PASSWORD "Artemis password"; bash "$KIT/broker/artemis_setup.sh" stop; fi ;;
+
+  *) sed -n '2,16p' "$0"; exit 2 ;;
+esac
