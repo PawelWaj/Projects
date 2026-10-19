@@ -621,6 +621,19 @@ class SyntheticAndReplyTests(unittest.TestCase):
         self.assertFalse(e.passes(sel, {"resource": "C", **e.fill_for_selector(sel, {"resource": "C"})}))
         self.assertIsNone(e.evaluate("a LIKE 'x%'", {}))
 
+    def test_review_note_reads_broker_run(self):
+        """review_note.py turns the e2e_local.sh output into numbers and review points."""
+        sys.path.insert(0, str(self.SK))
+        import review_note
+        ev = review_note.e2e("   f c1 -> expect q: sent 1 message(s) to topic://t (+eventType=created, kind=x for the selector) with properties\n"
+                             "   f c2 -> expect (filtered by the subscription selector): sent 1 message(s)\n"
+                             "input of f: subscription queue f: 3 expected past the selector, 3 arrived; selector: x\n"
+                             "f                      outQ          2        1  DIFF\nRESULT: 1 queue(s) differ\n")
+        self.assertEqual(ev["filled"], {"eventType=created", "kind=x"})
+        self.assertEqual(ev["filtered"], [("f", "c2")])
+        self.assertEqual(ev["rows"], [("f", "outQ", "2", "1", "DIFF")])
+        self.assertEqual(ev["inputs"], [("f", "f", "3", "3")])
+
     def test_domain_coverage_groups(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d, "inv")
