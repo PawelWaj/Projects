@@ -669,6 +669,14 @@ class SyntheticAndReplyTests(unittest.TestCase):
             self.assertTrue((p / "test/XTest.java").is_file() and (p / "transformations/x-nxsd.xsd").is_file())
             self.assertFalse(list((ws / "delivery").rglob("pom.xml")), "no pom in the delivery")
             self.assertIn("| x-register | xml |", (p / "docs/x/BODY_CHAIN.md").read_text())
+            app = ws / "delivery/a"
+            for f in ("README.md", "run.sh", "set-env.sh", "tools/jbang.sh", "tools/artemis.sh", "tools/e2e.sh"):
+                self.assertTrue((app / f).is_file(), f)
+            self.assertIn("| x-prj | x | x-register | xml |", (app / "README.md").read_text())
+            (app / "set-env.sh").write_text("# edited\n")
+            subprocess.run([sys.executable, str(self.SK / "assemble_jbang.py"), str(ws), "--osb-app", str(F / "osbapp"),
+                            "--app", "a", "--projects", "x-prj"], capture_output=True)
+            self.assertEqual((app / "set-env.sh").read_text(), "# edited\n", "an edited set-env.sh is kept")
 
     def test_run_local_send_keeps_spaces_and_fills_selector(self):
         """run-local.sh send: property values keep their spaces; properties the selector needs are filled."""

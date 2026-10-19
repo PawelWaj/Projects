@@ -9,9 +9,10 @@
 #   bash run-local.sh stop                          stop the routes of this project (camel stop, works on Windows too)
 set -u
 cd "$(dirname "$0")"
+[ -f ../set-env.sh ] && . ../set-env.sh               # the settings of the whole folder (JAVA_HOME, MVN_ARGS, ARTEMIS_HOME, BROKER_*)
 CAMEL_VERSION="${CAMEL_VERSION:-@@CAMEL@@}"
-# JBang: installed, else ../Common-setup/jbang.sh (the JBang jar through Maven/Nexus, no internet needed)
-jb() { if command -v jbang > /dev/null; then jbang "$@"; else bash ../Common-setup/jbang.sh "$@"; fi; }
+# JBang: installed, else ../tools/jbang.sh (the JBang jar through Maven/Nexus, no internet needed)
+jb() { if command -v jbang > /dev/null; then jbang "$@"; else bash ../tools/jbang.sh "$@"; fi; }
 # Camel CLI: installed, else Camel JBang straight from its Maven artifact (no GitHub catalog)
 camelcli() { if command -v camel > /dev/null; then camel "$@"; else jb --main main.CamelJBang "org.apache.camel:camel-jbang-main:$CAMEL_VERSION" "$@"; fi; }
 SEND_PY=$(cat <<'PYEOF'

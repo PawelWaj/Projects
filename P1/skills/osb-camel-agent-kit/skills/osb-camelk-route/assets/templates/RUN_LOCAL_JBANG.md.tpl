@@ -3,8 +3,8 @@
 No pom. The route is `@@ROUTE@@`, the shared kamelets and Java helpers are in `../Common-setup`, OSB's own
 transformation files (.xqy, nXSD .xsd) in `transformations/`. Needs Java 21 and Maven with access to the Maven
 repository (`export MVN_ARGS="-s <settings.xml>"` if Maven needs it): when JBang / the `camel` CLI are not installed,
-`run-local.sh` takes both from there (`../Common-setup/jbang.sh`, Camel JBang @@CAMEL@@ from its Maven artifact), so no
-internet is needed. Everything below runs in Git Bash in this folder.
+`run-local.sh` takes both from there (`../tools/jbang.sh`, Camel JBang @@CAMEL@@ from its Maven artifact), so no
+internet is needed. Settings: `../set-env.sh`. All flows at once: `../run.sh` (see `../README.md`). Below: this project alone, in Git Bash in this folder.
 
 ## 1 Tests, no broker
 

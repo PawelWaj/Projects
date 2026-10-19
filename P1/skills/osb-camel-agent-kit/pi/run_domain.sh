@@ -215,50 +215,30 @@ do_review() {   # tests -> build -> verify -> flat -> mvn test (flat) -> broker 
   stop_routes "$D"
   "$PY" "$SK/assemble_jbang.py" "$WS" --osb-app "$APP" --app "$app" --projects "$PROJECTS" | tee -a "$LOG"
   local stop=0 P
-  echo "== 5 tests (jbang test/*Test.java, no broker)"
+  echo "== 5 tests (bash run.sh test: jbang, no broker)"
+  local P stop=0
   for P in $(ls -d "$D"/*/ 2>/dev/null | xargs -n1 basename | grep -Ex "($PROJECTS)"); do
-    (cd "$D/$P" && bash run-local.sh test > test/RESULTS.txt 2>&1)
-    echo "   $P: $(grep -E 'tests, [0-9]+ failed' "$D/$P/test/RESULTS.txt" | awk '{t+=$1; f+=$3} END{print t " tests, " f " failed"}')"
-    grep -E "^FAIL|error:" "$D/$P/test/RESULTS.txt" | head -5 | sed 's/^/      /'
-    grep -qE "tests, [0-9]+ failed" "$D/$P/test/RESULTS.txt" || { echo "      did not run: see $D/$P/test/RESULTS.txt"; stop=1; }
+    [ -f "$D/$P/run-local.sh" ] || continue
+    (cd "$D" && bash run.sh test "$P") 2>&1 | sed 's/^/   /' | tee -a "$LOG" | grep -vE "^   == " | head -8
+    grep -qE "tests, [0-9]+ failed" "$D/$P/test/RESULTS.txt" 2>/dev/null || { echo "   $P: tests did not run (see $D/$P/test/RESULTS.txt)"; stop=1; }
   done
   [ "$stop" = 1 ] && { echo "STOP: tests did not run (compile/dependency error above)"; return 1; }
-  echo "== 6 broker run (local Artemis, camel run)"
-  if [ -z "${ARTEMIS_PASSWORD:-}" ]; then
+  echo "== 6 broker run (bash run.sh e2e: camel run against the local Artemis)"
+  if [ -z "${ARTEMIS_PASSWORD:-${BROKER_PASSWORD:-}}" ]; then
     echo "   skipped: export ARTEMIS_PASSWORD='...' first"
   else
     for P in $(ls -d "$D"/*/ | xargs -n1 basename | grep -Ex "($PROJECTS)"); do
-      ( cd "$D/$P" && export BROKER_PASSWORD="$ARTEMIS_PASSWORD" BROKER_USER="${ARTEMIS_USER:-artemis}"
-        bash run-local.sh run > test/broker-run.log 2>&1 & pid=$!
-        for i in $(seq 1 "${BROKER_START_WAIT:-300}"); do        # first run: JBang/Camel download through Nexus (minutes)
-          grep -qE "Apache Camel .* started" test/broker-run.log && break
-          kill -0 "$pid" 2> /dev/null || break
-          sleep 2
-        done
-        if ! grep -qE "Apache Camel .* started" test/broker-run.log; then
-          { echo "# broker run $(date '+%F %T'): ROUTE DID NOT START, nothing sent"; tail -20 test/broker-run.log; } > test/BROKER_RUN.txt
-        else
-        { echo "# broker run $(date '+%F %T')"; bash run-local.sh stat > test/stat-before.txt
-          for x in $(ls test/resources); do
-            for c in $(find "test/resources/$x/parity" -name input.payload | xargs -n1 dirname | sort | awk -F/ '!seen[$(NF-1)]++'); do
-              echo "send $x $(basename "$(dirname "$c")"): $(bash run-local.sh send "$x" "$c" | grep -c Produced) produced"; done; done
-          sleep 8; echo "## queues after (MESSAGES ADDED includes earlier runs; compare with stat-before.txt)"; bash run-local.sh stat
-          echo "## route log"; grep -oE "(Request Received|Sending to [^ ]*|Error captured)[^:]*" test/broker-run.log | sed -E 's/ with TraceID.*//' | sort | uniq -c; } > test/BROKER_RUN.txt
-        fi
-        bash run-local.sh stop > /dev/null 2>&1; sleep 3; kill "$pid" 2> /dev/null
-        for x in $(ls docs); do cp test/BROKER_RUN.txt "docs/$x/BROKER_RUN.txt"; done )
-      if grep -q "ROUTE DID NOT START" "$D/$P/test/BROKER_RUN.txt"; then echo "   $P: ROUTE DID NOT START (see $D/$P/test/BROKER_RUN.txt)"; sed -n '2,6p' "$D/$P/test/BROKER_RUN.txt" | sed 's/^/      /'
-      else echo "   $P: $(grep -c '^send' "$D/$P/test/BROKER_RUN.txt") case(s) sent, see $D/$P/test/BROKER_RUN.txt"; fi
-      grep -E "Sending to|Error captured" "$D/$P/test/BROKER_RUN.txt" | sed 's/^/      /'
+      [ -f "$D/$P/run-local.sh" ] || continue
+      (cd "$D" && BROKER_PASSWORD="${ARTEMIS_PASSWORD:-$BROKER_PASSWORD}" BROKER_USER="${ARTEMIS_USER:-artemis}" bash run.sh e2e "$P") 2>&1 | sed 's/^/   /'
     done
   fi
   echo "== 7 draft handover note"
   "$PY" "$SK/review_note.py" "$D" --projects "$PROJECTS" --modules "$WS/modules" -o "$D/REVIEW_HANDOVER_DRAFT.md"
   echo "== 8 archive"
-  local inc=(Common-setup); [ -f "$D/REVIEW_HANDOVER.md" ] && inc+=(REVIEW_HANDOVER.md) || inc+=(REVIEW_HANDOVER_DRAFT.md)   # the edited note wins
+  local inc=(Common-setup tools README.md run.sh set-env.sh); [ -f "$D/REVIEW_HANDOVER.md" ] && inc+=(REVIEW_HANDOVER.md) || inc+=(REVIEW_HANDOVER_DRAFT.md)   # the edited note wins
   for P in $(ls -d "$D"/*/ | xargs -n1 basename | grep -Ex "($PROJECTS)"); do inc+=("$P"); done
   local tgz; tgz="$(cd "$WS/delivery" && pwd)/${app}_review_${day}.tgz"
-  (cd "$D" && tar czf "$tgz" --exclude=target "${inc[@]}") && echo "   $tgz ($(du -h "$tgz" | cut -f1))"
+  (cd "$D" && tar czf "$tgz" --exclude=target --exclude=.camel-jbang --exclude=broker-run.log --exclude="counts-*.txt" "${inc[@]}") && echo "   $tgz ($(du -h "$tgz" | cut -f1))"
   if [ -f "$D/REVIEW_HANDOVER.md" ]; then echo "   archived your edited REVIEW_HANDOVER.md (compare with the new draft for changed numbers)"
   else echo "next: copy REVIEW_HANDOVER_DRAFT.md to REVIEW_HANDOVER.md in $D, edit it, rerun with REVIEW_TESTS=0, send the archive through the client's channel"; fi
 }

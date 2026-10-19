@@ -269,8 +269,14 @@ def assemble(ws: Path, osb_app: Path, out: Path, app: str, rx: str | None) -> di
     root = out / app
     cs = root / "Common-setup"
     cs.mkdir(parents=True, exist_ok=True)
-    for f in ("osb-jms-source.kamelet.yaml", "osb-jms-sink.kamelet.yaml", "OsbNxsd.java", "OsbXQuery.java", "jbang.sh"):
+    for f in ("osb-jms-source.kamelet.yaml", "osb-jms-sink.kamelet.yaml", "OsbNxsd.java", "OsbXQuery.java"):
         shutil.copy2(TPL / "common" / f, cs / f)
+    pkg = TPL / "package"
+    shutil.copytree(pkg / "tools", root / "tools", dirs_exist_ok=True)
+    shutil.copy2(pkg / "run.sh", root / "run.sh")
+    if not (root / "set-env.sh").is_file():          # an edited set-env.sh is never overwritten
+        shutil.copy2(pkg / "set-env.sh", root / "set-env.sh")
+    summary = []
     n_proj = n_flow = 0
     for pdir in sorted(p for p in (ws / "modules").iterdir() if p.is_dir()):
         project = pdir.name
@@ -338,6 +344,7 @@ def assemble(ws: Path, osb_app: Path, out: Path, app: str, rx: str | None) -> di
                     shutil.copy2(m / f, docs / f)
             (docs / "BODY_CHAIN.md").write_text(body_chain_md(x, bc, cfg, notes), encoding="utf-8", newline="\n")
             flows.append((x, cfg, bc, e_headers))
+            summary.append((project, x, bc, cfg))
             n_flow += 1
         if not flows:
             shutil.rmtree(dst)
@@ -349,7 +356,38 @@ def assemble(ws: Path, osb_app: Path, out: Path, app: str, rx: str | None) -> di
             write_test(dst, short, x, cfg, [f[0] for f in flows], e_headers)
         write_run_local(dst, short, [f[0] for f in flows])
         n_proj += 1
+    (root / "README.md").write_text(readme(app, summary), encoding="utf-8", newline="\n")
     return {"projects": n_proj, "flows": n_flow, "out": str(root)}
+
+
+def readme(app: str, summary: list) -> str:
+    """Top-level README of the delivery: what the flows do and how to run them, in a few steps."""
+    L = [f"# {app}: OSB flows migrated to Camel K", "",
+         "No pom, no kit needed: Java 21, Maven with access to the Maven repository (JBang and Camel come from there when",
+         "they are not installed) and, for the broker test, an unzipped Apache Artemis. Git Bash on Windows.", "",
+         "## Run it", "",
+         "1. Edit `set-env.sh` once: `JAVA_HOME`, `MVN_ARGS` (if Maven needs `-s <settings.xml>`), `ARTEMIS_HOME`.",
+         "2. Tests of every flow, no broker:", "   ```", "   bash run.sh test", "   ```",
+         "3. Broker password in this window, and a local Artemis if none is running:", "   ```",
+         "   export BROKER_PASSWORD=<password>", "   bash run.sh status            # Java, Maven, JBang, broker", "   bash run.sh setup-broker      # only if the broker is not running", "   ```",
+         "4. Every flow against Artemis (start route, send one case per scenario, count the queues, stop):", "   ```",
+         "   bash run.sh e2e", "   ```", "   Result per project: `<project>/test/BROKER_RUN.txt` (what was sent, what arrived on which queue, route log).", "",
+         "One project or one message by hand: `bash run.sh test <project>`, `bash run.sh e2e <project>`, or in the project",
+         "folder `bash run-local.sh run | send <proxy> <case folder> | stat | stop` (its RUN_LOCAL.md).", "",
+         "## The flows", "", "| Project | Proxy | Output queue (business service) | Body sent | Steps (from the OSB pipeline) |", "|---|---|---|---|---|"]
+    for project, x, bc, cfg in summary:
+        for r in bc["outputs"] + bc["error_outputs"]:
+            steps = " → ".join(c if isinstance(c, str) else f"{c['op']} {c.get('nxsd') or c.get('resource') or ''}".strip() for c in r["chain"]) or "original message"
+            L.append(f"| {project} | {x} | {r['service']}{' (error)' if r in bc['error_outputs'] else ''} | {r['format']} | {steps} |")
+    L += ["", "Per flow: `<project>/docs/<proxy>/BODY_CHAIN.md` (what OSB does to the body, what is not generated),",
+          "`FLOW_CARD.md`, `BROKER_RUN.txt`. Routes: `<project>/<domain>-route.yaml`; endpoints: `application.properties`",
+          "(OSB JNDI names) and `local.properties` (local Artemis). Shared: `Common-setup/` (Artemis kamelets, nXSD and",
+          "XQuery helpers), `tools/` (JBang via Maven, Artemis CLI and local broker, broker test).", "",
+          "## Layout", "", "```", f"{app}/", "  README.md  set-env.sh  run.sh", "  tools/          jbang.sh  artemis.sh  e2e.sh",
+          "  Common-setup/   osb-jms-source / osb-jms-sink kamelets, OsbNxsd.java, OsbXQuery.java",
+          "  <project>/      <domain>-route.yaml  application.properties  local.properties  run-local.sh  RUN_LOCAL.md",
+          "                  transformations/ (OSB .xqy and nXSD .xsd)  test/ (jbang tests, cases)  docs/<proxy>/", "```", ""]
+    return "\n".join(L)
 
 
 def write_test(dst: Path, short: str, x: str, cfg: dict, all_flows: list, e_headers: list) -> None:
