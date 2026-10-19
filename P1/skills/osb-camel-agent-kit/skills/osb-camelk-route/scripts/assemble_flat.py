@@ -161,6 +161,38 @@ def rewrite_test(text: str, x: str, flow: str, pkg: str, all_props: list[str]) -
                   count=1, flags=re.S)
 
 
+def class_renames(m: Path, flow: str) -> tuple[set, dict]:
+    """Every class of a flow module -> its flat name. Main: OsbJson -> <Flow>Transformer, X -> <Flow>X. Test: the two
+    frozen tests -> <Flow>Transformer[Error]Test, helpers -> <Flow>X (with 'Test' in the name, so the flat pom compiles
+    them with the tests). Returns (old packages, {old simple name: new simple name})."""
+    pkgs, ren = set(), {}
+    for part, test in (("src/main/java", False), ("src/test/java", True)):
+        for j in (m / part).rglob("*.java"):
+            pm = re.search(r"^package\s+([\w.]+);", j.read_text(encoding="utf-8"), re.M)
+            if pm:
+                pkgs.add(pm.group(1))
+            st = j.stem
+            if st == "OsbJson":
+                new = f"{flow}Transformer"
+            elif st in ("FlowParityTest", "FlowErrorTest"):
+                new = f"{flow}Transformer{'Error' if st == 'FlowErrorTest' else ''}Test"
+            else:
+                new = st if st.startswith(flow) else flow + st
+                if test and "Test" not in new:
+                    new = f"{flow}Test{st}"
+            ren[st] = new
+    return pkgs, ren
+
+
+def apply_renames(text: str, pkgs: set, ren: dict, pkg: str) -> str:
+    for old in sorted(pkgs, key=len, reverse=True):
+        text = re.sub(rf"\b{re.escape(old)}\b", pkg, text)
+    if ren:
+        rx = re.compile(r"\b(" + "|".join(re.escape(k) for k in sorted(ren, key=len, reverse=True)) + r")\b")
+        text = rx.sub(lambda g: ren[g.group(1)], text)
+    return text
+
+
 def pom_for(project: str, short: str, modules: list[Path]) -> str:
     deps = set()
     for m in modules:
@@ -224,10 +256,10 @@ def pom_for(project: str, short: str, modules: list[Path]) -> str:
         <configuration><release>21</release></configuration>
         <executions>
           <execution><id>default-compile</id><configuration>
-            <includes><include>*.java</include></includes><excludes><exclude>*Test.java</exclude></excludes>
+            <includes><include>*.java</include></includes><excludes><exclude>*Test*.java</exclude></excludes>
           </configuration></execution>
           <execution><id>default-testCompile</id><configuration>
-            <testIncludes><testInclude>*Test.java</testInclude></testIncludes>
+            <testIncludes><testInclude>*Test*.java</testInclude></testIncludes>
           </configuration></execution>
         </executions>
       </plugin>
@@ -295,31 +327,42 @@ def assemble(ws: Path, out: Path, app: str, rx: str | None) -> dict:
         for m in mods:
             x, flow = m.name, camel_case(m.name)
             meta = json.loads((m / ".scaffold.json").read_text(encoding="utf-8"))
+            pkgs, ren = class_renames(m, flow)
             for r in sorted((m / "src/main/resources/routes").glob("*.yaml")):
                 t = unique_ids(prefix_placeholders(r.read_text(encoding="utf-8"), x), x)
                 t = re.sub(r"beanType:\s*[\w.]+\.OsbJson\b", f"beanType: {pkg}.{flow}Transformer", t)
+                t = apply_renames(t, pkgs, ren, pkg)
                 route_parts += ["", f"# ======== flow {x} (proxy {meta.get('proxy', x)}) ========", t.rstrip("\n")]
             props += ["", f"# ---- flow {x}"]
             for k, v in props_of(m / "src/main/resources/application.properties"):
+                if k.startswith("camel.beans.") and not k.startswith("camel.beans.amqpConnectionFactory"):
+                    props.append(f"{k}={apply_renames(v, pkgs, ren, pkg)}")      # a flow's own bean (pi may add one)
+                    continue
                 if k.startswith("camel."):
                     continue
-                props.append(f"{x}.{k}={via_kamelet(k, v) if is_endpoint_key(k) else v}")
+                props.append(f"{x}.{k}={via_kamelet(k, v) if is_endpoint_key(k) else apply_renames(v, pkgs, ren, pkg)}")
             for k, v in props_of(m / "env/local.properties"):
                 if not k.startswith("camel."):
                     local.append(f"{x}.{k}={via_kamelet(k, v) if is_endpoint_key(k) else v}")
             for j in (m / "src/main/java").rglob("*.java"):
                 t = re.sub(r"^package\s+[\w.]+;", f"package {pkg};", j.read_text(encoding="utf-8"), count=1, flags=re.M)
-                name = f"{flow}Transformer" if j.stem == "OsbJson" else f"{flow}{j.stem}"
-                t = t.replace("OsbJson", f"{flow}Transformer").replace(f"class {j.stem}", f"class {name}") if j.stem != "OsbJson" else t.replace("OsbJson", name)
-                (dst / f"{name}.java").write_text(t, encoding="utf-8")
+                (dst / f"{ren[j.stem]}.java").write_text(apply_renames(t, pkgs, ren, pkg), encoding="utf-8")
             all_props = own[x] + [p for y, ps in own.items() if y != x for p in ps]
             all_props += [f"{y}.flow.input=direct:in-{y}" for y in own if not any(p.startswith(f"{y}.flow.input=") for p in all_props)]
             for j in (m / "src/test/java").rglob("*.java"):
-                name = {"FlowParityTest": f"{flow}TransformerTest", "FlowErrorTest": f"{flow}TransformerErrorTest"}.get(j.stem, f"{flow}{j.stem}")
-                (dst / f"{name}.java").write_text(rewrite_test(j.read_text(encoding="utf-8"), x, flow, pkg, all_props), encoding="utf-8")
+                t = rewrite_test(j.read_text(encoding="utf-8"), x, flow, pkg, all_props)
+                (dst / f"{ren[j.stem]}.java").write_text(apply_renames(t, pkgs, ren, pkg), encoding="utf-8")
             tr = m / "src/test/resources"
             if tr.is_dir():
                 shutil.copytree(tr, dst / "src/test/resources" / x)
+                meta_inf = dst / "src/test/resources" / x / "META-INF"
+                if meta_inf.is_dir():           # service files (e.g. a test context customizer) must sit at the classpath root
+                    for f in sorted(p_ for p_ in meta_inf.rglob("*") if p_.is_file()):
+                        tgt = dst / "src/test/resources/META-INF" / f.relative_to(meta_inf)
+                        tgt.parent.mkdir(parents=True, exist_ok=True)
+                        add = apply_renames(f.read_text(encoding="utf-8"), pkgs, ren, pkg)
+                        tgt.write_text((tgt.read_text(encoding="utf-8") if tgt.is_file() else "") + add, encoding="utf-8")
+                    shutil.rmtree(meta_inf)
                 ft = dst / "src/test/resources" / x / "flow-test.json"
                 if ft.is_file():
                     ft.write_text(re.sub(r'"mock:(out|backend)-', lambda mm: f'"mock:{x}-{mm.group(1)}-', ft.read_text(encoding="utf-8")),
