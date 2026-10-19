@@ -135,7 +135,7 @@ do_task1() {   # one batch over the whole export; scenario fields per flow = wha
   { echo "flow,domain,dims"
     flows | while read -r p x; do
       r="$WS/research/$p/$x/research.json"
-      d=$([ -s "$r" ] && "$PY" -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')).get('scenario_dims') or []; print(';'.join(['hdr_resource'] + ['body:' + (x if x.startswith('//') else x.lstrip('/')) for x in d]) if d else '')" "$r")
+      d=$([ -s "$r" ] && "$PY" -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')).get('scenario_dims') or []; import re; h=re.compile(r'^[$]?(?:headers?|hdr|inbound)[._:]+(?:headers?[._:]+)?([\w-]+)$', re.I); k=lambda x: x if x.startswith('hdr_') else ('hdr_' + h.match(x).group(1) if h.match(x) else 'body:' + (x if x.startswith('//') else x.lstrip('/'))); print(';'.join(dict.fromkeys(['hdr_resource'] + [k(x.strip()) for x in d])) if d else '')" "$r")
       echo "$p/$x,$(basename "$APP"),$d"
     done; } > "$WS/task1/flows.csv"
   case "$EXPORT" in *.masked.csv) am=--already-masked;; *) am=;; esac

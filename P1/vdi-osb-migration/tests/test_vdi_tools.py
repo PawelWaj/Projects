@@ -543,6 +543,20 @@ class SyntheticAndReplyTests(unittest.TestCase):
             self.assertTrue(g["K9_scenarios_covered"]["ok"])
             self.assertFalse(g["K5_tests_untouched"]["ok"], "an edited synthetic case is caught")
 
+    def test_header_scenario_field(self):
+        """A branch on a message header (research 'header.resource') is labelled hdr_resource, as Splunk labels it."""
+        pack = {**self.PACK, "scenario_dims": ["header.resource"], "entry": {"transport": "jms", "payload_format": "json"},
+                "scenario_mapping": [{"scenario": "header.resource=Bulk A", "outputs": ["err"]},
+                                     {"scenario": "resource=Bulk B", "outputs": []}]}
+        with tempfile.TemporaryDirectory() as d:
+            res, mod = Path(d, "res"), Path(d, "mod")
+            res.mkdir()
+            (res / "research.json").write_text(json.dumps(pack))
+            subprocess.run([sys.executable, str(self.SK / "scaffold_camelk.py"), str(res), "-o", str(mod), "--project", "s-prj"], capture_output=True)
+            cfg = json.loads((mod / "src/test/resources/flow-test.json").read_text())
+            self.assertEqual([m["scenario"] for m in cfg["scenario_mapping"]], ["hdr_resource=Bulk A", "hdr_resource=Bulk B"])
+            self.assertNotIn('"header.resource"', next(mod.rglob("OsbJson.java")).read_text(), "a header is no payload path")
+
     def test_domain_coverage_groups(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d, "inv")
