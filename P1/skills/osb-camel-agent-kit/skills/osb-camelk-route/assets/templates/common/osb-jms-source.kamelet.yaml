@@ -1,0 +1,47 @@
+apiVersion: camel.apache.org/v1
+kind: Kamelet
+metadata:
+  name: osb-jms-source
+  labels:
+    camel.apache.org/kamelet.type: source
+spec:
+  definition:
+    title: OSB JMS source (Apache Artemis, core JMS)
+    description: |
+      Consumes what an OSB JMS proxy consumed. A queue: destinationType=queue, destination=<queue>. A topic with a durable
+      subscription (OSB durable-subscription=true, OneCopyPerApplication): destinationType=topic, destination=<topic>,
+      subscriptionName=<name>, selector=<OSB message selector>; the subscription is shared and durable (JMS 2.0), so several
+      route instances share one copy. The broker connection lives here (brokerURL, username, password), nowhere else.
+    required: [destination]
+    type: object
+    properties:
+      destination: {title: Destination, type: string}
+      destinationType: {title: queue or topic, type: string, default: queue}
+      subscriptionName: {title: Durable subscription name (topic only), type: string, default: ""}
+      durable: {title: Durable shared subscription (topic only), type: boolean, default: false}
+      selector: {title: JMS message selector (OSB proxy), type: string, default: ""}
+      brokerURL: {title: Broker URL (core protocol), type: string, default: "tcp://localhost:61616"}
+      username: {title: User, type: string, default: ""}
+      password: {title: Password, type: string, format: password, default: ""}
+  dependencies:
+    - "camel:jms"
+    - "camel:kamelet"
+    - "mvn:org.apache.activemq:artemis-jakarta-client:2.44.0"
+  template:
+    beans:
+      - name: connectionFactory
+        type: "#class:org.apache.activemq.artemis.jms.client.ActiveMQConnectionFactory"
+        properties:
+          brokerURL: "{{brokerURL}}"
+          user: "{{username}}"
+          password: "{{password}}"
+    from:
+      uri: "jms:{{destinationType}}:{{destination}}"
+      parameters:
+        connectionFactory: "#{{connectionFactory}}"
+        subscriptionDurable: "{{durable}}"
+        subscriptionShared: "{{durable}}"
+        subscriptionName: "{{subscriptionName}}"
+        selector: "{{selector}}"
+      steps:
+        - to: "kamelet:sink"

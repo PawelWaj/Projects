@@ -645,6 +645,31 @@ class SyntheticAndReplyTests(unittest.TestCase):
                          [("x-error-queue", "native", ["errorCode", "eventType"])])
         self.assertEqual(d["unknown_tags"], [])
 
+    def test_assemble_jbang_no_pom_xml_chain(self):
+        """No-pom delivery: route built from the OSB body chain (nXSD + the flow's own .xqy per branch), Artemis kamelets,
+        JBang test file, transformation files copied; no pom anywhere."""
+        F = self.SK.parent / "tests/fixtures/jbang"
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d)
+            (ws / "research/x-prj/x").mkdir(parents=True)
+            shutil.copy(F / "research/research.json", ws / "research/x-prj/x/research.json")
+            subprocess.run([sys.executable, str(self.SK / "scaffold_camelk.py"), str(ws / "research/x-prj/x"), "-o",
+                            str(ws / "modules/x-prj/x"), "--project", "x-prj"], capture_output=True)
+            shutil.copytree(F / "parity", ws / "modules/x-prj/x/src/test/resources/parity", dirs_exist_ok=True)
+            r = subprocess.run([sys.executable, str(self.SK / "assemble_jbang.py"), str(ws), "--osb-app", str(F / "osbapp"),
+                                "--app", "a", "--projects", "x-prj"], capture_output=True, text=True)
+            self.assertIn('"flows": 1', r.stdout, r.stderr)
+            p = ws / "delivery/a/x-prj"
+            route = (p / "x-route.yaml").read_text()
+            self.assertIn("transformations/x-register.xqy", route)
+            self.assertIn("transformations/x-terminate.xqy", route)
+            self.assertIn("osb.common.OsbNxsd", route)
+            self.assertIn('${exchangeProperty.request}', route)
+            self.assertIn("selector=RAW(", (p / "application.properties").read_text())
+            self.assertTrue((p / "test/XTest.java").is_file() and (p / "transformations/x-nxsd.xsd").is_file())
+            self.assertFalse(list((ws / "delivery").rglob("pom.xml")), "no pom in the delivery")
+            self.assertIn("| x-register | xml |", (p / "docs/x/BODY_CHAIN.md").read_text())
+
     def test_domain_coverage_groups(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d, "inv")

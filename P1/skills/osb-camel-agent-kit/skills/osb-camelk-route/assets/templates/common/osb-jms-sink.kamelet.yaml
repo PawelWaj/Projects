@@ -1,0 +1,39 @@
+apiVersion: camel.apache.org/v1
+kind: Kamelet
+metadata:
+  name: osb-jms-sink
+  labels:
+    camel.apache.org/kamelet.type: sink
+spec:
+  definition:
+    title: OSB JMS sink (Apache Artemis, core JMS)
+    description: Sends what an OSB JMS business service sent (persistent, text message). The connection lives here.
+    required: [destination]
+    type: object
+    properties:
+      destination: {title: Destination, type: string}
+      destinationType: {title: queue or topic, type: string, default: queue}
+      brokerURL: {title: Broker URL (core protocol), type: string, default: "tcp://localhost:61616"}
+      username: {title: User, type: string, default: ""}
+      password: {title: Password, type: string, format: password, default: ""}
+  dependencies:
+    - "camel:jms"
+    - "camel:kamelet"
+    - "mvn:org.apache.activemq:artemis-jakarta-client:2.44.0"
+  template:
+    beans:
+      - name: connectionFactory
+        type: "#class:org.apache.activemq.artemis.jms.client.ActiveMQConnectionFactory"
+        properties:
+          brokerURL: "{{brokerURL}}"
+          user: "{{username}}"
+          password: "{{password}}"
+    from:
+      uri: "kamelet:source"
+      steps:
+        - to:
+            uri: "jms:{{destinationType}}:{{destination}}"
+            parameters:
+              connectionFactory: "#{{connectionFactory}}"
+              jmsMessageType: Text
+              deliveryPersistent: true

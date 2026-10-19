@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xsd:schema xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:nxsd="http://xmlns.oracle.com/pcbpel/nxsd"
+            xmlns:tns="http://TargetNamespace.com/demo" targetNamespace="http://TargetNamespace.com/demo"
+            elementFormDefault="qualified" attributeFormDefault="unqualified" nxsd:version="JSON" nxsd:encoding="UTF-8">
+  <xsd:element name="Root-Element">
+    <xsd:complexType>
+      <xsd:sequence>
+        <xsd:element name="createdBy" type="xsd:integer"/>
+        <xsd:element name="resource" type="xsd:string"/>
+        <xsd:element name="data">
+          <xsd:complexType>
+            <xsd:sequence>
+              <xsd:element name="referenceNo" type="xsd:string"/>
+              <xsd:element name="flag" type="xsd:boolean"/>
+              <xsd:element name="contributions" maxOccurs="unbounded">
+                <xsd:complexType><xsd:sequence>
+                  <xsd:element name="amount" type="xsd:decimal"/>
+                </xsd:sequence></xsd:complexType>
+              </xsd:element>
+              <xsd:element name="matrix" nxsd:jsonNestedArray="true">
+                <xsd:complexType><xsd:sequence>
+                  <xsd:element name="nestedArray" maxOccurs="unbounded">
+                    <xsd:complexType><xsd:sequence>
+                      <xsd:element name="nestedArrayItem" type="xsd:string" maxOccurs="unbounded"/>
+                    </xsd:sequence></xsd:complexType>
+                  </xsd:element>
+                </xsd:sequence></xsd:complexType>
+              </xsd:element>
+            </xsd:sequence>
+          </xsd:complexType>
+        </xsd:element>
+      </xsd:sequence>
+    </xsd:complexType>
+  </xsd:element>
+</xsd:schema>

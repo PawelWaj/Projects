@@ -48,32 +48,33 @@ Check before going on:
 ## 3 Everything else in one command
 
 ```
-POC=1 PROJECTS=$P bash $KIT/pi/run_domain.sh review
+PROJECTS=$P bash $KIT/pi/run_domain.sh review
 ```
-`POC=1` builds routes from draft cards (proof of concept; gate K1 stays open until a reviewer approves the card).
 The stage prints one short block per step; the details go to `domain/review-<date>.log`.
 
 | Step | What it does | Read it like this |
 |---|---|---|
-| 1 tests | regenerates tests, mocks, cases, frozen | `"unmapped_log_scenarios": 0` and `"uncovered": []`; a `WARNING_unknown_outputs_in_scenario_mapping` line = the research table names an output that does not exist: fix research.json, rerun |
-| 2 build | pi writes or fixes the route where tests are not green | `skip … (tests green)` is fine; `NOT GREEN` = look at step 3 |
-| 3 verify | mock tests + gates per flow | `tests N, failures 0` = done. Failures: `verify_module.py <module> --max 15` shows them. "scenario not mapped" = research table, not the route. A failed gate K5 = pi edited the tests: rerun `tests`, never accept it |
-| 4 flat | delivery/<app>/ in the agreed layout | `{"projects": n, "flows": m}` |
-| 5 flat tests | `mvn test` in each delivery project | same numbers as step 3. `DID NOT COMPILE` stops the stage: fix, then rerun with `REVIEW_TESTS=0 REVIEW_BUILD=0` |
-| 6 broker | `e2e_local.sh` per project on the local Artemis | `RESULT: every output queue got what the tests expect`. The `input of` line shows what got past the selector; 0 arrived = message properties do not match the selector |
+| 1 tests | regenerates the frozen scenario table and the masked cases per flow | `"unmapped_log_scenarios": 0` and `"uncovered": []`; a `WARNING_unknown_outputs_in_scenario_mapping` line = fix research.json, rerun |
+| 2-3 | (nothing: no pi build any more) | the route is generated from the OSB pipeline in step 4 |
+| 4 delivery | `delivery/<app>/` WITHOUT a pom: route from the OSB pipeline (`body_chain.py`: nXSD + the flow's own .xqy, original body on the error path), Artemis kamelets, `transformations/`, `test/`, `run-local.sh` | `{"projects": n, "flows": m}`; read `docs/<proxy>/BODY_CHAIN.md`: format per queue and "Not generated / to check" |
+| 5 tests | `jbang test/<Flow>Test.java` per project (no broker) | `N tests, 0 failed`; a FAIL line names the case and why. "did not run" = dependency or compile error, see `test/RESULTS.txt` |
+| 6 broker | `run-local.sh run` (camel run, Artemis kamelets), one case per scenario, queue counts | the route log lines `Sending to <queue>` per case; `Error captured` = look at `test/broker-run.log` |
 | 7 note | `REVIEW_HANDOVER_DRAFT.md` with numbers and detected review points | read every sentence |
-| 8 archive | `delivery/<app>_review_<date>.tgz` (no build output) | size in KB, not MB |
+| 8 archive | `delivery/<app>_review_<date>.tgz` | size in KB |
 
-Rerun only what is needed: `REVIEW_TESTS=0 REVIEW_BUILD=0` repeats steps 3 to 8 without any pi call (a few minutes).
+The reviewer needs only the archive, Java 21, JBang (or the `camel` CLI) and, for the broker run, an Artemis:
+`bash run-local.sh test`, `bash run-local.sh run`, `bash run-local.sh send <proxy> <case>`, `bash run-local.sh stat` (RUN_LOCAL.md).
+
+Rerun only what is needed: `REVIEW_TESTS=0` repeats steps 4 to 8 (a few minutes, no pi call).
 
 ## 4 Before sending
 
 1. Copy `delivery/<app>/REVIEW_HANDOVER_DRAFT.md` to `REVIEW_HANDOVER.md` in the same folder and edit that copy: your
    name, the points only people know (questions to the client, decisions pending), remove what does not apply. Rerun
-   step 3 with `REVIEW_TESTS=0 REVIEW_BUILD=0`: the stage never overwrites `REVIEW_HANDOVER.md` and archives it instead
+   step 3 with `REVIEW_TESTS=0`: the stage never overwrites `REVIEW_HANDOVER.md` and archives it instead
    of the draft (the draft is refreshed, so you can compare the numbers).
 2. An extra class the note says nothing refers to: delete it in the module (`modules/<project>/<proxy>/src/main/java`),
-   rerun with `REVIEW_TESTS=0 REVIEW_BUILD=0`.
+   rerun with `REVIEW_TESTS=0`.
 3. Send the archive only through the client's channel: it contains masked log data and the original XQuery logic.
 
 ## Known traps (seen on the first two flows)

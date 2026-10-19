@@ -18,6 +18,18 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
+def jbang_results(project: Path) -> dict | None:
+    """test/RESULTS.txt of the no-pom layout (run-local.sh test): 'PASS/FAIL name' lines and 'N tests, M failed'."""
+    f = project / "test/RESULTS.txt"
+    if not f.is_file():
+        return None
+    t = f.read_text(encoding="utf-8", errors="replace")
+    tot = [tuple(map(int, m)) for m in re.findall(r"^(\d+) tests, (\d+) failed", t, re.M)]
+    failed = [ln[5:200] for ln in t.splitlines() if ln.startswith("FAIL ")]
+    return {"ran": bool(tot), "tests": sum(a for a, _ in tot), "failures": sum(b for _, b in tot), "errors": 0, "skipped": 0,
+            "failed": failed}
+
+
 def surefire(project: Path) -> dict:
     t = f = e = s = 0
     failed = []
@@ -72,13 +84,18 @@ def camel(proxy: str) -> str:
     return "".join(p[:1].upper() + p[1:] for p in re.split(r"[^A-Za-z0-9]+", proxy) if p)
 
 
+def docs_dir(project: Path) -> Path:
+    return project / "docs" if (project / "docs").is_dir() else project / "src/docs"
+
+
 def flows_of(project: Path) -> list[str]:
-    return sorted(d.name for d in (project / "src/docs").iterdir() if d.is_dir()) if (project / "src/docs").is_dir() else []
+    d = docs_dir(project)
+    return sorted(x.name for x in d.iterdir() if x.is_dir()) if d.is_dir() else []
 
 
 def project_section(project: Path, modules: Path | None) -> tuple[list[str], list[str]]:
     """(paragraphs about the project, review points)."""
-    st = surefire(project)
+    st = jbang_results(project) or surefire(project)
     flows = flows_of(project)
     route = "\n".join(p.read_text(encoding="utf-8") for p in project.glob("*-route.yaml"))
     text, points = [], []
@@ -91,8 +108,23 @@ def project_section(project: Path, modules: Path | None) -> tuple[list[str], lis
         for fl in st["failed"][:5]:
             points.append(f"{project.name}: failing test {fl}")
     for flow in flows:
-        docs = project / "src/docs" / flow
+        docs = docs_dir(project) / flow
         ev = e2e((docs / "E2E_ARTEMIS.txt").read_text(encoding="utf-8", errors="replace") if (docs / "E2E_ARTEMIS.txt").is_file() else "")
+        br = docs / "BROKER_RUN.txt"
+        if br.is_file():
+            t = br.read_text(encoding="utf-8", errors="replace")
+            sent = len(re.findall(r"^send ", t, re.M))
+            routed = re.findall(r"^\s*(\d+) (Sending to \S+|Error captured)", t, re.M)
+            text.append(f"On the local Artemis (camel run with the Artemis kamelets) I sent {sent} case(s) of {flow}; the route log shows "
+                        + (", ".join(f"{n} x {w.replace('Sending to ', 'sent to ')}" for n, w in routed) or "nothing routed")
+                        + f". The queue counts are in docs/{flow}/BROKER_RUN.txt.")
+            if "Error captured" in t:
+                points.append(f"{flow}: in the broker run some messages went to the error queue, see the route log in BROKER_RUN.txt.")
+            bc = docs / "BODY_CHAIN.md"
+            if bc.is_file():
+                todo = [ln[2:] for ln in bc.read_text(encoding="utf-8").splitlines() if ln.startswith("- ") and ln != "- nothing"]
+                points += [f"{flow}: {x}" for x in todo]
+            continue
         if not ev:
             text.append(f"The broker test for {flow} has not been run (no src/docs/{flow}/E2E_ARTEMIS.txt).")
             points.append(f"{flow}: broker test missing (e2e_local.sh).")
@@ -156,20 +188,23 @@ def main() -> int:
     lines = [
         "<!-- DRAFT written by review_note.py. Check every sentence, add what only people know, then send. -->",
         "", "Hi all,", "",
-        f"I am handing over {len(flows)} flow(s) from {a.app.name} for review: {names}. The routes were written by the pi agent "
-        "from the OSB export, and I tested them against frozen test cases taken from the Splunk logs (masked) and against a "
+        f"I am handing over {len(flows)} flow(s) from {a.app.name} for review: {names}. The routes are generated from the OSB "
+        "export (pipeline, XQuery and nXSD files), and I tested them against frozen test cases taken from the Splunk logs (masked) and against a "
         "local Artemis broker. The flow cards are drafts, I would like this review to approve them or tell me what to change.", "",
-        f"The archive is {a.app.name}_review_{today}.tgz. It follows the flat structure: Common-setup with the two kamelets "
-        "osb-jms-source and osb-jms-sink, and one folder per OSB project with the route file <domain>-route.yaml (the Camel K "
-        "integration), the <Flow>Transformer.java bean it calls, application.properties with the endpoints (OSB JNDI names, "
-        "broker connection from BROKER_URL, BROKER_USER and BROKER_PASSWORD), the tests, src/env/local.properties for a local "
-        "broker, and src/docs/<proxy> with the flow card, the migration notes, the test matrix, the gates and the broker run.", "",
-        "mvn test in a project folder runs the mock tests and needs no broker. The tests check that every case reaches exactly "
-        "the queue OSB used and no other, that the traceId is carried and generated when missing, that the body sent equals the "
-        "body OSB logged as its output (fields OSB generates, such as time stamps, only for presence), and that a broken "
-        "message or a failure ends on the error queue with the original body and the error headers. The broker test "
-        "(e2e_local.sh) creates the queues and the subscription with the OSB selector as filter, starts the route, sends one "
-        "case per scenario and one broken message, and compares what arrived on each queue with what the tests expect.", "",
+        f"The archive is {a.app.name}_review_{today}.tgz. There is no pom: each OSB project folder has the route file "
+        "<domain>-route.yaml (the Camel K integration), application.properties with the endpoints (OSB JNDI names, broker from "
+        "BROKER_URL, BROKER_USER and BROKER_PASSWORD), local.properties for a local Artemis, transformations/ with OSB's own "
+        ".xqy and nXSD files unchanged, test/ with one test file per flow, and docs/<proxy>/ with the flow card, BODY_CHAIN.md "
+        "and the broker run. Common-setup holds the two Artemis kamelets (core JMS; the source opens the durable subscription "
+        "with the OSB selector) and the two shared Java helpers with //DEPS (nXSD JSON to XML, and the XQuery engine).", "",
+        "What the route does to the body is not written by hand or by the agent: it is read from each OSB pipeline "
+        "(docs/<proxy>/BODY_CHAIN.md) and runs OSB's own files, so a flow that sends XML after its XQuery sends the same XML, "
+        "and the error queue gets the original message as OSB's $request.", "",
+        "bash run-local.sh test runs the tests with jbang and needs no broker and no connection factory: every endpoint is "
+        "replaced by direct:/mock:. They check that every case reaches exactly the queue OSB used and no other, the original "
+        "message and the error headers on the error queue, no transport headers on the business queues, well-formed XML where "
+        "OSB sends XML, and equality with OSB's real output where an expected-output.xml exists. bash run-local.sh run starts "
+        "the routes with camel run against a local Artemis; send and stat are described in RUN_LOCAL.md.", "",
         *[p + "\n" for p in paras],
         "Not tested yet: deployment with the Camel K operator, the production mapping of the JNDI names to broker addresses, "
         "the subscription queue on the real broker, load, broker failover, redelivery after a real broker outage, TLS and "
@@ -179,7 +214,7 @@ def main() -> int:
         lines += ["There are a few things I need your view on:", ""] + [f"- {x}" for x in points] + [""]
     lines += [
         "From the review I would like a check of the route logic against the OSB proxies (stages, branches, error handler), "
-        "your answers on the points above, approval of the flow cards in src/docs/<proxy>/FLOW_CARD.md or a list of changes, "
+        "your answers on the points above, approval of the flow cards in docs/<proxy>/FLOW_CARD.md or a list of changes, "
         "and your opinion on the layout.", "",
         "The test cases are masked log data and the docs contain the original XQuery logic, so please keep the archive on the "
         "client's systems.", "", "Thanks,", "<name>", ""]

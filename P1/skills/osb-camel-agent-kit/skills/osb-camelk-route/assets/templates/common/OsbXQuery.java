@@ -67,7 +67,7 @@ public final class OsbXQuery {
 
     /** Route step: body = result of the XQuery in osbXQuery applied to the body (bound to $osbXQueryParam). */
     public static void transform(Exchange exchange) throws Exception {
-        String path = exchange.getProperty("osbXQuery", String.class);
+        String path = OsbNxsd.file(exchange, exchange.getProperty("osbXQuery", String.class));
         String param = exchange.getProperty("osbXQueryParam", "input", String.class);
         XQueryEvaluator q = CACHE.computeIfAbsent(path, OsbXQuery::compile).load();
         DocumentBuilder b = SAXON.newDocumentBuilder();

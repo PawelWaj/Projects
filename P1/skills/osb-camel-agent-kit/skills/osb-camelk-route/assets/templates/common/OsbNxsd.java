@@ -40,12 +40,40 @@ public final class OsbNxsd {
 
     /** Route step: JSON body -> XML body per the schema in the exchange property osbNxsd (root: osbNxsdRoot). */
     public static void toXml(Exchange exchange) throws Exception {
-        String xsd = exchange.getProperty("osbNxsd", String.class);
+        String xsd = file(exchange, exchange.getProperty("osbNxsd", String.class));
         String root = exchange.getProperty("osbNxsdRoot", String.class);
         int[] unknown = {0};
         String xml = toXml(exchange.getMessage().getBody(String.class), xsd, root, unknown);
         exchange.setProperty("osbNxsdUnknown", unknown[0]);
         exchange.getMessage().setBody(xml);
+    }
+
+    /**
+     * Route step for routing decisions on payload fields: for every name in the exchange property osbFields (comma
+     * separated) the exchange property osbField_<name> = the first value with that name at any depth of the ORIGINAL
+     * message (property request), as OSB's $body//*:name finds it after the translation. Absent = no property.
+     */
+    public static void fields(Exchange exchange) throws Exception {
+        String names = exchange.getProperty("osbFields", "", String.class);
+        String raw = exchange.getProperty("request", String.class);
+        JsonNode in = raw == null || raw.isBlank() ? null : JSON.readTree(raw);
+        for (String n : names.split(",")) {
+            JsonNode v = in == null || n.isBlank() ? null : in.findValue(n.trim());
+            if (v != null && !v.isNull()) {
+                exchange.setProperty("osbField_" + n.trim(), v.isValueNode() ? v.asText() : v.toString());
+            }
+        }
+    }
+
+
+    /** A transformation file of the flow: relative paths are resolved against osb.files.dir (application.properties,
+     *  env OSB_FILES_DIR on Camel K / camel run), else the working directory (tests). */
+    static String file(Exchange exchange, String path) {
+        if (path == null || new File(path).isAbsolute()) {
+            return path;
+        }
+        String base = exchange.getContext().getPropertiesComponent().resolveProperty("osb.files.dir").orElse(System.getenv("OSB_FILES_DIR"));
+        return base == null || base.isBlank() ? path : new File(base, path).getPath();
     }
 
     public static String toXml(String json, String xsdPath, String rootName, int[] unknown) throws Exception {

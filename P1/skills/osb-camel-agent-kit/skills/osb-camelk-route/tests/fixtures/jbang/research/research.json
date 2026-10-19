@@ -1,0 +1,8 @@
+{"proxy": "x", "entry": {"transport": "jms", "payload_format": "json", "destination": "jndi.xTopic", "is_topic": true,
+  "durable_subscription": "true", "selector": "(resource='R' OR resource='T') AND (eventType='created')"},
+ "scenario_dims": ["header.resource"],
+ "scenario_mapping": [{"scenario": "header.resource=R", "outputs": ["x-register"]}, {"scenario": "resource=<other>", "outputs": ["x-terminate"]}],
+ "outputs": [{"name": "x-register", "business_service": "x-register", "destination": "jndi.RegQueue"},
+             {"name": "x-terminate", "business_service": "x-terminate", "destination": "jndi.TermQueue"},
+             {"name": "x-error-queue", "business_service": "x-error-queue", "destination": "jndi.ErrQueue", "on": "error handler"}],
+ "backends": [], "branches": [], "errors": [{"scope": "pipeline", "goes_to": "x-error-queue"}], "logs": [], "open_questions": []}

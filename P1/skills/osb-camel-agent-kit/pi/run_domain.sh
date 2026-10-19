@@ -28,10 +28,12 @@
 #                report    domain/FUNCTIONAL_TEST_REPORT.md: inputs, expected outputs, mocks, results, mutations per flow
 #                flat      delivery/<app>/: Common-setup kamelets + per project ONE <domain>-route.yaml, <Flow>Transformer.java,
 #                          <Flow>TransformerTest.java (assemble_flat.py; also the last step of functional)
+#                delivery  delivery/<app>/ WITHOUT a pom (assemble_jbang.py): route built from the OSB pipeline (body_chain.py:
+#                          nXSD + the flow's own .xqy), Artemis kamelets, tests run by jbang, run-local.sh (camel run)
 #                review    PROJECTS='a-prj|b-prj': from tests to the review archive in one go (REVIEW_RUNBOOK.md):
-#                          tests -> build (POC=1 for draft cards) -> verify -> flat -> mvn test on the flat projects ->
-#                          broker test (e2e_local.sh, needs ARTEMIS_PASSWORD) -> draft handover note -> archive
-#                          REVIEW_TESTS=0 / REVIEW_BUILD=0 skip those steps (no pi call at all)
+#                          test cases (frozen scenario table) -> delivery without pom (route from the OSB pipeline) ->
+#                          jbang tests -> broker run (camel run, needs ARTEMIS_PASSWORD) -> draft handover note -> archive
+#                          REVIEW_TESTS=0 skips the first step
 #                auto      research -> task1 -> tests: the functional test pack for every flow, then stops
 #                          (routes: approve the cards, then build and matrix)
 #                status    only rewrite <ws>/domain/STATUS.md + status.csv
@@ -47,7 +49,7 @@ set -uo pipefail
 # local client settings, never in Git: $OSB_KIT_ENV, else ./.osb-kit.env, else ~/.osb-kit.env
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
 MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
-STAGES='list|batches|coverage|estimate|time|research|task1|tests|scaffold|build|matrix|report|flat|review|functional|auto|status'
+STAGES='list|batches|coverage|estimate|time|research|task1|tests|scaffold|build|matrix|report|flat|delivery|review|functional|auto|status'
 if echo "${1:-}" | grep -Eqx "($STAGES)"; then         # short form: run_domain.sh <stage> [workspace], APP from the env file
   STAGE=$1; WS=${2:-${WS:-.}}; APP=${APP:?set APP in .osb-kit.env or use: run_domain.sh <osb-app-dir> <stage>}
 else
@@ -200,34 +202,37 @@ do_review() {   # tests -> build -> verify -> flat -> mvn test (flat) -> broker 
   local LOG="$WS/domain/review-$day.log"; : > "$LOG"
   echo "review of PROJECTS='$PROJECTS' -> $D (details: $LOG)"
   if [ "${REVIEW_TESTS:-1}" = 1 ]; then echo "== 1 tests";  do_tests >> "$LOG" 2>&1; grep -E "^\{\"scenarios|INCOMPLETE" "$LOG" | tail -5; else echo "== 1 tests (skipped)"; fi
-  if [ "${REVIEW_BUILD:-1}" = 1 ]; then echo "== 2 build (pi only where tests are not green)"; do_build 2>&1 | tee -a "$LOG" | grep -E "^=== build|NOT GREEN|skip"; else echo "== 2 build (skipped)"; fi
-  echo "== 3 verify (per flow module)"
-  flows | while read -r p x; do
-    m="$WS/modules/$p/$x"; [ -f "$m/.scaffold.json" ] || continue
-    echo "   $p/$x: $("$PY" "$SK/verify_module.py" "$m" --max 3 2>&1 | tee -a "$LOG" | head -1)"
-  done
-  echo "== 4 flat"
-  "$PY" "$SK/assemble_flat.py" "$WS" --app "$app" --projects "$PROJECTS" | tee -a "$LOG"
+  echo "== 2-3 (no pi build: the route is generated from the OSB pipeline in step 4)"
+  echo "== 4 delivery (no pom: route from the OSB pipeline, Artemis kamelets, JBang tests)"
+  "$PY" "$SK/assemble_jbang.py" "$WS" --osb-app "$APP" --app "$app" --projects "$PROJECTS" | tee -a "$LOG"
   local stop=0 P
-  echo "== 5 mock tests on the flat projects"
+  echo "== 5 tests (jbang test/*Test.java, no broker)"
   for P in $(ls -d "$D"/*/ 2>/dev/null | xargs -n1 basename | grep -Ex "($PROJECTS)"); do
-    (cd "$D/$P" && mvn -B -q ${MVN_ARGS:-} test > target-mvn.log 2>&1); mkdir -p "$D/$P/target"; mv -f "$D/$P/target-mvn.log" "$D/$P/target/mvn-test.log"
-    if ls "$D/$P"/target/surefire-reports/TEST-*.xml > /dev/null 2>&1; then
-      echo "   $P: $(cat "$D/$P"/target/surefire-reports/TEST-*.xml | grep -o '<testsuite[^>]*' | "$PY" -c "import re,sys; t=sys.stdin.read(); g=lambda k: sum(int(x) for x in re.findall(k+'=\"([0-9]+)\"', t)); print(f'{g(\"tests\")} tests, {g(\"failures\")+g(\"errors\")} failing, {g(\"skipped\")} skipped')")"
-    else
-      echo "   $P: DID NOT COMPILE/RUN"; grep -m5 -E "ERROR.*\.java|ERROR\] .*(Failed|cannot)" "$D/$P/target/mvn-test.log" | sed 's/^/      /'; stop=1
-    fi
+    (cd "$D/$P" && bash run-local.sh test > test/RESULTS.txt 2>&1)
+    echo "   $P: $(grep -E 'tests, [0-9]+ failed' "$D/$P/test/RESULTS.txt" | awk '{t+=$1; f+=$3} END{print t " tests, " f " failed"}')"
+    grep -E "^FAIL|error:" "$D/$P/test/RESULTS.txt" | head -5 | sed 's/^/      /'
+    grep -qE "tests, [0-9]+ failed" "$D/$P/test/RESULTS.txt" || { echo "      did not run: see $D/$P/test/RESULTS.txt"; stop=1; }
   done
-  [ "$stop" = 1 ] && { echo "STOP: a flat project does not build; fix it (message above), then rerun review with REVIEW_TESTS=0 REVIEW_BUILD=0"; return 1; }
-  echo "== 6 broker test (local Artemis)"
+  [ "$stop" = 1 ] && { echo "STOP: tests did not run (compile/dependency error above)"; return 1; }
+  echo "== 6 broker run (local Artemis, camel run)"
   if [ -z "${ARTEMIS_PASSWORD:-}" ]; then
-    echo "   skipped: export ARTEMIS_PASSWORD='...' first (the note will say the broker test is missing)"
+    echo "   skipped: export ARTEMIS_PASSWORD='...' first"
   else
     for P in $(ls -d "$D"/*/ | xargs -n1 basename | grep -Ex "($PROJECTS)"); do
-      bash "$KIT/broker/e2e_local.sh" "$D/$P" > "$D/$P/target/e2e.txt" 2>&1; rc=$?
-      for x in $(ls "$D/$P/src/docs"); do cp "$D/$P/target/e2e.txt" "$D/$P/src/docs/$x/E2E_ARTEMIS.txt"; done
-      echo "   $P: $(grep -E '^RESULT|route did not start|route not started' "$D/$P/target/e2e.txt" | tail -1) (exit $rc)"
-      grep -E "^input of " "$D/$P/target/e2e.txt" | sed 's/^/      /; s/; selector:.*//'
+      ( cd "$D/$P" && export BROKER_PASSWORD="$ARTEMIS_PASSWORD" BROKER_USER="${ARTEMIS_USER:-artemis}"
+        bash run-local.sh run > test/broker-run.log 2>&1 & pid=$!
+        for i in $(seq 1 120); do grep -qE "Apache Camel .* started|ERROR|BUILD FAILURE" test/broker-run.log && break; sleep 2; done
+        { echo "# broker run $(date '+%F %T')"; bash run-local.sh stat > test/stat-before.txt
+          for x in $(ls test/resources); do
+            for c in $(find "test/resources/$x/parity" -name input.payload | xargs -n1 dirname | sort | awk -F/ '!seen[$(NF-1)]++'); do
+              echo "send $x $(basename "$(dirname "$c")"): $(bash run-local.sh send "$x" "$c" | grep -c Produced) produced"; done; done
+          sleep 8; echo "## queues after (MESSAGES ADDED includes earlier runs; compare with stat-before.txt)"; bash run-local.sh stat
+          echo "## route log"; grep -oE "(Request Received|Sending to [^ ]*|Error captured)[^:]*" test/broker-run.log | sort | uniq -c; } > test/BROKER_RUN.txt
+        if [ -r "/proc/$pid/winpid" ]; then taskkill //F //T //PID "$(cat /proc/$pid/winpid)" > /dev/null 2>&1
+        else pkill -f "run [^ ]*-route.yaml application.properties local.properties" 2>/dev/null; kill "$pid" 2>/dev/null; fi
+        for x in $(ls docs); do cp test/BROKER_RUN.txt "docs/$x/BROKER_RUN.txt"; done )
+      echo "   $P: $(grep -c '^send' "$D/$P/test/BROKER_RUN.txt") case(s) sent, see $D/$P/test/BROKER_RUN.txt"
+      grep -E "Sending to|Error captured" "$D/$P/test/BROKER_RUN.txt" | sed 's/^/      /'
     done
   fi
   echo "== 7 draft handover note"
@@ -238,7 +243,7 @@ do_review() {   # tests -> build -> verify -> flat -> mvn test (flat) -> broker 
   local tgz; tgz="$(cd "$WS/delivery" && pwd)/${app}_review_${day}.tgz"
   (cd "$D" && tar czf "$tgz" --exclude=target "${inc[@]}") && echo "   $tgz ($(du -h "$tgz" | cut -f1))"
   if [ -f "$D/REVIEW_HANDOVER.md" ]; then echo "   archived your edited REVIEW_HANDOVER.md (compare with the new draft for changed numbers)"
-  else echo "next: copy REVIEW_HANDOVER_DRAFT.md to REVIEW_HANDOVER.md in $D, edit it, rerun with REVIEW_TESTS=0 REVIEW_BUILD=0, send the archive through the client's channel"; fi
+  else echo "next: copy REVIEW_HANDOVER_DRAFT.md to REVIEW_HANDOVER.md in $D, edit it, rerun with REVIEW_TESTS=0, send the archive through the client's channel"; fi
 }
 
 # pi runs are slow and cost tokens: show the selection, and require ALL=1 for more than 10 flows
@@ -277,6 +282,7 @@ case "$STAGE" in
           --coverage "$WS/domain/coverage.csv" -o "$WS/domain/TIME_PROJECTION.md" ;;
   report) status > /dev/null; "$PY" "$SK/domain_report.py" "$WS" ;;
   review) do_review; rc=$?; status > /dev/null; exit $rc ;;
+  delivery) "$PY" "$SK/assemble_jbang.py" "$WS" --osb-app "$APP" --app "$(basename "$APP")" ${PROJECTS:+--projects "$PROJECTS"} ;;
   flat) "$PY" "$SK/assemble_flat.py" "$WS" --app "$(basename "${APP:-osb-app}")" ${PROJECTS:+--projects "$PROJECTS"} ;;
   functional) do_research || { status > /dev/null; exit 75; }; do_task1; do_tests; do_build; do_matrix; status > /dev/null; "$PY" "$SK/domain_report.py" "$WS"
               "$PY" "$SK/assemble_flat.py" "$WS" --app "$(basename "${APP:-osb-app}")" ${PROJECTS:+--projects "$PROJECTS"} ;;
