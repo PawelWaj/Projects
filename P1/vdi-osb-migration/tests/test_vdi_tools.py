@@ -634,6 +634,17 @@ class SyntheticAndReplyTests(unittest.TestCase):
         self.assertEqual(ev["rows"], [("f", "outQ", "2", "1", "DIFF")])
         self.assertEqual(ev["inputs"], [("f", "f", "3", "3")])
 
+    def test_body_chain_per_output(self):
+        """Output format per flow comes from the pipeline: nXSD + XQuery per branch = XML, error path = original."""
+        sys.path.insert(0, str(self.SK))
+        import body_chain
+        d = body_chain.walk(self.SK.parent / "tests/fixtures/branch-xquery.pipeline")
+        got = {(r["service"], r["format"], tuple(c.get("resource") or c.get("op") for c in r["chain"])) for r in d["outputs"]}
+        self.assertEqual(got, {("x-register", "xml", ("nxsd", "x-register")), ("x-terminate", "xml", ("nxsd", "x-terminate"))})
+        self.assertEqual([(r["service"], r["format"], r["headers"]) for r in d["error_outputs"]],
+                         [("x-error-queue", "native", ["errorCode", "eventType"])])
+        self.assertEqual(d["unknown_tags"], [])
+
     def test_domain_coverage_groups(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d, "inv")
