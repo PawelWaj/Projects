@@ -597,6 +597,20 @@ class SyntheticAndReplyTests(unittest.TestCase):
                               ("hdr_resource=Term", ["business-service-bulk-terminate-bix"]),
                               ("hdr_resource!=Reg|hdr_resource!=Term", ["business-service-bulk-terminate-bix"])])
 
+    def test_generated_fields_by_name_and_where_present(self):
+        """OSB time stamps (any format, masked or not) count as generated where they appear; copied values do not."""
+        sys.path.insert(0, str(self.SK))
+        import scaffold_camelk
+        with tempfile.TemporaryDirectory() as d:
+            for i, (inp, out) in enumerate([({"data": {"a": 1, "birthDate": "x1"}}, {"a": 1, "birthDate": "x1", "publishDate": "19/10/2026", "timestamp": 442052055}),
+                                            ({"data": {"a": 2, "birthDate": "x2"}}, {"a": 2, "birthDate": "x2", "publishDate": "20/10/2026", "timestamp": 1}),
+                                            ({"body": {"a": 3}}, {"body": {"a": 3}})]):
+                c = Path(d, f"s/c{i}")
+                c.mkdir(parents=True)
+                (c / "input.payload").write_text(json.dumps(inp))
+                (c / "expected-output.json").write_text(json.dumps(out))
+            self.assertEqual(scaffold_camelk.generated_fields(Path(d)), ["publishDate", "timestamp"])
+
     def test_domain_coverage_groups(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d, "inv")

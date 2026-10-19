@@ -337,9 +337,13 @@ UUID_RX = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]
 TIME_RX = re.compile(r"^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}")
 
 
+GEN_NAME_RX = re.compile(r"(?i)(uuid|guid|timestamp|date|time)$")   # time/id fields OSB stamps (fn:current-dateTime, uuid)
+
+
 def generated_fields(parity: Path) -> list[str]:
-    """Fields of OSB's logged output that OSB generated itself: in EVERY case with an expected-output.json the value is a
-    UUID, an ISO timestamp or an epoch-millis number, and it appears nowhere in that case's input. No route can
+    """Fields of OSB's logged output that OSB generated itself: in every case whose expected-output.json has the field, the
+    value is a UUID, an ISO timestamp, an epoch-millis number or the field is named *uuid/*date/*time/*timestamp, and the
+    value appears nowhere in that case's input. No route can
     reproduce such a value; the parity test checks the field is present instead of its value."""
     dec = json.JSONDecoder(strict=False)
     load = lambda p: dec.raw_decode(p.read_text(encoding="utf-8").strip())[0]  # noqa: E731
@@ -350,7 +354,7 @@ def generated_fields(parity: Path) -> list[str]:
                 yield from flat(v, f"{p}.{k}" if p else k)
         else:
             yield p, x
-    counts, n = {}, 0
+    counts, seen = {}, {}
     for exp in parity.rglob("expected-output.json"):
         inp = exp.parent / "input.payload"
         if not inp.is_file():
@@ -359,13 +363,16 @@ def generated_fields(parity: Path) -> list[str]:
             out, raw_in = dict(flat(load(exp))), inp.read_text(encoding="utf-8")
         except ValueError:
             continue
-        n += 1
         for k, v in out.items():
+            if v is None or isinstance(v, (bool, list)):
+                continue
             sv = str(v)
-            gen = (UUID_RX.match(sv) or TIME_RX.match(sv) or (isinstance(v, int) and not isinstance(v, bool) and v > 10**12)) and sv not in raw_in
-            if gen:
+            seen[k] = seen.get(k, 0) + 1
+            looks = UUID_RX.match(sv) or TIME_RX.match(sv) or (isinstance(v, int) and v > 10**12) or GEN_NAME_RX.search(k.split(".")[-1])
+            if looks and sv not in raw_in:
                 counts[k] = counts.get(k, 0) + 1
-    return sorted(k for k, c in counts.items() if n and c == n)
+    # generated wherever it appears (a message without the field is checked by the test: absent there too)
+    return sorted(k for k, c in counts.items() if c == seen[k])
 
 
 def unmapped_scenarios(m: dict, facts: dict) -> list[str]:

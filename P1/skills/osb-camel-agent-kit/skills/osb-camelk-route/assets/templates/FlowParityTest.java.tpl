@@ -245,8 +245,10 @@ class FlowParityTest {
         if (Files.exists(json)) {
             JsonNode want = JSON.readTree(json.toFile());
             JsonNode got = JSON.readTree(body);
-            for (JsonNode g : CFG.path("generated_fields")) {        // OSB generated these (fresh UUID, time): presence only
-                assertFalse(at(got, g.asText()).isMissingNode(), g.asText() + " must be present (OSB generates it)");
+            for (JsonNode g : CFG.path("generated_fields")) {        // OSB generated these (fresh UUID, time): presence only,
+                boolean osbHas = !at(want, g.asText()).isMissingNode();  // and only where OSB's output has the field
+                assertEquals(osbHas, !at(got, g.asText()).isMissingNode(),
+                    g.asText() + (osbHas ? " must be present (OSB generates it)" : " is not in OSB's output for this message"));
                 drop(want, g.asText());
                 drop(got, g.asText());
             }
