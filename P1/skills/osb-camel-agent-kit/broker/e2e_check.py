@@ -97,6 +97,16 @@ def queue_of(folder: Path, flow: str, output: str, flat: bool) -> str:
     return output
 
 
+def input_queue(folder: Path, flow: str) -> str:
+    for f in (folder / "src/env/local.properties", folder / "env/local.properties"):
+        for ln in f.read_text(encoding="utf-8").splitlines() if f.is_file() else []:
+            k, _, v = ln.partition("=")
+            if k.strip() in (f"{flow}.flow.input", "flow.input"):
+                m = re.search(r"::([^?&\s]+)", v) or re.search(r"subscriptionName=([^&\s]+)", v) or re.search(r"queue:([^?&\s]+)", v)
+                return m.group(1) if m else ""
+    return ""
+
+
 def added(table: str) -> dict:
     """MESSAGES ADDED per queue name from an `artemis queue stat` table (one- or two-line header)."""
     head, out = None, {}
@@ -136,6 +146,18 @@ def report(folder: Path, plan_file: Path, before: Path, after: Path, raw: int) -
                 want.setdefault((flow, o), 0)
     b, a = added(before.read_text(encoding="utf-8", errors="replace")), added(after.read_text(encoding="utf-8", errors="replace"))
     bad = 0
+    sent = {}
+    for ln in plan_file.read_text(encoding="utf-8").splitlines():
+        flow, _, outs = ln.split("\t")
+        sent[flow] = sent.get(flow, 0) + (0 if outs.startswith("(filtered") else 1)
+    for flow in sorted(flows):                     # the subscription queue: what got past the selector
+        sub = input_queue(folder, flow)
+        if sub:
+            got = a.get(sub, 0) - b.get(sub, 0) if sub in a else None
+            print(f"input of {flow}: subscription queue {sub}: {sent[flow] + raw} expected past the selector, "
+                  f"{'missing' if got is None else got} arrived; selector: {selector_of(folder, flow) or '(none)'}")
+            if got == 0:
+                print("   nothing passed the selector: the message properties (headers.json) do not match it, see above")
     print(f"{'flow':<22} {'output queue':<55} {'expected':>8} {'arrived':>8}")
     for (flow, o), n in sorted(want.items()):
         if o == "reply":
