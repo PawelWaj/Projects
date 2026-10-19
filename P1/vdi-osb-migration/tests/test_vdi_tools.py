@@ -670,6 +670,21 @@ class SyntheticAndReplyTests(unittest.TestCase):
             self.assertFalse(list((ws / "delivery").rglob("pom.xml")), "no pom in the delivery")
             self.assertIn("| x-register | xml |", (p / "docs/x/BODY_CHAIN.md").read_text())
 
+    def test_run_local_send_keeps_spaces_and_fills_selector(self):
+        """run-local.sh send: property values keep their spaces; properties the selector needs are filled."""
+        tpl = (self.SK.parent / "assets/templates/run-local-jbang.sh.tpl").read_text()
+        src = tpl.split("SEND_PY=$(cat <<'PYEOF'\n", 1)[1].split("\nPYEOF", 1)[0]
+        with tempfile.TemporaryDirectory() as d:
+            h = Path(d, "headers.json")
+            h.write_text(json.dumps({"resource": "Bulk Registration Request", "traceId": "t1"}))
+            line = ("x.flow.input=kamelet:osb-jms-source?destinationType=topic&destination=T&durable=true&subscriptionName=x"
+                    "&selector=RAW((resource='Bulk Registration Request') AND (eventType='created' OR eventType='update-approved'))")
+            out = subprocess.run([sys.executable, "-c", src, line, str(h)], capture_output=True, text=True).stdout.strip()
+            dest, props = out.split(" ", 1)
+            self.assertEqual(dest, "topic://T")
+            got = {p["key"]: p["value"] for p in json.loads(props)}
+            self.assertEqual(got, {"resource": "Bulk Registration Request", "traceId": "t1", "eventType": "created"})
+
     def test_domain_coverage_groups(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d, "inv")

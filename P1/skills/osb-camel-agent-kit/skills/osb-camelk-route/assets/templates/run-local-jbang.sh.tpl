@@ -27,7 +27,7 @@ for name in dict.fromkeys(re.findall(r"(\w+)\s*=\s*'", sel)):
         vals = re.findall(rf"\b{name}\s*=\s*'([^']*)'", sel)
         if vals:
             h[name] = vals[0]
-print(f"{kind}://{dest}", json.dumps([{"type": "string", "key": k, "value": str(x)} for k, x in h.items()]).replace(" ", ""))
+print(f"{kind}://{dest}", json.dumps([{"type": "string", "key": k, "value": str(x)} for k, x in h.items()], separators=(",", ":")))
 PYEOF
 )
 wp() { if command -v cygpath > /dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
