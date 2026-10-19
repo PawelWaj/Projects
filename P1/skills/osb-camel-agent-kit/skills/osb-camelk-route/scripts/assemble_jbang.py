@@ -267,7 +267,7 @@ def assemble(ws: Path, osb_app: Path, out: Path, app: str, rx: str | None) -> di
     root = out / app
     cs = root / "Common-setup"
     cs.mkdir(parents=True, exist_ok=True)
-    for f in ("osb-jms-source.kamelet.yaml", "osb-jms-sink.kamelet.yaml", "OsbNxsd.java", "OsbXQuery.java"):
+    for f in ("osb-jms-source.kamelet.yaml", "osb-jms-sink.kamelet.yaml", "OsbNxsd.java", "OsbXQuery.java", "jbang.sh"):
         shutil.copy2(TPL / "common" / f, cs / f)
     n_proj = n_flow = 0
     for pdir in sorted(p for p in (ws / "modules").iterdir() if p.is_dir()):

@@ -1,15 +1,17 @@
 # Run @@PROJECT@@
 
 No pom. The route is `@@ROUTE@@`, the shared kamelets and Java helpers are in `../Common-setup`, OSB's own
-transformation files (.xqy, nXSD .xsd) in `transformations/`. Needs Java 21 and JBang (or the `camel` CLI);
-Camel @@CAMEL@@. Everything below runs in Git Bash in this folder.
+transformation files (.xqy, nXSD .xsd) in `transformations/`. Needs Java 21 and Maven with access to the Maven
+repository (`export MVN_ARGS="-s <settings.xml>"` if Maven needs it): when JBang / the `camel` CLI are not installed,
+`run-local.sh` takes both from there (`../Common-setup/jbang.sh`, Camel JBang @@CAMEL@@ from its Maven artifact), so no
+internet is needed. Everything below runs in Git Bash in this folder.
 
 ## 1 Tests, no broker
 
 ```
-@@TESTS@@
+bash run-local.sh test
 ```
-(or `bash run-local.sh test`). Each test file loads the route unchanged with every endpoint replaced by direct:/mock:,
+(with JBang installed also `@@TESTS@@`). Each test file loads the route unchanged with every endpoint replaced by direct:/mock:,
 so no broker and no connection factory are needed. Per case: the queue OSB used (and no other), the original message
 on the error queue, no transport headers on the business queues, well-formed XML where OSB sends XML, and equality
 with OSB's real output where `expected-output.xml` exists.

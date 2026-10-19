@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# @@PROJECT@@ on a local Artemis with Camel JBang (no pom). Needs: Java 21, JBang (or the `camel` CLI), an unzipped and
-# running Artemis (ARTEMIS_HOME), python for "send". See RUN_LOCAL.md.
+# @@PROJECT@@ on a local Artemis with Camel JBang (no pom). Needs: Java 21, Maven with access to the Maven repository
+# (MVN_ARGS="-s <settings.xml>"; JBang and Camel come from there when not installed), an unzipped and running Artemis
+# (ARTEMIS_HOME) for run/send/stat, python for "send". See RUN_LOCAL.md.
 #   bash run-local.sh test                          the tests of every flow (jbang test/*Test.java), no broker
 #   bash run-local.sh run                           start the routes (camel run), Ctrl+C stops them
 #   bash run-local.sh send <proxy> <case folder>    send one case (input.payload + headers.json) as the OSB caller would
@@ -8,7 +9,10 @@
 set -u
 cd "$(dirname "$0")"
 CAMEL_VERSION="${CAMEL_VERSION:-@@CAMEL@@}"
-camelcli() { if command -v camel > /dev/null; then camel "$@"; else jbang "-Dcamel.jbang.version=$CAMEL_VERSION" camel@apache/camel "$@"; fi; }
+# JBang: installed, else ../Common-setup/jbang.sh (the JBang jar through Maven/Nexus, no internet needed)
+jb() { if command -v jbang > /dev/null; then jbang "$@"; else bash ../Common-setup/jbang.sh "$@"; fi; }
+# Camel CLI: installed, else Camel JBang straight from its Maven artifact (no GitHub catalog)
+camelcli() { if command -v camel > /dev/null; then camel "$@"; else jb --main main.CamelJBang "org.apache.camel:camel-jbang-main:$CAMEL_VERSION" "$@"; fi; }
 SEND_PY=$(cat <<'PYEOF'
 import json, re, sys
 v = sys.argv[1].split("=", 1)[1]
@@ -31,7 +35,7 @@ art() { : "${ARTEMIS_HOME:?export ARTEMIS_HOME=<unzipped apache-artemis folder>}
     org.apache.activemq.artemis.boot.Artemis "$@" --user "${BROKER_USER:-artemis}" --password "$BROKER_PASSWORD" --url "${BROKER_URL:-tcp://localhost:61616}"; }
 case "${1:-}" in
   test)
-    rc=0; for t in test/*Test.java; do echo "== $t"; jbang "$t" || rc=1; done; exit $rc ;;
+    rc=0; for t in test/*Test.java; do echo "== $t"; jb "$t" || rc=1; done; exit $rc ;;
   run)
     : "${BROKER_PASSWORD:?export BROKER_PASSWORD=<broker password>}"
     export BROKER_USER="${BROKER_USER:-artemis}" BROKER_URL="${BROKER_URL:-tcp://localhost:61616}" OSB_FILES_DIR="$(wp "$(pwd)")"
