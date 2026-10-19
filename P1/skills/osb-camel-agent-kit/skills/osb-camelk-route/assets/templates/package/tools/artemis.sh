@@ -12,7 +12,10 @@ JAVA="${JAVA_HOME:+$JAVA_HOME/bin/}java"
 need_home() { [ -f "${ARTEMIS_HOME:-}/lib/artemis-boot.jar" ] || { echo "ARTEMIS_HOME is not an unzipped Artemis (lib/artemis-boot.jar missing): set it in set-env.sh"; exit 2; }; }
 need_pw() { [ -n "${BROKER_PASSWORD:-}" ] || { echo "export BROKER_PASSWORD=<broker password> first"; exit 2; }; }
 art() { need_home; "$JAVA" -cp "$(wp "$ARTEMIS_HOME/lib/artemis-boot.jar")" -Dartemis.home="$(wp "$ARTEMIS_HOME")" org.apache.activemq.artemis.boot.Artemis "$@"; }
-up() { art queue stat --user "$BROKER_USER" --password "${BROKER_PASSWORD:-x}" --url "$BROKER_URL" --maxRows 1 > /dev/null 2>&1; }
+up() {   # the broker port answers (fast; the Artemis CLI would retry for minutes when nothing listens)
+  local hp=${BROKER_URL#*://}; hp=${hp%%\?*}; local h=${hp%%:*} p=${hp##*:}
+  (exec 3<> "/dev/tcp/${h:-localhost}/${p:-61616}") 2> /dev/null
+}
 case "${1:-}" in
   setup)
     need_home; need_pw

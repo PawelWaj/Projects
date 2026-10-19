@@ -10,6 +10,8 @@ P=${1:?usage: tools/e2e.sh <project folder>}
 cd "$ROOT/$P" || exit 2
 [ -n "${BROKER_PASSWORD:-}" ] || { echo "export BROKER_PASSWORD=<broker password> first"; exit 2; }
 OUT=test/BROKER_RUN.txt
+bash ../tools/artemis.sh status 2> /dev/null | grep -q "broker: running" \
+  || { echo "$P: broker not reachable at ${BROKER_URL:-tcp://localhost:61616} (bash run.sh setup-broker / check BROKER_PASSWORD)"; exit 1; }
 counts() {   # NAME and MESSAGES ADDED of every queue (artemis queue stat, column 5)
   bash run-local.sh stat 2>/dev/null | awk -F'|' 'NF > 6 && $2 !~ /NAME/ {gsub(/ /, "", $2); gsub(/ /, "", $6); print $2, $6}'
 }
@@ -40,6 +42,11 @@ counts > test/counts-before.txt
   counts > test/counts-after.txt
   echo "## arrived in this run (MESSAGES ADDED after - before)"
   awk 'NR == FNR {b[$1] = $2; next} {d = $2 - (($1 in b) ? b[$1] : 0); if (d > 0) printf "  %-45s +%d\n", $1, d}' test/counts-before.txt test/counts-after.txt
+  others=$(for d in ../*/test/resources/*/; do x=$(basename "$d"); [ -d "test/resources/$x" ] || echo "$x"; done | sort -u)
+  for o in $others; do       # a subscription of ANOTHER flow took messages of this run: its filter is not the OSB selector
+    n=$(awk -v q="$o" 'NR == FNR {if ($1 == q) b = $2; next} $1 == q {print $2 - b + 0}' test/counts-before.txt test/counts-after.txt)
+    [ "${n:-0}" -gt 0 ] 2> /dev/null && echo "WARNING: subscription $o (another flow) received $n message(s) of this run: its filter is not its OSB selector (an old queue?). Fix: bash tools/artemis.sh cli queue delete --name $o --removeConsumers"
+  done
   echo "## route log"
   sed 's/\x1b\[[0-9;]*m//g' test/broker-run.log | grep -oE "(Request Received|Sending to [^ ]*|Error captured|No route)[^:]*" \
     | sed -E 's/ with TraceID.*//' | sort | uniq -c
@@ -48,3 +55,4 @@ bash run-local.sh stop > /dev/null 2>&1; sleep 3; kill "$pid" 2> /dev/null
 for x in $(ls docs 2> /dev/null); do cp "$OUT" "docs/$x/BROKER_RUN.txt"; done
 echo "$P: $(grep -c ' message$' "$OUT") case(s) sent"
 sed -n '/## arrived/,$p' "$OUT" | grep -vE "^## " | sed 's/^/   /'
+if grep -q "^WARNING" "$OUT"; then exit 1; fi

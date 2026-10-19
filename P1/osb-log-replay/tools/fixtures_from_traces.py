@@ -109,9 +109,13 @@ def main() -> int:
                 # a later, different body in the same trace is OSB's own output, the best oracle there is.
                 later = [e["fields"]["body"] for e in t["events"] if e["fields"].get("body")
                          and e["fields"]["body"].strip() != merged["body"].strip() and e.get("pipeline_type") != "error"]
-                if len(later) == 1:
-                    ext = "xml" if later[0].lstrip().startswith("<") else "json"
-                    files[f"expected-output.{ext}"] = later[0]
+                xml_later = [b for b in later if b.lstrip().startswith("<")]
+                if len(later) == 1 or len(xml_later) == 1:
+                    # one later body, or exactly one XML among several (the request logged again as JSON + the XML the
+                    # route sent after the XQuery): that XML is what OSB sent
+                    body = xml_later[0] if len(xml_later) == 1 else later[0]
+                    ext = "xml" if body.lstrip().startswith("<") else "json"
+                    files[f"expected-output.{ext}"] = body
                     expected["body_oracle"] = "OSB log: the body OSB logged after the request in the same trace (check the log line on the card)"
                 elif len(later) > 1:
                     expected["body_oracle"] = f"{len(later)} later bodies logged in this trace: none taken, choose on the card"
