@@ -20,6 +20,7 @@ work) it writes:
       src/test/resources/<proxy>/      flow-test.json, parity cases (masked), stubs
       src/env/local.properties         the same keys for a local broker (broker/run_local.sh <this folder>)
       src/docs/<proxy>/                FLOW_CARD.md, MIGRATION_NOTES.md, TEST_MATRIX.md, GATES.json
+      RUN_LOCAL.md, run-local.sh       how to run it without the kit (mvn test; queues, run, send, stat on a local Artemis)
 
 Every property placeholder of a flow gets the prefix <proxy>. (two flows of one project never share a key); every
 test also sets the other flows' endpoints to direct:/mock:, because the one route file starts all routes. Prints
@@ -31,6 +32,9 @@ import re
 import shutil
 import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import run_local_doc  # noqa: E402
 
 KAMELET_LOCATION = "{{env:KAMELET_LOCATION:file:../Common-setup}}"
 SOURCE_KAMELET = """apiVersion: camel.apache.org/v1
@@ -378,6 +382,7 @@ def assemble(ws: Path, out: Path, app: str, rx: str | None) -> dict:
         (dst / "src/env").mkdir(parents=True, exist_ok=True)
         (dst / "src/env/local.properties").write_text("\n".join(local) + "\n", encoding="utf-8")
         (dst / "pom.xml").write_text(pom_for(project, short, mods), encoding="utf-8")
+        run_local_doc.write(dst)          # RUN_LOCAL.md + run-local.sh: the reviewer runs it without the kit
         (dst / ".gitignore").write_text("target/\nsrc/test/resources/*/parity/\n.camel-jbang/\n", encoding="utf-8")
         n_proj += 1
     return {"projects": n_proj, "flows": n_flow, "out": str(root)}
