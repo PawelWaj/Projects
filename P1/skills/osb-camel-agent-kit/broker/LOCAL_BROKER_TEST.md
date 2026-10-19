@@ -95,3 +95,13 @@ bash $KIT/broker/queues.sh $F
 ```
 Verified with a two-flow project on Artemis 2.44.0: one route file, 38 tests green, both subscriptions consumed, every
 output and error queue reached. Transport binding (D1) = the two kamelet files only.
+
+## 7 Everything in one window
+
+```
+bash $KIT/broker/e2e_local.sh <module | flat project folder> [--flow <proxy>]
+```
+Queues → route in the background (log `target/e2e-route.log`) → one case per scenario of every flow + one unreadable
+message per flow → MESSAGES ADDED of each output queue (after minus before) next to what the tests expect → route
+stopped. Exit 0 = every output queue got what was expected.
+
