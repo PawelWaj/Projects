@@ -49,10 +49,27 @@ def expected(case: Path, cfg: dict) -> list[str]:
     return ["?unmapped"]
 
 
+def selector_of(folder: Path, flow: str) -> str:
+    for f in (folder / "src/env/local.properties", folder / "env/local.properties"):
+        for ln in f.read_text(encoding="utf-8").splitlines() if f.is_file() else []:
+            k, _, v = ln.partition("=")
+            if k.strip() in (f"{flow}.flow.input.selector", "flow.input.selector"):
+                return v.strip()
+    return ""
+
+
+def passes(selector: str, headers: dict) -> bool:
+    """The broker-side filter for the simple OSB form (a = 'x' AND b = 'y' ...); anything else is assumed to pass."""
+    if not selector or re.search(r"\bOR\b|\bNOT\b|<>|\bLIKE\b|\bIN\b", selector, re.I):
+        return True
+    return all(str(headers.get(k, "")) == v for k, v in re.findall(r"(\w+)\s*=\s*'([^']*)'", selector))
+
+
 def plan(folder: Path, only: str | None) -> None:
     for flow, res in resources(folder):
         if only and flow != only:
             continue
+        sel = selector_of(folder, flow)
         cfg = json.loads((res / "flow-test.json").read_text(encoding="utf-8"))
         scen = {}
         for inp in sorted((res / "parity").rglob("input.payload")):
@@ -62,7 +79,10 @@ def plan(folder: Path, only: str | None) -> None:
             if key not in scen or (scen[key][1] and not synthetic):
                 scen[key] = (case, synthetic)
         for case, _ in sorted(scen.values(), key=lambda t: (t[1], str(t[0]))):
-            print(f"{flow}\t{case.as_posix()}\t{','.join(expected(case, cfg))}")
+            hf = case / "headers.json"
+            hdr = json.loads(hf.read_text(encoding="utf-8")) if hf.is_file() else {}
+            outs = expected(case, cfg) if passes(sel, hdr) else ["(filtered by the subscription selector)"]
+            print(f"{flow}\t{case.as_posix()}\t{','.join(outs)}")
 
 
 def queue_of(folder: Path, flow: str, output: str, flat: bool) -> str:
@@ -105,7 +125,7 @@ def report(folder: Path, plan_file: Path, before: Path, after: Path, raw: int) -
     for ln in plan_file.read_text(encoding="utf-8").splitlines():
         flow, _, outs = ln.split("\t")
         flows.add(flow)
-        for o in filter(None, outs.split(",")):
+        for o in filter(lambda o_: o_ and not o_.startswith("("), outs.split(",")):
             want[(flow, o)] = want.get((flow, o), 0) + 1
     for flow, res in resources(folder):
         if flow in flows:

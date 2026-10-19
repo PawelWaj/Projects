@@ -15,7 +15,7 @@ flat=0; [ -f "$M/src/env/local.properties" ] && [ ! -f "$M/env/local.properties"
 
 echo "== 1 queues"
 bash "$KIT/broker/artemis_prepare.sh" "$M" | tail -3
-"$PY" "$KIT/broker/e2e_check.py" plan "$M" "${FLOW_ARGS[@]}" > "$PLAN"
+"$PY" "$KIT/broker/e2e_check.py" plan "$M" ${FLOW_ARGS[@]+"${FLOW_ARGS[@]}"} > "$PLAN"
 [ -s "$PLAN" ] || { echo "no test cases found under $M/src/test/resources"; exit 2; }
 artemis_client queue stat --maxRows 500 > "$B" 2>&1
 
@@ -41,14 +41,14 @@ echo "== 3 send"
 n=0
 while IFS=$'\t' read -r flow case outs; do
   fa=(); [ "$flat" = 1 ] && fa=(--flow "$flow")
-  r=$(bash "$KIT/broker/send_case.sh" "$M" "${fa[@]}" "$case" 2>&1 | tail -1)
+  r=$(bash "$KIT/broker/send_case.sh" "$M" ${fa[@]+"${fa[@]}"} "$case" 2>&1 | tail -1)
   echo "   $flow $(basename "$(dirname "$case")") -> expect ${outs:-nothing}: ${r%% with properties*}"
   n=$((n + 1))
 done < "$PLAN"
 for flow in $(cut -f1 "$PLAN" | sort -u); do
   fa=(); [ "$flat" = 1 ] && fa=(--flow "$flow")
-  first=$(grep -m1 "^$flow	" "$PLAN" | cut -f2)
-  bash "$KIT/broker/send_case.sh" "$M" "${fa[@]}" --raw 'not json at all' --headers "$(cat "$first/headers.json")" > /dev/null 2>&1
+  first=$(grep "^$flow	" "$PLAN" | grep -v "(filtered" | head -1 | cut -f2)
+  bash "$KIT/broker/send_case.sh" "$M" ${fa[@]+"${fa[@]}"} --raw 'not json at all' --headers "$(cat "$first/headers.json")" > /dev/null 2>&1
   echo "   $flow unreadable message -> expect error queue"
 done
 echo "   $n case(s) + 1 unreadable message per flow; waiting for the route ..."
