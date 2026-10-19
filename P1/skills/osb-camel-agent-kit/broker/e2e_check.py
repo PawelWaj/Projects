@@ -58,11 +58,110 @@ def selector_of(folder: Path, flow: str) -> str:
     return ""
 
 
+TOKEN = re.compile(r"\s*(?:(\()|(\))|('(?:[^']|'')*')|(<>|=|,)|([A-Za-z_][\w.]*)|(-?\d+(?:\.\d+)?))")
+
+
+def tokens(sel: str) -> list[tuple[str, str]] | None:
+    out, i = [], 0
+    while i < len(sel.rstrip()):
+        m = TOKEN.match(sel, i)
+        if not m or m.end() == i:
+            return None
+        lp, rp, lit, op, ident, num = m.groups()
+        out.append(("(", "(") if lp else (")", ")") if rp else ("lit", lit[1:-1].replace("''", "'")) if lit
+                   else ("op", op) if op else ("num", num) if num else
+                   (ident.upper(), ident.upper()) if ident.upper() in ("AND", "OR", "NOT", "IN") else ("id", ident))
+        i = m.end()
+    return out
+
+
+def evaluate(sel: str, headers: dict):
+    """JMS selector subset of OSB proxies: = <> IN, AND OR NOT, parentheses. A missing property is never equal.
+    Returns True/False, or None when the selector uses anything else (then it is not judged)."""
+    t = tokens(sel)
+    if t is None:
+        return None
+    pos = [0]
+
+    def peek():
+        return t[pos[0]] if pos[0] < len(t) else ("end", "")
+
+    def take(kind=None):
+        tok = peek()
+        if kind and tok[0] != kind:
+            raise ValueError(tok)
+        pos[0] += 1
+        return tok
+
+    def factor():
+        if peek()[0] == "NOT":
+            take()
+            return not factor()
+        if peek()[0] == "(":
+            take()
+            v = expr()
+            take(")")
+            return v
+        name = take("id")[1]
+        have = headers.get(name)
+        if peek()[0] == "IN":
+            take(); take("(")
+            vals = [take()[1]]
+            while peek() == ("op", ","):
+                take(); vals.append(take()[1])
+            take(")")
+            return have is not None and str(have) in vals
+        op = take("op")[1]
+        val = take()[1]
+        if have is None:
+            return False
+        return (str(have) == val) if op == "=" else (str(have) != val)
+
+    def term():
+        v = factor()
+        while peek()[0] == "AND":
+            take()
+            v = factor() and v
+        return v
+
+    def expr():
+        v = term()
+        while peek()[0] == "OR":
+            take()
+            v = term() or v
+        return v
+
+    try:
+        v = expr()
+        return v if pos[0] == len(t) else None
+    except (ValueError, IndexError):
+        return None
+
+
 def passes(selector: str, headers: dict) -> bool:
-    """The broker-side filter for the simple OSB form (a = 'x' AND b = 'y' ...); anything else is assumed to pass."""
-    if not selector or re.search(r"\bOR\b|\bNOT\b|<>|\bLIKE\b|\bIN\b", selector, re.I):
+    if not selector:
         return True
-    return all(str(headers.get(k, "")) == v for k, v in re.findall(r"(\w+)\s*=\s*'([^']*)'", selector))
+    v = evaluate(selector, headers)
+    return True if v is None else v
+
+
+def fill_for_selector(selector: str, headers: dict) -> dict:
+    """Properties the selector needs but the case does not carry (OSB does not log them, e.g. eventType): each gets the
+    first value named in the selector that lets the message pass; the case's own properties are never changed."""
+    if not selector:
+        return {}
+    t = tokens(selector) or []
+    missing = [n for k, n in t if k == "id" and n not in headers]
+    added = {}
+    for name in dict.fromkeys(missing):
+        vals = [t[i + 2][1] for i in range(len(t) - 2) if t[i] == ("id", name) and t[i + 1] == ("op", "=")]
+        for v in vals or [""]:
+            if evaluate(selector, {**headers, **added, name: v}) is not False:
+                added[name] = v
+                break
+        else:
+            added[name] = vals[0] if vals else ""
+    return added
 
 
 def plan(folder: Path, only: str | None) -> None:
@@ -81,6 +180,7 @@ def plan(folder: Path, only: str | None) -> None:
         for case, _ in sorted(scen.values(), key=lambda t: (t[1], str(t[0]))):
             hf = case / "headers.json"
             hdr = json.loads(hf.read_text(encoding="utf-8")) if hf.is_file() else {}
+            hdr = {**hdr, **fill_for_selector(sel, hdr)}       # what e2e_local sends (send_case --fill-selector)
             outs = expected(case, cfg) if passes(sel, hdr) else ["(filtered by the subscription selector)"]
             print(f"{flow}\t{case.as_posix()}\t{','.join(outs)}")
 

@@ -611,6 +611,16 @@ class SyntheticAndReplyTests(unittest.TestCase):
                 (c / "expected-output.json").write_text(json.dumps(out))
             self.assertEqual(scaffold_camelk.generated_fields(Path(d)), ["publishDate", "timestamp"])
 
+    def test_selector_fill_and_filter(self):
+        """Broker test: properties OSB does not log get a value the selector allows; a resource it excludes stays filtered."""
+        sys.path.insert(0, str(ROOT / "skills/osb-camel-agent-kit/broker"))
+        import e2e_check as e
+        sel = "(resource='A' OR resource='B') AND (eventType='created' OR eventType='update-approved')"
+        self.assertEqual(e.fill_for_selector(sel, {"resource": "B"}), {"eventType": "created"})
+        self.assertTrue(e.passes(sel, {"resource": "B", "eventType": "created"}))
+        self.assertFalse(e.passes(sel, {"resource": "C", **e.fill_for_selector(sel, {"resource": "C"})}))
+        self.assertIsNone(e.evaluate("a LIKE 'x%'", {}))
+
     def test_domain_coverage_groups(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d, "inv")

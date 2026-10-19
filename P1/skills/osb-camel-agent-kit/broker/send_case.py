@@ -57,6 +57,8 @@ def main() -> int:
     ap.add_argument("--headers", help="JSON object of message properties for --raw")
     ap.add_argument("--count", type=int, default=1)
     ap.add_argument("--flow", help="flat project with several flows: the proxy whose input gets the message")
+    ap.add_argument("--fill-selector", action="store_true",
+                    help="add the properties the subscription selector needs but the case lacks (OSB does not log them)")
     a = ap.parse_args()
     if a.raw is not None:
         body, headers = a.raw, json.loads(a.headers or "{}")
@@ -66,6 +68,12 @@ def main() -> int:
         headers = json.loads(hf.read_text(encoding="utf-8")) if hf.is_file() else {}
     else:
         sys.exit("give a case folder with input.payload, or --raw")
+    filled = {}
+    if a.fill_selector:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from e2e_check import fill_for_selector, selector_of
+        filled = fill_for_selector(selector_of(a.module, a.flow or a.module.name), headers)
+        headers = {**headers, **filled}
     props = [{"type": "string", "key": k, "value": str(v)} for k, v in headers.items() if isinstance(v, (str, int, float, bool))]
     home, pw = os.environ.get("ARTEMIS_HOME", ""), os.environ.get("ARTEMIS_PASSWORD", "")
     if not home or not pw:
@@ -79,7 +87,8 @@ def main() -> int:
     if r.returncode or "Elapsed time" not in r.stdout + r.stderr:
         print((r.stdout + r.stderr).strip()[-600:])
         return 1
-    print(f"sent {a.count} message(s) to {dest} with properties {[p['key'] for p in props]} ({len(body)} chars)")
+    print(f"sent {a.count} message(s) to {dest}" + (f" (+{', '.join(f'{k}={v}' for k, v in filled.items())} for the selector)" if filled else "")
+          + f" with properties {[p['key'] for p in props]} ({len(body)} chars)")
     return 0
 
 
