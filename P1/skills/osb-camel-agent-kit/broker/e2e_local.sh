@@ -17,7 +17,7 @@ echo "== 1 queues"
 bash "$KIT/broker/artemis_prepare.sh" "$M" | tail -3
 "$PY" "$KIT/broker/e2e_check.py" plan "$M" ${FLOW_ARGS[@]+"${FLOW_ARGS[@]}"} > "$PLAN"
 [ -s "$PLAN" ] || { echo "no test cases found under $M/src/test/resources"; exit 2; }
-artemis_client queue stat --maxRows 500 > "$B" 2>&1
+artemis_client queue stat --maxRows 500 --maxColumnSize -1 > "$B" 2>&1
 
 echo "== 2 route (background, log: $LOG)"
 bash "$KIT/broker/run_local.sh" "$M" > "$LOG" 2>&1 &
@@ -44,7 +44,7 @@ while IFS=$'\t' read -r flow case outs; do
   r=$(bash "$KIT/broker/send_case.sh" "$M" ${fa[@]+"${fa[@]}"} "$case" 2>&1 | tail -1)
   echo "   $flow $(basename "$(dirname "$case")") -> expect ${outs:-nothing}: ${r%% with properties*}"
   n=$((n + 1))
-done < "$PLAN"
+done < <(tr -d '\r' < "$PLAN")
 for flow in $(cut -f1 "$PLAN" | sort -u); do
   fa=(); [ "$flat" = 1 ] && fa=(--flow "$flow")
   first=$(grep "^$flow	" "$PLAN" | grep -v "(filtered" | head -1 | cut -f2)
@@ -55,7 +55,7 @@ echo "   $n case(s) + 1 unreadable message per flow; waiting for the route ..."
 sleep 8
 
 echo "== 4 result"
-artemis_client queue stat --maxRows 500 > "$A" 2>&1
+artemis_client queue stat --maxRows 500 --maxColumnSize -1 > "$A" 2>&1
 "$PY" "$KIT/broker/e2e_check.py" report "$M" "$PLAN" "$B" "$A" 1
 rc=$?
 errs=$(grep -cE "ERROR|Exception" "$LOG")

@@ -42,5 +42,5 @@ artemis() { need_home; "$JAVA" -classpath "$(wpath "$ARTEMIS_HOME/lib/artemis-bo
 # the same with the connection of this session
 artemis_client() { need_password; artemis "$@" --user "$ARTEMIS_USER" --password "$ARTEMIS_PASSWORD" --url "$ARTEMIS_URL"; }
 # key=value lines of <module>/env/local.properties (no comments, no blank lines)
-module_props() { grep -vE '^[[:space:]]*(#|$)' "$(local_props "$1")"; }
+module_props() { tr -d '\r' < "$(local_props "$1")" | grep -vE '^[[:space:]]*(#|$)'; }   # CRLF files on Windows
 console_up() { curl -s -o /dev/null -w '%{http_code}' "$ARTEMIS_CONSOLE/" 2>/dev/null | grep -qE '^(200|30[0-9]|401)$'; }

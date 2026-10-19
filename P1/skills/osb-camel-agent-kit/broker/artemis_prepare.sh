@@ -16,9 +16,9 @@ while IFS=$'\t' read -r name address routing filter; do
     *) continue;;
   esac
   if [ "$DRY" = --dry-run ]; then printf 'artemis'; printf ' %q' "${args[@]}"; echo; continue; fi
-  if [ "$routing" != address ] && artemis_client queue stat --queueName "$name" 2>/dev/null | grep -q "^|$name *|"; then
+  if [ "$routing" != address ] && artemis_client queue stat --maxColumnSize -1 --queueName "$name" 2>/dev/null | grep -q "^|$name *|"; then
     echo "exists: $name on $address"; continue
   fi
   artemis_client "${args[@]}" 2>&1 | grep -iE "created|already|exist|error|exception" | head -1 | sed "s/^/$name: /"
-done < <("$PY" "$KIT/broker/plan_queues.py" "$M" --tsv)
+done < <("$PY" "$KIT/broker/plan_queues.py" "$M" --tsv | tr -d '\r')
 [ "$DRY" = --dry-run ] || bash "$KIT/broker/queues.sh" "$M"
