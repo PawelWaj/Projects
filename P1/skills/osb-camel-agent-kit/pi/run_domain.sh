@@ -221,17 +221,26 @@ do_review() {   # tests -> build -> verify -> flat -> mvn test (flat) -> broker 
     for P in $(ls -d "$D"/*/ | xargs -n1 basename | grep -Ex "($PROJECTS)"); do
       ( cd "$D/$P" && export BROKER_PASSWORD="$ARTEMIS_PASSWORD" BROKER_USER="${ARTEMIS_USER:-artemis}"
         bash run-local.sh run > test/broker-run.log 2>&1 & pid=$!
-        for i in $(seq 1 120); do grep -qE "Apache Camel .* started|ERROR|BUILD FAILURE" test/broker-run.log && break; sleep 2; done
+        for i in $(seq 1 "${BROKER_START_WAIT:-300}"); do        # first run: JBang/Camel download through Nexus (minutes)
+          grep -qE "Apache Camel .* started" test/broker-run.log && break
+          kill -0 "$pid" 2> /dev/null || break
+          sleep 2
+        done
+        if ! grep -qE "Apache Camel .* started" test/broker-run.log; then
+          { echo "# broker run $(date '+%F %T'): ROUTE DID NOT START, nothing sent"; tail -20 test/broker-run.log; } > test/BROKER_RUN.txt
+        else
         { echo "# broker run $(date '+%F %T')"; bash run-local.sh stat > test/stat-before.txt
           for x in $(ls test/resources); do
             for c in $(find "test/resources/$x/parity" -name input.payload | xargs -n1 dirname | sort | awk -F/ '!seen[$(NF-1)]++'); do
               echo "send $x $(basename "$(dirname "$c")"): $(bash run-local.sh send "$x" "$c" | grep -c Produced) produced"; done; done
           sleep 8; echo "## queues after (MESSAGES ADDED includes earlier runs; compare with stat-before.txt)"; bash run-local.sh stat
-          echo "## route log"; grep -oE "(Request Received|Sending to [^ ]*|Error captured)[^:]*" test/broker-run.log | sort | uniq -c; } > test/BROKER_RUN.txt
+          echo "## route log"; grep -oE "(Request Received|Sending to [^ ]*|Error captured)[^:]*" test/broker-run.log | sed -E 's/ with TraceID.*//' | sort | uniq -c; } > test/BROKER_RUN.txt
+        fi
         if [ -r "/proc/$pid/winpid" ]; then taskkill //F //T //PID "$(cat /proc/$pid/winpid)" > /dev/null 2>&1
         else pkill -f "run [^ ]*-route.yaml application.properties local.properties" 2>/dev/null; kill "$pid" 2>/dev/null; fi
         for x in $(ls docs); do cp test/BROKER_RUN.txt "docs/$x/BROKER_RUN.txt"; done )
-      echo "   $P: $(grep -c '^send' "$D/$P/test/BROKER_RUN.txt") case(s) sent, see $D/$P/test/BROKER_RUN.txt"
+      if grep -q "ROUTE DID NOT START" "$D/$P/test/BROKER_RUN.txt"; then echo "   $P: ROUTE DID NOT START (see $D/$P/test/BROKER_RUN.txt)"; sed -n '2,6p' "$D/$P/test/BROKER_RUN.txt" | sed 's/^/      /'
+      else echo "   $P: $(grep -c '^send' "$D/$P/test/BROKER_RUN.txt") case(s) sent, see $D/$P/test/BROKER_RUN.txt"; fi
       grep -E "Sending to|Error captured" "$D/$P/test/BROKER_RUN.txt" | sed 's/^/      /'
     done
   fi

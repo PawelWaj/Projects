@@ -3,6 +3,8 @@
 reviewer runs the flows with Java 21, Maven 3.9 and an Artemis only (no kit). Called by assemble_flat.py.
 
     run_local_doc.py <flat project folder>          (re)write the two files from src/env/local.properties"""
+from __future__ import annotations
+
 import json
 import re
 import shlex

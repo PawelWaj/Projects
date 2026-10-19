@@ -15,6 +15,8 @@ For every route/publish it writes the chain that is in effect there, and the res
 The JSON (with the XQuery/expression texts) stays on the client machine; --summary prints names only (shareable).
 Unknown child elements of nxsdTranslation / xqueryTransform are listed under "unknown_tags", so a syntax the script
 does not know yet is visible instead of silently ignored."""
+from __future__ import annotations
+
 import argparse
 import json
 import re

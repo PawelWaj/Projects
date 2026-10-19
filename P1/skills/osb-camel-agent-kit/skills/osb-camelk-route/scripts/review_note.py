@@ -9,6 +9,8 @@ e2e_local.sh), src/docs/<proxy>/GATES.json, the route file and the Java files; p
 open questions. Detects: failing tests, failing gates other than K1, extra Java classes the agent added (and whether
 the route uses them), route comments that call a draft card approved, cases the subscription selector filters,
 selector properties the cases lack (filled in the broker run), queues that differ in the broker run."""
+from __future__ import annotations
+
 import argparse
 import datetime
 import json

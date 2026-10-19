@@ -24,6 +24,8 @@ Per OSB project (from the work modules <ws>/modules/<project>/<proxy>/ and the O
 Routing comes from the frozen scenario table of the module (flow-test.json, checked against the Splunk cases);
 transformations never come from an agent: what OSB does to the body is read from the pipeline and run with OSB's
 own files. Prints {"projects": n, "flows": n, "out": ...}; per flow what could not be generated goes to BODY_CHAIN.md."""
+from __future__ import annotations
+
 import argparse
 import json
 import re

@@ -8,6 +8,8 @@ plan: every scenario folder of every flow (real cases first, synthetic where a s
 outputs come from flow-test.json scenario_mapping exactly as the parity test computes them.
 report: MESSAGES ADDED of each output queue after minus before (`artemis queue stat` tables), next to the expected
 count; error queue expected = error cases + the raw messages sent. Prints OK / DIFF per queue and exits 1 on a DIFF."""
+from __future__ import annotations
+
 import json
 import re
 import sys
