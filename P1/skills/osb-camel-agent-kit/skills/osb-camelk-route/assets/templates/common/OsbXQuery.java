@@ -44,6 +44,31 @@ public final class OsbXQuery {
     private static final Map<String, XQueryExecutable> CACHE = new ConcurrentHashMap<>();
 
     static {
+        SAXON.registerExtensionFunction(new ExtensionFunction() {   // fn-bea:serialize($node): the node as a string, as OSB logs it
+            public QName getName() {
+                return new QName(FN_BEA, "serialize");
+            }
+
+            public SequenceType getResultType() {
+                return SequenceType.makeSequenceType(ItemType.STRING, OccurrenceIndicator.ONE);
+            }
+
+            public SequenceType[] getArgumentTypes() {
+                return new SequenceType[] {SequenceType.makeSequenceType(ItemType.ANY_ITEM, OccurrenceIndicator.ZERO_OR_MORE)};
+            }
+
+            public XdmValue call(XdmValue[] args) {
+                try {
+                    StringWriter w = new StringWriter();
+                    Serializer ser = SAXON.newSerializer(w);
+                    ser.setOutputProperty(Serializer.Property.OMIT_XML_DECLARATION, "yes");
+                    ser.serializeXdmValue(args[0]);
+                    return new XdmAtomicValue(w.toString());
+                } catch (Exception e) {
+                    throw new IllegalStateException("fn-bea:serialize: " + e.getMessage(), e);
+                }
+            }
+        });
         SAXON.registerExtensionFunction(new ExtensionFunction() {
             public QName getName() {
                 return new QName(FN_BEA, "uuid");

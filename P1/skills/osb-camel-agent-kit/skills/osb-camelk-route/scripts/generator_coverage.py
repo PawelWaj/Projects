@@ -20,11 +20,16 @@ from pathlib import Path
 COVERED_ACTIONS = {"assign", "replace", "nxsdTranslation", "ifThenElse", "route", "log", "transportHeaders",
                    "transport-headers", "reply", "Error", "raiseError", "resume", "skip", "report", "alert"}
 COVERED_TRANSPORTS = {"jms"}
-COVERED_FN_BEA = {"uuid"}
+COVERED_FN_BEA = {"uuid", "serialize"}
+# covered with a documented assumption (listed under notes, not as a blocker)
+NOTE_ONLY = {"routing-options": "route retry/URI overrides: generator uses the business-service defaults (retry 0); check BODY_CHAIN.md",
+             "routingOptions": "see routing-options",
+             "fn-bea:serialize": "serialize(): shim in OsbXQuery.java (Saxon serializer)"}
 # how an uncovered construct is handled until the generator knows it
 HOW = {"wsCallout": "service callout: generate to:{{backend}} + response variable; stub from WSDL/XSD",
        "javaCallout": "compiled Java in the export: port or wrap once per jar, cannot be generated",
-       "javaScript": "JavaScript action: port by hand", "javascript": "JavaScript action: port by hand",
+       "javaScript": "JavaScript action: run the same script on Camel's JavaScript language (GraalJS) with a shim for the OSB process.* API; port by hand only where that fails",
+       "javascript": "see javaScript",
        "publish": "publish: generate as fire-and-forget to:{{out}}", "publishTable": "publish table: generate as choice",
        "routeTable": "routing table: generate as choice", "dynamicRoute": "dynamic route: generate recipientList from the expression",
        "dynamicPublish": "dynamic publish: generate recipientList", "forEach": "forEach: generate split/aggregate",
@@ -33,6 +38,10 @@ HOW = {"wsCallout": "service callout: generate to:{{backend}} + response variabl
        "nXSDTransform": "nXSD transform (XML-To-Native): reverse converter needed", "routingOptions": "routing options: map to endpoint options",
        "routing-options": "see routingOptions", "http": "HTTP transport: generate platform-http / http endpoints + reply",
        "sb": "SB transport: generate direct/endpoint", "jdbc": "JDBC: generate sql endpoint + stub",
+       "jca": "JCA DB adapter (poller / insert / stored procedure): generate camel-sql / camel-jdbc endpoints from the adapter config; test with H2 stub",
+       "lookupBasicCredentials": "service-account credentials: shim that reads a property/secret per account name",
+       "execute-sql": "SQL inside XQuery: shim backed by camel-sql datasource, or move the query to a sql: step",
+       "binary-to-text": "shim: base64/binary -> string", "inlinedXML": "shim: parse string -> node", "trim": "shim", "format-number": "shim",
        "fn-bea": "OSB XQuery function: one Saxon extension shim in OsbXQuery.java, written once, reused by every flow"}
 
 
@@ -54,19 +63,23 @@ def main() -> int:
         trans.discard("")
         fnbea = {fn for t in d.get("transforms") or [] for fn in t.get("fn_bea") or []} | set(pipe.get("fn_bea_inline") or [])
         xml_to_native = any("xml-to-native" in str(v).lower() for v in (pipe.get("nxsd_types") or []))
-        bl = sorted((acts - COVERED_ACTIONS) | {t for t in trans if t not in COVERED_TRANSPORTS}
-                    | {f"fn-bea:{fn}" for fn in fnbea if fn not in COVERED_FN_BEA} | ({"nXSD XML-To-Native"} if xml_to_native else set()))
+        raw = ((acts - COVERED_ACTIONS) | {t for t in trans if t not in COVERED_TRANSPORTS}
+               | {f"fn-bea:{fn}" for fn in fnbea if fn not in COVERED_FN_BEA} | ({"nXSD XML-To-Native"} if xml_to_native else set()))
+        notes = sorted(x for x in raw if x in NOTE_ONLY)
+        bl = sorted(x for x in raw if x not in NOTE_ONLY)
         name = f"{d.get('project', '')}/{(d.get('proxy') or {}).get('name') or f.stem}"
-        rows.append((name, (d.get("triage") or {}).get("tier", "-"), bl))
+        rows.append((name, (d.get("triage") or {}).get("tier", "-"), bl, notes))
         blockers.update(bl)
         by_tier[("generated" if not bl else "blocked")] += 1
     L = [f"# Generator coverage: {a.inventory}", "", f"{len(rows)} flows: {by_tier['generated']} generated today, {by_tier['blocked']} blocked by constructs the generator does not know yet.", "",
          "## Constructs by number of flows (extend the generator in this order)", "", "| Construct | Flows | How to cover it |", "|---|---|---|"]
     for c, n in blockers.most_common():
-        L.append(f"| {c} | {n} | {HOW.get(c.split(':')[0], HOW.get(c, 'extend body_chain/assemble_jbang'))} |")
-    L += ["", "## Flows", "", "| Flow | Triage tier | Status |", "|---|---|---|"]
-    for name, tier, bl in rows:
-        L.append(f"| {name} | {tier} | {'generated' if not bl else 'blocked by ' + ', '.join(bl)} |")
+        key = c.split(":", 1)[1] if c.startswith("fn-bea:") else c
+        L.append(f"| {c} | {n} | {HOW.get(key, HOW.get(c, 'extend body_chain/assemble_jbang'))} |")
+    L += ["", "Covered with a documented assumption (not blockers): " + "; ".join(f"{k}: {v}" for k, v in NOTE_ONLY.items() if k != "routingOptions"), ""]
+    L += ["## Flows", "", "| Flow | Triage tier | Status | Notes |", "|---|---|---|---|"]
+    for name, tier, bl, notes in rows:
+        L.append(f"| {name} | {tier} | {'generated' if not bl else 'blocked by ' + ', '.join(bl)} | {', '.join(notes)} |")
     text = "\n".join(L) + "\n"
     if a.out:
         a.out.write_text(text, encoding="utf-8")
