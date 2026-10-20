@@ -693,6 +693,17 @@ class SyntheticAndReplyTests(unittest.TestCase):
             got = {p["key"]: p["value"] for p in json.loads(props)}
             self.assertEqual(got, {"resource": "Bulk Registration Request", "traceId": "t1", "eventType": "created"})
 
+    def test_generator_coverage_from_inventory(self):
+        """generator_coverage.py: a JMS+XQuery flow is generated today; a callout/HTTP flow is blocked by named constructs."""
+        base = ROOT / "skills/osb-camel-agent-kit/skills/osb-to-camel"
+        with tempfile.TemporaryDirectory() as d:
+            for fx, want in (("osb-export-12c-topic", "1 generated today, 0 blocked"), ("osb-export", "0 generated today, 1 blocked")):
+                inv = Path(d, fx)
+                subprocess.run([sys.executable, str(base / "scripts/osb_inventory.py"), str(base / "evals/fixtures" / fx), "-o", str(inv)], capture_output=True)
+                r = subprocess.run([sys.executable, str(self.SK / "generator_coverage.py"), str(inv), "-o", str(inv / "COV.md")], capture_output=True, text=True)
+                self.assertIn(want, r.stdout, r.stderr)
+            self.assertIn("| wsCallout | 1 |", (Path(d, "osb-export") / "COV.md").read_text())
+
     def test_domain_coverage_groups(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d, "inv")
