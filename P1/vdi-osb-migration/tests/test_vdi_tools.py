@@ -704,6 +704,24 @@ class SyntheticAndReplyTests(unittest.TestCase):
                 self.assertIn(want, r.stdout, r.stderr)
             self.assertIn("| wsCallout | 1 |", (Path(d, "osb-export") / "COV.md").read_text())
 
+    def test_flow_patterns_cluster_by_signature(self):
+        """flow_patterns.py: flows with the same action sequence land in one pattern; different shapes in different ones."""
+        base = ROOT / "skills/osb-camel-agent-kit/skills/osb-to-camel"
+        with tempfile.TemporaryDirectory() as d:
+            inv = Path(d, "inv"); (inv / "flows").mkdir(parents=True)
+            for fx in ("osb-export-12c-topic", "osb-export"):
+                one = Path(d, fx)
+                subprocess.run([sys.executable, str(base / "scripts/osb_inventory.py"), str(base / "evals/fixtures" / fx), "-o", str(one)], capture_output=True)
+                for f in (one / "flows").glob("*.json"):
+                    shutil.copy(f, inv / "flows" / f.name)
+            twin = json.loads(next((inv / "flows").glob("order-event*")).read_text())
+            twin["project"] = "twin-prj"
+            (inv / "flows" / "twin.json").write_text(json.dumps(twin))
+            r = subprocess.run([sys.executable, str(self.SK / "flow_patterns.py"), str(inv), "--json", str(Path(d, "p.json"))], capture_output=True, text=True)
+            pats = json.loads(Path(d, "p.json").read_text())
+            self.assertEqual([p["flows"] for p in pats], [2, 1], r.stdout + r.stderr)
+            self.assertIn("in=jms", pats[0]["signature"])
+
     def test_domain_coverage_groups(self):
         with tempfile.TemporaryDirectory() as d:
             inv = Path(d, "inv")
