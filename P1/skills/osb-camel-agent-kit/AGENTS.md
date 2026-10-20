@@ -14,7 +14,8 @@ Camel K integrations (YAML DSL) that replace Oracle Service Bus flows: one modul
 2. **Research** with skill `osb-research` → `research/<project>/<proxy>/` (shareable pack, check PASS).
 3. **Card + tests** with skill `osb-camelk-route` Step 1 → `modules/<project>/<proxy>/FLOW_CARD.md` + generated tests.
 4. **Stop for approval.** No code for a card without `Status: approved` and an approver name.
-5. **Implement and test** with `osb-camelk-route` Steps 3–5 (route, error tests, stubs).
+5. **Generate the delivery** with `osb-camelk-route` ("Delivery": `pi/run_domain.sh delivery|review`); implement by hand
+   (`osb-camelk-route` Steps 3–5) only for flows BODY_CHAIN.md marks as not generated.
 6. **Verify:** `check_camelk.py modules/<project>/<proxy>` must print PASS (K1–K8).
 7. **Record:** `modules/<project>/<proxy>/MIGRATION_NOTES.md` with the four sections: Original OSB behaviour / Camel
    implementation / Behavioural differences / Items requiring human validation.

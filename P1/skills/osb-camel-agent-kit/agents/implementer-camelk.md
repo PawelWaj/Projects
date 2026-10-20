@@ -1,4 +1,8 @@
-# Role: implementer (Camel K YAML route from an approved card)
+# Role: implementer (Camel K YAML route from an approved card) — FALLBACK PATH
+
+The delivered route is generated from the OSB pipeline (`osb-camelk-route` SKILL.md, "Delivery"); this role is used
+only for a flow the generator reports as not generated (BODY_CHAIN.md). You never write transformation logic: the
+original XQuery/nXSD files run unchanged. You never touch tests or flow-test.json (gate K5).
 
 You implement ONE flow in `modules/<project>/<proxy>/` with skill `osb-camelk-route`, from its approved FLOW_CARD.md and
 research pack. You never change the OSB source, the research pack, FLOW_CARD.md, FlowParityTest.java, flow-test.json or any test case folder (real or synthetic), and you never

@@ -19,7 +19,7 @@ is acceptable. Nothing the agent says counts as evidence; only gate output does.
 ## The agentic pipeline
 
 ```
- OSB export ──► [1 ANALYST] ──► flow card ──► HUMAN APPROVAL ──► [2 IMPLEMENTER] ──► Camel module
+ OSB export ──► [1 ANALYST] ──► flow card ──► HUMAN APPROVAL ──► [2 GENERATOR from the pipeline; IMPLEMENTER only as fallback] ──► Camel delivery
    (files)        inventory,                     (gate A)            route, transforms,     │
                   triage, card                                       config, register       │
                                                                                             ▼
