@@ -61,6 +61,9 @@ case "$APP" in *\\*|[A-Za-z]:*) command -v cygpath >/dev/null && APP=$(cygpath -
 [ -d "$APP" ] || { echo "OSB application folder not found: $APP (Git Bash: /e/folder, not E:\\folder)"; exit 2; }
 KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
 PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
+if [ -n "${PROJECTS:-}" ]; then   # 'a-prj b-prj' or 'a-prj,b-prj' = 'a-prj|b-prj'
+  PROJECTS=$(printf '%s' "$PROJECTS" | sed -E 's/^[[:space:],]+//; s/[[:space:],]+$//; s/[[:space:],]+/|/g'); export PROJECTS
+fi
 FILTER=${PROJECTS:-.*}
 mkdir -p "$WS/domain"
 SK="$KIT/skills/osb-camelk-route/scripts"; [ -d "$SK" ] || SK="$KIT/.pi/skills/osb-camelk-route/scripts"
