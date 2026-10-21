@@ -10,6 +10,10 @@
 #   bash <kit>/pi/vdi_session.sh review 'a-prj|b-prj'     only the delivery part (no pi): delivery, tests, broker, archive
 #   bash <kit>/pi/vdi_session.sh stop [--broker]          routes stopped, pi back to the platform, pacer stopped
 #   PACER=0 before start/flows: no pacer, pi talks to the model directly (an endpoint without a rate limit)
+#   GEN=scripts|skills|both before flows/review: who builds route + tests after research (default scripts)
+#     scripts  route generated from the OSB pipeline, tests from Splunk cases + schema (no model)  -> delivery/ + archive
+#     skills   pi writes the route (osb-camelk-route + implementer-camelk) into modules/, frozen tests, mvn, gates
+#     both     the two side by side + one comparison line per flow
 #
 # Secrets are never written to a file: ARTEMIS_PASSWORD and MASK_KEY are asked for when they are not exported.
 # Logs: domain/pacer.log (one line per model call), domain/session-<date>.log (everything a flows/review run printed).
@@ -49,6 +53,32 @@ use_model_directly() {   # PACER=0: pi -> model platform, no pacer in between
 }
 model_link() { if [ "${PACER:-1}" = 0 ]; then use_model_directly; else pacer_up && pi_on_pacer || start_pacer; fi; }
 
+GEN=${GEN:-scripts}
+gen_stage() {   # $1 = projects, $2 = REVIEW_TESTS for the scripts path
+  case "$GEN" in
+    scripts) PI_TESTER=${PI_TESTER:-0} REVIEW_TESTS=${2:-1} PROJECTS="$1" bash "$KIT/pi/run_domain.sh" review ;;
+    skills)  skills_build "$1" ;;
+    both)    PI_TESTER=${PI_TESTER:-0} REVIEW_TESTS=${2:-1} PROJECTS="$1" bash "$KIT/pi/run_domain.sh" review
+             skills_build "$1"; compare_gen "$1" ;;
+    *) echo "GEN must be scripts, skills or both (got '$GEN')"; return 2 ;;
+  esac
+}
+skills_build() {   # pi writes the route; tests stay frozen, it may not edit them (gates K5/K1)
+  echo "=== GEN=skills: pi writes the route into modules/ (skill osb-camelk-route, role implementer-camelk), then mvn + gates"
+  PI_TESTER=${PI_TESTER:-1} POC=1 PROJECTS="$1" bash "$KIT/pi/run_domain.sh" build
+  PROJECTS="$1" bash "$KIT/pi/run_domain.sh" matrix
+}
+compare_gen() {   # one line per flow: scripts delivery tests vs skills module gates
+  echo "=== scripts vs skills"
+  PROJECTS="$1" bash "$KIT/pi/run_domain.sh" list 2>/dev/null | awk 'NF==2 && $2 != "proxies"' | while read -r p x; do
+    s=$(grep -hoE "[0-9]+ tests, [0-9]+ failed" "$WS"/delivery/*/"$p"/test/RESULTS.txt 2>/dev/null | tail -1)
+    g="$WS/modules/$p/$x"
+    k=$([ -f "$g/GATES.json" ] && "$PY" -c "import json,os,sys; g=json.load(open(sys.argv[1]))['gates']; bad=[k.split('_')[0] for k,v in g.items() if not v.get('ok')]; m=os.path.join(os.path.dirname(sys.argv[1]),'MUTATION.json'); print(('tests green' if g.get('K8_tests_green',{}).get('ok') else 'tests NOT green') + ', gates failed: ' + (','.join(bad) or 'none') + (', mutation checked' if os.path.exists(m) else ''))" "$g/GATES.json" || echo "no module")
+    printf '%-50s scripts: %-22s skills: %s\n' "$p/$x" "${s:-no result}" "$k"
+  done
+  echo "(skills: K1 fails by design in this comparison: the flow card is built as POC, not approved by a person)"
+}
+
 start_broker() {
   [ -n "${ARTEMIS_HOME:-}" ] || { echo "broker: ARTEMIS_HOME not set in .osb-kit.env (bash \$KIT/broker/artemis_setup.sh setup <folder>)"; return 1; }
   ask ARTEMIS_PASSWORD "Artemis password (user ${ARTEMIS_USER:-artemis})"
@@ -78,6 +108,7 @@ case "${1:-}" in
     echo "workspace $WS · APP=${APP:-<unset>} · kit $KIT"
     pacer_up && echo "pacer: running on :$PACER_PORT" || echo "pacer: not running"
     pi_on_pacer && echo "pi: talks to the pacer" || echo "pi: talks to the platform directly"
+    echo "GEN=$GEN (route + tests by scripts | skills | both)"
     [ -n "${ARTEMIS_PASSWORD:-}" ] && bash "$KIT/broker/artemis_setup.sh" status | tail -1 || echo "broker: (export ARTEMIS_PASSWORD to check)"
     [ -f domain/STATUS.md ] && tail -1 domain/STATUS.md ;;
 
@@ -101,14 +132,16 @@ case "${1:-}" in
         f=$(find "$APP/${pipe%%/*}" -name "${pipe##*/}.pipeline" | head -1)
         [ -n "$f" ] && "$PY" "$KIT/skills/osb-camelk-route/scripts/body_chain.py" "$f" --summary
       done
-      PROJECTS="$P" bash "$KIT/pi/run_domain.sh" review
+      echo "--- route + tests: GEN=$GEN"
+      gen_stage "$P" 1
     } 2>&1 | tee -a "$LOG" ;;
 
   review)
     P=${2:?usage: vdi_session.sh review 'a-prj|b-prj'}
     ask ARTEMIS_PASSWORD "Artemis password (user ${ARTEMIS_USER:-artemis})"
     broker_up || start_broker || echo "broker not running: the review stage skips the broker test"
-    REVIEW_TESTS=0 PROJECTS="$P" bash "$KIT/pi/run_domain.sh" review 2>&1 | tee -a "$LOG" ;;
+    [ "$GEN" = scripts ] || model_link || exit 1
+    gen_stage "$P" 0 2>&1 | tee -a "$LOG" ;;
 
   stop)
     D=$(ls -d "$WS"/delivery/*/ 2>/dev/null | head -1)
@@ -118,5 +151,5 @@ case "${1:-}" in
     pacer_up && echo "pacer still listening on :$PACER_PORT (close its window)" || echo "pacer: stopped"
     if [ "${2:-}" = "--broker" ]; then ask ARTEMIS_PASSWORD "Artemis password"; bash "$KIT/broker/artemis_setup.sh" stop; fi ;;
 
-  *) sed -n '2,17p' "$0"; exit 2 ;;
+  *) awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$0"; exit 2 ;;
 esac
