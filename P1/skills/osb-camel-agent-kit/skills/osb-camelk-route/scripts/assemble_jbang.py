@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import xml.etree.ElementTree as ET
 import re
 import shutil
 import sys
@@ -370,6 +371,27 @@ def body_chain_md(x: str, bc: dict, cfg: dict, notes: list) -> str:
     return "\n".join(L)
 
 
+def flow_selector(mp: dict, ws: Path, osb_app: Path, project: str, x: str) -> tuple[str, str]:
+    """The OSB message selector of a flow and where it was found: module properties (written once by the scaffold,
+    so an old module may lack it), else research.json, else the proxy file itself. The broker filters with it."""
+    if mp.get("flow.input.selector"):
+        return mp["flow.input.selector"], "module properties"
+    rj = ws / "research" / project / x / "research.json"
+    if rj.is_file():
+        sel = str((json.loads(rj.read_text(encoding="utf-8")).get("entry") or {}).get("selector") or "").strip()
+        if sel:
+            return sel, "research.json"
+    for px in (osb_app / project).rglob(f"{x}.proxy"):
+        try:
+            root = ET.parse(px).getroot()
+        except ET.ParseError:
+            continue
+        for e in root.iter():
+            if "selector" in e.tag.split("}")[-1].lower() and (e.text or "").strip():
+                return (e.text or "").strip(), "proxy file"
+    return "", "none"
+
+
 def find_file(osb_app: Path, ref: str, exts: tuple) -> Path | None:
     for e in exts:
         p = osb_app / f"{ref}{e}"
@@ -438,7 +460,9 @@ def assemble(ws: Path, osb_app: Path, out: Path, app: str, rx: str | None) -> di
                         files[ref] = f"transformations/{src.name}"
             mp = props_of(m / "src/main/resources/application.properties")
             lp = props_of(m / "env/local.properties")
-            sel = mp.get("flow.input.selector", "")
+            sel, sel_src = flow_selector(mp, ws, osb_app, project, x)
+            if sel_src not in ("module properties", "none"):
+                notes.append(f"selector taken from {sel_src}: the module properties have none (module older than the selector)")
             route, e_headers = route_for(project, x, cfg, bc, files, notes, sel)
             routes += ["", route]
             props += ["", f"# ---- flow {x}", f"{x}.flow.input={source_uri(mp.get('flow.input', ''), sel)}"]

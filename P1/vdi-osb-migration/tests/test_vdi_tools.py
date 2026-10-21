@@ -681,6 +681,13 @@ class SyntheticAndReplyTests(unittest.TestCase):
             for f in ("README.md", "run.sh", "set-env.sh", "tools/jbang.sh", "tools/artemis.sh", "tools/e2e.sh"):
                 self.assertTrue((app / f).is_file(), f)
             self.assertIn("| x-prj | x | x-register | xml |", (app / "README.md").read_text())
+            # a module older than the selector: no flow.input.selector in its properties -> taken from research.json
+            mprops = ws / "modules/x-prj/x/src/main/resources/application.properties"
+            mprops.write_text("\n".join(l for l in mprops.read_text().splitlines() if not l.startswith("flow.input.selector")))
+            subprocess.run([sys.executable, str(self.SK / "assemble_jbang.py"), str(ws), "--osb-app", str(F / "osbapp"),
+                            "--app", "a", "--projects", "x-prj"], capture_output=True)
+            self.assertIn("selector=RAW((resource='R' OR resource='T') AND (eventType='created'))", (p / "application.properties").read_text())
+            self.assertIn("# OSB selector, applied by the broker", (p / "x-route.yaml").read_text())
             (app / "set-env.sh").write_text("# edited\n")
             subprocess.run([sys.executable, str(self.SK / "assemble_jbang.py"), str(ws), "--osb-app", str(F / "osbapp"),
                             "--app", "a", "--projects", "x-prj"], capture_output=True)
