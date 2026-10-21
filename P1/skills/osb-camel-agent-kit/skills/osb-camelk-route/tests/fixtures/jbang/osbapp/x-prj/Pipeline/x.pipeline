@@ -1,9 +1,11 @@
-<con:pipelineEntry xmlns:con="http://www.bea.com/wli/sb/pipeline/config" xmlns:con1="http://www.bea.com/wli/sb/stages/transform/config" xmlns:con2="http://www.bea.com/wli/sb/stages/config" xmlns:con3="http://www.bea.com/wli/sb/stages/routing/config">
+<con:pipelineEntry xmlns:con="http://www.bea.com/wli/sb/pipeline/config" xmlns:con1="http://www.bea.com/wli/sb/stages/transform/config" xmlns:con2="http://www.bea.com/wli/sb/stages/config" xmlns:con3="http://www.bea.com/wli/sb/stages/routing/config" xmlns:con4="http://www.bea.com/wli/sb/stages/logging/config">
   <con:coreEntry/>
   <con:router errorHandler="e1">
     <con:pipeline type="request" name="req">
       <con:stage id="s1" name="request-logging-stage"><con:context/><con:actions>
         <con1:assign varName="uuId"><con2:id>a1</con2:id><con1:expr><con2:xqueryText>fn-bea:uuid()</con2:xqueryText></con1:expr></con1:assign>
+        <con1:assign varName="resourceName"><con2:id>a1b</con2:id><con1:expr><con2:xqueryText>$inbound/ctx:transport/ctx:request/tp:headers/tp:user-header[@name='resource']/@value</con2:xqueryText></con1:expr></con1:assign>
+        <con4:log><con2:id>l1</con2:id><con4:logLevel>info</con4:logLevel><con4:expr><con2:xqueryText>concat('Request Received from JMS xTopic for Resource Name: ', $resourceName, ' with TraceID - ', $uuId, ' ::', fn-bea:serialize($body))</con2:xqueryText></con4:expr></con4:log>
         <con1:assign varName="request"><con2:id>a2</con2:id><con1:expr><con2:xqueryText>$body</con2:xqueryText></con1:expr></con1:assign>
         <con1:nxsdTranslation><con2:id>a3</con2:id><con1:type>Native-To-XML</con1:type><con1:sourceExpr><con2:xqueryText>fn:string($body)</con2:xqueryText></con1:sourceExpr><con1:nxsd ref="x-prj/Resources/Schemas/x-nxsd"/><con1:schemaElement xmlns:x="urn:x">x:Root-Element</con1:schemaElement><con1:assignVariable>nativeXml</con1:assignVariable></con1:nxsdTranslation>
         <con1:replace varName="body" contents-only="true"><con2:id>a4</con2:id><con1:expr><con2:xqueryText>$nativeXml</con2:xqueryText></con1:expr></con1:replace>
@@ -25,14 +27,14 @@
     <con:pipeline type="error" name="e1">
       <con:stage id="s3" name="x-errorhandler-stage"><con:context/><con:actions>
         <con1:replace varName="body" contents-only="true"><con2:id>b1</con2:id><con1:expr><con2:xqueryText>$request</con2:xqueryText></con1:expr></con1:replace>
-        <con3:route><con2:id>b2</con2:id><con3:service ref="x-prj/BS/x-error-queue"/><con3:outboundTransform><con1:transport-headers><con1:header name="errorCode" value="expression"/><con1:header name="eventType" value="expression"/></con1:transport-headers></con3:outboundTransform></con3:route>
+        <con3:route><con2:id>b2</con2:id><con3:service ref="x-prj/BS/x-error-queue"/><con3:outboundTransform><con1:transport-headers><con1:header name="errorCode" value="expression"/><con1:header name="eventType" value="expression"><con2:xqueryText>$inbound/ctx:transport/ctx:request/tp:headers/tp:user-header[@name='eventType']/@value</con2:xqueryText></con1:header></con1:transport-headers></con3:outboundTransform></con3:route>
       </con:actions></con:stage>
     </con:pipeline>
     <con:flow><con:pipeline-node name="pp"><con:request>req</con:request><con:response>resp</con:response></con:pipeline-node>
       <con:route-node name="x-RouteNode"><con:context/><con:actions>
         <con1:ifThenElse><con2:id>r1</con2:id>
           <con1:case id="c2"><con1:condition><con2:xqueryText>$inbound//*:user-header[@name='resource']/@value = 'R'</con2:xqueryText></con1:condition><con1:actions>
-            <con3:route><con2:id>r2</con2:id><con3:service ref="x-prj/BS/x-register"/><con3:outboundTransform/></con3:route>
+            <con3:route><con2:id>r2</con2:id><con3:service ref="x-prj/BS/x-register"/><con3:outboundTransform><con4:log><con2:id>l2</con2:id><con4:logLevel>info</con4:logLevel><con4:expr><con2:xqueryText>concat('Request from Project x-prj :: for BS x-register with TraceID: ', $uuId, ' ::', fn-bea:serialize($body))</con2:xqueryText></con4:expr></con4:log></con3:outboundTransform><con3:responseTransform><con4:log><con2:id>l3</con2:id><con4:logLevel>info</con4:logLevel><con4:expr><con2:xqueryText>concat('Completed flow for Project x-prj with TraceID: ', $uuId)</con2:xqueryText></con4:expr></con4:log></con3:responseTransform></con3:route>
           </con1:actions></con1:case>
           <con1:default><con1:actions><con3:route><con2:id>r3</con2:id><con3:service ref="x-prj/BS/x-terminate"/><con3:outboundTransform/></con3:route></con1:actions></con1:default>
         </con1:ifThenElse>

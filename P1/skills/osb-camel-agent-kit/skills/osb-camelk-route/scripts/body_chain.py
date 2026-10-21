@@ -51,6 +51,12 @@ def short_ref(ref: str) -> str:
     return ref.rsplit("/", 1)[-1] if ref else ""
 
 
+def log_of(a, at: int) -> dict:
+    """One OSB Log action: level and expression text (the message OSB writes), 'at' = body-chain length when it ran."""
+    lvl = first(a, "logLevel")
+    return {"level": ((lvl.text or "info").strip().lower() if lvl is not None else "info"), "expr": text_of(first(a, "expr")), "at": at}
+
+
 KNOWN_NXSD = {"id", "type", "sourceExpr", "nxsd", "schemaElement", "xqueryText", "assignVariable", "assign-variable",
               "enforceSchemaOrder"}
 KNOWN_XQT = {"resource", "param", "path", "xqueryText"}
@@ -65,7 +71,10 @@ class Walker:
         pairs (more than one for ifThenElse)."""
         t = loc(a.tag)
         st = {**state, "body": list(state["body"]), "vars": dict(state["vars"]), "conds": list(state["conds"]),
-              "routes": list(state["routes"])}
+              "routes": list(state["routes"]), "logs": list(state.get("logs") or [])}
+        if t == "log":                              # OSB Log action: its text is reproduced in the route
+            st["logs"].append(log_of(a, len(st["body"])))
+            return [st]
         if t == "assign":
             var = a.get("varName")
             xqt = first(a, "xqueryTransform")
@@ -123,14 +132,19 @@ class Walker:
             return [st]
         if t in ("route", "publish"):
             svc = first(a, "service")
-            headers = []
+            headers, header_exprs = [], {}
             ot = first(a, "outboundTransform")
             if ot is not None:
                 for h in ot.iter():
                     if loc(h.tag) == "header" and h.get("name"):
                         headers.append(h.get("name"))
+                        header_exprs[h.get("name")] = text_of(h)
+            rt = first(a, "responseTransform")
             st["routes"].append({"service": short_ref(svc.get("ref", "") if svc is not None else ""), "kind": t,
-                                 "conds": list(st["conds"]), "chain": list(st["body"]), "headers": headers})
+                                 "conds": list(st["conds"]), "chain": list(st["body"]), "headers": headers,
+                                 "header_exprs": header_exprs, "logs_before": list(st["logs"]),
+                                 "logs_out": [log_of(x, -1) for x in (ot.iter() if ot is not None else []) if loc(x.tag) == "log"],
+                                 "logs_resp": [log_of(x, -1) for x in (rt.iter() if rt is not None else []) if loc(x.tag) == "log"]})
             return [st]
         if t == "ifThenElse":
             out = []
@@ -173,7 +187,7 @@ def walk(path: Path) -> dict:
     router = next((e for e in root.iter() if loc(e.tag) == "router"), root)
     pipes = {p.get("name"): p for p in router.iter() if loc(p.tag) == "pipeline"}
     w = Walker()
-    start = {"body": [], "vars": {}, "conds": [], "routes": []}
+    start = {"body": [], "vars": {}, "conds": [], "routes": [], "logs": []}
     states = [start]
     req = [p for p in pipes.values() if p.get("type") == "request"]
     for p in req:                                   # request pipelines in document order (usually one)
@@ -193,7 +207,7 @@ def walk(path: Path) -> dict:
                 routes += [r for r in s2["routes"] if consistent(r["conds"])]
     errors = []
     for p in (p for p in pipes.values() if p.get("type") == "error"):
-        e_states = [{"body": ["error-handler-body"], "vars": dict(states[0]["vars"]) if states else {}, "conds": [], "routes": []}]
+        e_states = [{"body": ["error-handler-body"], "vars": dict(states[0]["vars"]) if states else {}, "conds": [], "routes": [], "logs": []}]
         for stg in stages(p):
             acts = first(stg, "actions")
             acts = stg if acts is None else acts
@@ -206,7 +220,8 @@ def walk(path: Path) -> dict:
                 errors.append({"handler": [st.get("name") for st in stages(p)][:1], **r})
     for r in routes + errors:
         r["format"] = fmt(r["chain"])
-    return {"pipeline": path.name, "outputs": routes, "error_outputs": errors, "unknown_tags": sorted(w.unknown)}
+    assigns = {a.get("varName"): text_of(a) for a in root.iter() if loc(a.tag) == "assign" and a.get("varName")}
+    return {"pipeline": path.name, "outputs": routes, "error_outputs": errors, "unknown_tags": sorted(w.unknown), "assigns": assigns}
 
 
 def norm(c: str) -> str:

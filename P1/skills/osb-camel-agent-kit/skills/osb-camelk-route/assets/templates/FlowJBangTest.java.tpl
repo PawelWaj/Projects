@@ -268,10 +268,10 @@ public class @@CLASS@@ {
 
     @Test
     void traceIdIsGeneratedWhenMissing() throws Exception {
-        if (!cfg.path("correlation_generated").asBoolean(false)) {
-            return;
-        }
         String corr = cfg.path("correlation_header").asText("traceId");
+        if (!ERROR_HEADERS.contains(corr)) {
+            return;      // the route always generates it at entry; checked where OSB sends it (the error queue)
+        }
         String err = cfg.path("error_output").asText();
         Exchange e = send("{[[ not a message", new HashMap<>(), List.of(err)).get(err);
         assertNotNull(UUID.fromString(e.getMessage().getHeader(corr, String.class)), corr + " generated (OSB fn-bea:uuid)");

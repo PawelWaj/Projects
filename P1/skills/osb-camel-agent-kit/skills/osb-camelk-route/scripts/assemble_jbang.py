@@ -151,6 +151,88 @@ def chain_steps(chain: list, files: dict, notes: list, osb_vars: dict) -> list:
             out.append("# TODO replace $body (see BODY_CHAIN.md)")
     return out
 
+LEVELS = {"debug": "DEBUG", "info": "INFO", "warning": "WARN", "warn": "WARN", "error": "ERROR"}
+
+
+def split_args(text: str) -> list:
+    """Top-level comma split of an XQuery argument list (quotes and brackets respected)."""
+    out, cur, depth, q = [], "", 0, ""
+    for ch in text:
+        if q:
+            cur += ch
+            q = "" if ch == q else q
+        elif ch in "'\"":
+            q, cur = ch, cur + ch
+        elif ch in "([{":
+            depth, cur = depth + 1, cur + ch
+        elif ch in ")]}":
+            depth, cur = depth - 1, cur + ch
+        elif ch == "," and depth == 0:
+            out, cur = out + [cur.strip()], ""
+        else:
+            cur += ch
+    return out + ([cur.strip()] if cur.strip() else [])
+
+
+def osb_value(arg: str, assigns: dict, corr: str, seen: tuple = ()) -> str | None:
+    """One XQuery operand of a log or header expression as Camel simple, None if the generator cannot translate it."""
+    a = arg.strip()
+    m = re.fullmatch(r"(?:fn:|fn-bea:)?(?:serialize|string|data|normalize-space|trim)\((.*)\)", a, re.S)
+    if m:
+        return osb_value(m.group(1), assigns, corr, seen)
+    if re.fullmatch(r"'[^']*'|\"[^\"]*\"", a, re.S):
+        return a[1:-1].replace("${", "$\\{")
+    h = re.search(r"user-header\[@name\s*=\s*['\"]([^'\"]+)['\"]\]", a)
+    if h and a.startswith("$inbound"):
+        return f"${{exchangeProperty.osbIn_{h.group(1)}}}"
+    if a.startswith("$fault"):
+        return "${exception.message}"
+    m = re.fullmatch(r"\$(\w+)(/\*)?", a)
+    if not m:
+        return None
+    v = m.group(1)
+    if v == "body":
+        return "${body}"
+    if v == "request":
+        return "${exchangeProperty.request}"
+    if re.search(r"trace|uu?id", v, re.I):
+        return "${exchangeProperty.osbTraceId}"      # set at entry, survives removeHeaders
+    if v in assigns and v not in seen:
+        return osb_value(assigns[v], assigns, corr, seen + (v,))
+    return None
+
+
+def osb_log(entry: dict, assigns: dict, corr: str, notes: list) -> str:
+    """An OSB Log action as a Camel log step with the same text (concat(...) -> one simple expression)."""
+    e = entry.get("expr", "").strip()
+    m = re.fullmatch(r"(?:fn:)?concat\((.*)\)", e, re.S)
+    parts = split_args(m.group(1)) if m else [e]
+    text = ""
+    for p in parts:
+        v = osb_value(p, assigns, corr)
+        if v is None:
+            notes.append(f"log text: operand {p[:60]} is not translated, written as [?]")
+            v = "[?]"
+        text += v
+    text = text.replace("\\", "\\\\").replace('"', '\\"')
+    return f'- log: {{loggingLevel: {LEVELS.get(entry.get("level", "info"), "INFO")}, logName: oracle.osb.logging.pipeline, message: "{text}"}}'
+
+
+def inbound_headers(bc: dict) -> list:
+    """User headers of the inbound message that logs or error headers read (saved at entry, before anything is removed)."""
+    names = set()
+    for r in bc["outputs"] + bc["error_outputs"]:
+        texts = [x["expr"] for k in ("logs_before", "logs_out", "logs_resp") for x in r.get(k) or []]
+        texts += list((r.get("header_exprs") or {}).values())
+        texts += [h for h in r.get("headers") or [] if not (r.get("header_exprs") or {}).get(h)]
+        texts += [v for v in (bc.get("assigns") or {}).values() if v.startswith("$inbound")]      # headers read through a variable
+        for t in texts:
+            names.update(re.findall(r"user-header\[@name\s*=\s*['\"]([^'\"]+)['\"]\]", t))
+        for h in r.get("headers") or []:
+            if not (r.get("header_exprs") or {}).get(h) or (r.get("header_exprs") or {}).get(h) == "expression":
+                names.add(h)
+    return sorted(n for n in names if n not in ("errorCode", "errorMessage", "debugInfo"))
+
 
 def common_prefix(chains: list) -> list:
     if not chains:
@@ -168,7 +250,7 @@ def indent(lines: list, n: int) -> list:
     return [" " * n + ln for ln in lines]
 
 
-def route_for(project: str, x: str, cfg: dict, bc: dict, files: dict, notes: list) -> tuple[str, list]:
+def route_for(project: str, x: str, cfg: dict, bc: dict, files: dict, notes: list, selector: str = "") -> tuple[str, list]:
     keys = list(cfg["outputs"])
     err = cfg.get("error_output", "")
     chains = {}
@@ -183,21 +265,39 @@ def route_for(project: str, x: str, cfg: dict, bc: dict, files: dict, notes: lis
     osb_vars = {}
     e_headers = sorted({h for r in bc["error_outputs"] for h in r["headers"]}, key=lambda h: ["errorCode", "errorMessage", "debugInfo", "traceId"].index(h) if h in ("errorCode", "errorMessage", "debugInfo", "traceId") else 9)
     corr = cfg.get("correlation_header", "traceId")
+    assigns = bc.get("assigns") or {}
+    ins = inbound_headers(bc)
     L = [f"# ======== flow {x}: generated from the OSB pipeline (body_chain.py) and the frozen scenario table; do not edit",
          "# by hand, regenerate (assemble_jbang.py). Body per output: see docs/" + x + "/BODY_CHAIN.md",
-         "- route:", f"    id: {x}", "    from:", f'      uri: "{{{{{x}.flow.input}}}}"', "      steps:"]
-    S = []
-    if cfg.get("correlation_generated"):
-        S += [f"- setHeader: {{name: {corr}, simple: \"${{header.{corr}}} ?: ${{uuid(random)}}\"}}"]
-    S += ['- setProperty: {name: request, simple: "${bodyAs(String)}"}      # OSB: assign request = $body',
-          "- log:", "    loggingLevel: INFO", "    logName: oracle.osb.logging.pipeline",
-          f'    message: "Request Received to Project {project} :: for PS {x} with TraceID - ${{header.{corr}}} ::${{exchangeProperty.request}}"']
+         "- route:", f"    id: {x}", "    from:", f'      uri: "{{{{{x}.flow.input}}}}"']
+    if selector:
+        L.append(f"      # OSB selector, applied by the broker on the input endpoint ({x}.flow.input in application.properties): {selector}")
+    L.append("      steps:")
+    S = [f"- setHeader: {{name: {corr}, simple: \"${{header.{corr}}} ?: ${{uuid(random)}}\"}}      # TraceID: kept if the message has one, else generated",
+          f'- setProperty: {{name: osbTraceId, simple: "${{header.{corr}}}"}}']
+    S += [f'- setProperty: {{name: osbIn_{h}, simple: "${{header.{h}}}"}}      # inbound {h}, for logs and the error path' for h in ins]
+    S += ['- setProperty: {name: request, simple: "${bodyAs(String)}"}      # OSB: assign request = $body']
+    all_logs = [r.get("logs_before") or [] for r in bc["outputs"]]
+    pre_logs = []
+    for grp in zip(*all_logs) if all_logs else []:
+        if all(json.dumps(g, sort_keys=True) == json.dumps(grp[0], sort_keys=True) for g in grp):
+            pre_logs.append(grp[0])
+        else:
+            break
+    has_osb_logs = any(r.get("logs_before") or r.get("logs_out") or r.get("logs_resp") for r in bc["outputs"])
+    if has_osb_logs:
+        S += [osb_log(g, assigns, corr, notes) for g in pre_logs if g.get("at", 0) == 0]
+    else:
+        S += ["- log:", "    loggingLevel: INFO", "    logName: oracle.osb.logging.pipeline",
+              f'    message: "Request Received to Project {project} :: for PS {x} with TraceID - ${{header.{corr}}} ::${{exchangeProperty.request}}"']
     T = ['- setProperty: {name: osbStage, constant: "request-translation-stage"}']
     rows = [r for r in cfg.get("scenario_mapping", []) if r.get("outputs") != [err]]
     if any(condition(r["scenario"], fields) is not None and not r["scenario"].split("|")[0].startswith("hdr_") for r in rows) or fields:
         T += [f'- setProperty: {{name: osbFields, constant: "{",".join(sorted(fields))}"}}',
               "- bean: {beanType: osb.common.OsbNxsd, method: fields}"]
     T += chain_steps(pre, files, notes, osb_vars)
+    if has_osb_logs:
+        T += [osb_log(g, assigns, corr, notes) for g in pre_logs if g.get("at", 0) != 0]
     T += ['- setProperty: {name: osbPrefixBody, simple: "${bodyAs(String)}"}', '- setProperty: {name: osbStage, constant: "request-transformation-stage"}']
     whens = []
     for r in rows:
@@ -210,12 +310,17 @@ def route_for(project: str, x: str, cfg: dict, bc: dict, files: dict, notes: lis
                 notes.append("request/reply flows are not generated by this layout yet")
                 continue
             suffix = (chains.get(o) or [])[len(pre):]
+            rt = next((q for q in bc["outputs"] if match_output(q["service"], keys) == o), {})
             body += ['- setBody: {simple: "${exchangeProperty.osbPrefixBody}"}'] + chain_steps(suffix, files, notes, osb_vars)
-            body += ['- removeHeaders: {pattern: "*"}      # OSB sends no transport headers on this route',
-                     f'- log: {{loggingLevel: INFO, logName: oracle.osb.logging.pipeline, message: "Sending to {o} for Project {project} with TraceID - ${{exchangeProperty.osbTraceId}}"}}',
-                     f'- to: "{{{{{x}.out.{o}}}}}"']
+            body += [osb_log(g, assigns, corr, notes) for g in (rt.get("logs_before") or [])[len(pre_logs):]]
+            body += ['- removeHeaders: {pattern: "*"}      # OSB sends no transport headers on this route']
+            if has_osb_logs:
+                body += [osb_log(g, assigns, corr, notes) for g in rt.get("logs_out") or []]
+            else:
+                body.append(f'- log: {{loggingLevel: INFO, logName: oracle.osb.logging.pipeline, message: "Sending to {o} for Project {project} with TraceID - ${{exchangeProperty.osbTraceId}}"}}')
+            body.append(f'- to: "{{{{{x}.out.{o}}}}}"')
+            body += [osb_log(g, assigns, corr, notes) for g in rt.get("logs_resp") or []]
         whens.append((cond, body))
-    T += ['- setProperty: {name: osbTraceId, simple: "${header.' + corr + '}"}']
     if len(whens) == 1 and whens[0][0] is None:
         T += whens[0][1]
     else:
@@ -229,16 +334,25 @@ def route_for(project: str, x: str, cfg: dict, bc: dict, files: dict, notes: lis
         if other is not None:
             T += ["    otherwise:", "      steps:"] + indent(other, 8)
     keep = [h for h in e_headers if h not in ("errorCode", "errorMessage", "debugInfo")]
+    er = (bc["error_outputs"] or [{}])[0]
     C = ['- setBody: {simple: "${exchangeProperty.request}"}      # OSB: replace $body with $request',
-         f'- removeHeaders: {{pattern: "*", excludePattern: "{"|".join(keep) or "NONE"}"}}']
+         '- removeHeaders: {pattern: "*"}      # OSB sets every transport header of the error message explicitly (below)']
     for h, expr in (("errorCode", "${exception.class.simpleName}"), ("errorMessage", "${exception.message}"),
                     ("debugInfo", "${exchangeProperty.osbStage}")):
         if h in e_headers:
             C.append(f'- setHeader: {{name: {h}, simple: "{expr}"}}')
-    if corr in e_headers:
-        C.append(f'- setHeader: {{name: {corr}, simple: "${{exchangeProperty.osbTraceId}} ?: ${{header.{corr}}}"}}')
-    C += [f'- log: {{loggingLevel: ERROR, logName: oracle.osb.logging.pipeline, message: "Error captured for Project {project} :: for PS {x} with TraceID: ${{header.{corr}}} :: fault - ${{exception.message}}"}}',
-          f'- to: "{{{{{x}.out.{err}}}}}"']
+    for h in keep:
+        if h == corr:
+            C.append(f'- setHeader: {{name: {corr}, simple: "${{exchangeProperty.osbTraceId}} ?: ${{header.{corr}}}"}}')
+            continue
+        src = (er.get("header_exprs") or {}).get(h, "")
+        v = osb_value(src, assigns, corr) if src and src != "expression" else None
+        C.append(f'- setHeader: {{name: {h}, simple: "{v or "${exchangeProperty.osbIn_" + h + "}"}"}}      # OSB transport-headers {h}')
+    if any(r.get("logs_before") for r in bc["error_outputs"]):
+        C += [osb_log(g, assigns, corr, notes) for g in er.get("logs_before") or []]
+    else:
+        C.append(f'- log: {{loggingLevel: ERROR, logName: oracle.osb.logging.pipeline, message: "Error captured for Project {project} :: for PS {x} with TraceID: ${{header.{corr}}} :: fault - ${{exception.message}}"}}')
+    C.append(f'- to: "{{{{{x}.out.{err}}}}}"')
     S += ["- doTry:", "    steps:"] + indent(T, 6) + ["    doCatch:", "      - exception: [java.lang.Exception]", "        steps:"] + indent(C, 10)
     L += indent(S, 8)
     return "\n".join(L), e_headers
@@ -322,11 +436,11 @@ def assemble(ws: Path, osb_app: Path, out: Path, app: str, rx: str | None) -> di
                             continue
                         shutil.copy2(src, dst / "transformations" / src.name)
                         files[ref] = f"transformations/{src.name}"
-            route, e_headers = route_for(project, x, cfg, bc, files, notes)
-            routes += ["", route]
             mp = props_of(m / "src/main/resources/application.properties")
             lp = props_of(m / "env/local.properties")
             sel = mp.get("flow.input.selector", "")
+            route, e_headers = route_for(project, x, cfg, bc, files, notes, sel)
+            routes += ["", route]
             props += ["", f"# ---- flow {x}", f"{x}.flow.input={source_uri(mp.get('flow.input', ''), sel)}"]
             local += [f"{x}.flow.input={source_uri(lp.get('flow.input', mp.get('flow.input', '')), sel)}"]
             for k in cfg["outputs"]:
