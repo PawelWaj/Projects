@@ -61,8 +61,16 @@ tester writes one fake-value message per scenario from the message schema; they 
 (gate K5) and every scenario must have a case (gate K9). The matrix lists them as S rows, the real ones as P rows.
 Request-response proxies (HTTP) are tested on their reply to the caller as well as on the queues.
 
-Payload table for 0b (Splunk, export as CSV): `index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-28d "oracle.osb.logging.pipeline"
-| rex "Project (?<project>\S+) :: for PS (?<proxy>\S+)" | eval payload=case(match(_raw, "::\s*\{"), "json", match(_raw, "::\s*<"), "xml", true(), "none") | stats count by project, proxy, payload`
+Readiness table for 0b (Splunk, counts only, export as CSV = `SPLUNK_COVERAGE`; `coverage` then gives READY / THIN /
+SYNTHETIC per proxy in `domain/COVERAGE.md`, with the export search for the READY projects):
+```
+index=<e2e_index> sourcetype="<osb_sourcetype>" earliest=-90d@d "oracle.osb.logging.pipeline" "for PS"
+| rex "Project (?<project>\S+) :: for PS (?<proxy>\S+)" | where isnotnull(proxy)
+| rex "(?s)TraceID\s*[-:]\s*\S+\s*::(?<body>.*)$"
+| eval payload=case(match(_raw,"::\s*\{\s*\""),"json", match(_raw,"::\s*<[A-Za-z]"),"xml", isnull(body),"none", match(body,"^\s*$"),"empty", match(body,"&lt;|&quot;"),"escaped", true(),"glued")
+| eval h=if(in(payload,"json","xml"), md5(body), null()), day=strftime(_time,"%F")
+| stats count dc(day) as days dc(h) as distinct by project, proxy, payload
+```
 What was tested and how: [HOW_IT_WORKS.md](HOW_IT_WORKS.md).
 
 Unattended: `bash $KIT/pi/run_overnight.sh <stage> [hours]` repeats the stage in rounds (finished flows skipped), sleeps when the quota is used up, makes one tiny warm-up call per round and stops at the deadline; log in `domain/overnight.log`. What the endpoint allows: `python $KIT/pi/rate_limit_probe.py` (one tiny call, prints only the rate-limit headers).

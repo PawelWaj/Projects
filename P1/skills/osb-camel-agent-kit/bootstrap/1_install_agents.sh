@@ -943,8 +943,8 @@ cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
 # BATCH_NO=n (with BATCH_SIZE, default 10): the n-th slice of the project list, no names to type; 'batches' lists them.
 #   stage        list      projects and proxies found (no agent) -> domain/projects.txt, domain/flows.txt
 #                batches   how many batches of BATCH_SIZE projects, with the command for each
-#                coverage  which proxies get real Splunk test messages and which synthetic ones (needs SPLUNK_COVERAGE =
-#                          CSV of the Splunk "stats count by project, proxy, payload" table) -> domain/COVERAGE.md
+#                coverage  READY / THIN / SYNTHETIC per proxy: enough real Splunk messages for functional tests or not
+#                          (needs SPLUNK_COVERAGE = CSV of the readiness search in DOMAIN_RUN.md) -> domain/COVERAGE.md
 #                research  research pack per proxy -> <ws>/research/<project>/<proxy>/   (skips packs that PASS)
 #                task1     Splunk test cases for every researched proxy, split by the fields its branches use
 #                          (research scenario_dims) -> <ws>/task1/flows/<project>-<proxy>/   (needs EXPORT, MASK_KEY)

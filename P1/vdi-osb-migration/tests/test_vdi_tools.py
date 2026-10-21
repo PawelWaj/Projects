@@ -748,6 +748,33 @@ class SyntheticAndReplyTests(unittest.TestCase):
                                 "-o", str(Path(d, "COVERAGE.md"))], capture_output=True, text=True)
             self.assertIn('"A real inputs": 1', r.stdout)
 
+    def _coverage(self, csv_text):
+        d = tempfile.mkdtemp()
+        inv = Path(d, "inv")
+        subprocess.run([sys.executable, str(ROOT / "skills/osb-camel-agent-kit/skills/osb-to-camel/scripts/osb_inventory.py"),
+                        str(ROOT / "skills/osb-camel-agent-kit/skills/osb-to-camel/evals/fixtures/osb-export-12c-topic"), "-o", str(inv)],
+                       capture_output=True)
+        Path(d, "s.csv").write_text(csv_text)
+        r = subprocess.run([sys.executable, str(ROOT / "vdi-osb-migration/bin/domain_coverage.py"), str(inv), str(Path(d, "s.csv")),
+                            "-o", str(Path(d, "COVERAGE.md"))], capture_output=True, text=True)
+        rows = list(csv.DictReader(open(Path(d, "coverage.csv"), encoding="utf-8")))
+        return r, rows, Path(d, "COVERAGE.md").read_text(encoding="utf-8")
+
+    def test_domain_coverage_verdicts(self):
+        hdr = "project,proxy,payload,count,days,distinct\n"
+        r, rows, md = self._coverage(hdr + "order-event-prj,order-event,json,60,12,40\n")
+        self.assertEqual(rows[0]["verdict"], "READY", r.stdout + r.stderr)
+        self.assertIn('("order-event-prj")', md)
+        _, rows, _ = self._coverage(hdr + "order-event-prj,order-event,json,500,30,8\n")
+        self.assertEqual(rows[0]["verdict"], "THIN")          # many lines, few distinct bodies: a repeated test message
+        _, rows, _ = self._coverage(hdr + "order-event-prj,order-event,json,40,2,40\n")
+        self.assertEqual(rows[0]["verdict"], "THIN")          # enough messages, but all from two days
+        _, rows, _ = self._coverage(hdr + "order-event-prj,order-event,glued,900,30,0\n")
+        self.assertEqual((rows[0]["group"], rows[0]["verdict"]), ("B no payload", "SYNTHETIC"))
+        self.assertIn("glued", rows[0]["why"])
+        _, rows, _ = self._coverage("project,proxy,payload,count\norder-event-prj,order-event,json,45\n")
+        self.assertEqual(rows[0]["verdict"], "READY")         # old CSV without days/distinct still works
+
 
 if __name__ == "__main__":
     unittest.main()
