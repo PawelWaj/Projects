@@ -335,9 +335,13 @@ def main() -> int:
                 # a later, different body in the same trace is OSB's own output, the best oracle there is.
                 later = [e["fields"]["body"] for e in t["events"] if e["fields"].get("body")
                          and e["fields"]["body"].strip() != merged["body"].strip() and e.get("pipeline_type") != "error"]
-                if len(later) == 1:
-                    ext = "xml" if later[0].lstrip().startswith("<") else "json"
-                    files[f"expected-output.{ext}"] = later[0]
+                xml_later = [b for b in later if b.lstrip().startswith("<")]
+                if len(later) == 1 or len(xml_later) == 1:
+                    # one later body, or exactly one XML among several (the request logged again as JSON + the XML the
+                    # route sent after the XQuery): that XML is what OSB sent
+                    body = xml_later[0] if len(xml_later) == 1 else later[0]
+                    ext = "xml" if body.lstrip().startswith("<") else "json"
+                    files[f"expected-output.{ext}"] = body
                     expected["body_oracle"] = "OSB log: the body OSB logged after the request in the same trace (check the log line on the card)"
                 elif len(later) > 1:
                     expected["body_oracle"] = f"{len(later)} later bodies logged in this trace: none taken, choose on the card"
@@ -741,16 +745,42 @@ def payload_error(msg: str) -> str:
         return f"{getattr(e, 'msg', str(e))} at char {pos} of {len(rest)} (after key '{keys[-1] if keys else '-'}')"
 
 
+def find_any(node, name: str):
+    """First value of a field called name at any depth (OSB //*:name), depth-first in document order."""
+    if isinstance(node, dict):
+        if name in node:
+            return node[name]
+        children = node.values()
+    elif isinstance(node, list):
+        children = node
+    else:
+        return None
+    for c in children:
+        v = find_any(c, name)
+        if v is not None:
+            return v
+    return None
+
+
+def dim_key(dim: str) -> str:
+    """The name a dimension is reported under: hdr_x stays, body:a.b.c / body://c -> c."""
+    return re.split(r"[./]", dim[5:])[-1] if dim.startswith("body:") else dim
+
+
 def dim_value(fields: dict, dim: str) -> str:
-    """A scenario dimension: a captured field, or body:<a.b.c> = a field of the JSON payload ('?' when absent)."""
+    """A scenario dimension: a captured field, body:<a.b.c> = that path of the JSON payload, body://<name> = the first
+    field with that name at any depth, as OSB's $body//*:name finds it ('?' when absent)."""
     if not dim.startswith("body:"):
         return fields.get(dim, "?")
     try:
         node = _LENIENT.raw_decode((fields.get("body") or "").strip())[0]
     except ValueError:
         return "?"
-    for part in dim[5:].split("."):
-        node = node.get(part) if isinstance(node, dict) else None
+    if dim[5:].startswith("//"):
+        node = find_any(node, dim[7:])
+    else:
+        for part in dim[5:].split("."):
+            node = node.get(part) if isinstance(node, dict) else None
     if isinstance(node, bool):
         return "true" if node else "false"      # JSON text, as OSB sees it (str(True) would give "True")
     return "?" if node is None or isinstance(node, (dict, list)) else str(node)
@@ -1047,7 +1077,7 @@ def main() -> int:
                     merged.setdefault(k, v)
             outcome = "error" if any(r["pipeline_type"] == "error" for r in evs) else "success"
             dims = dims_arg or sorted(k for k in merged if k.startswith("hdr_"))
-            branch = {d.split(".")[-1] if d.startswith("body:") else d: dim_value(merged, d) for d in dims}
+            branch = {dim_key(d): dim_value(merged, d) for d in dims}
             fault_code = None
             if merged.get("fault"):
                 m = re.search(r"<(?:\w+:)?errorCode>([^<]+)<", merged["fault"])

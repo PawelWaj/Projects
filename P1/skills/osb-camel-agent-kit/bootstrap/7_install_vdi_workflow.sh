@@ -172,6 +172,25 @@ def process_flow(flow: str, info: dict, d: Path, a, peers: dict, base_report: di
     if tr.returncode:
         row.update(status="FAIL", problems=[f"traces: {tr.stderr.strip()[-200:]}"])
         return row
+    # a scenario field found in NO message means the research named the wrong path: every case would be labelled
+    # '?', no scenario row would match, and the route's helper bean would read the same wrong path
+    tj = d / "traces/traces.jsonl"
+    if tj.is_file():
+        seen = Counter()
+        n = 0
+        for ln in tj.read_text(encoding="utf-8").splitlines():
+            try:
+                br = json.loads(ln).get("branch") or {}
+            except ValueError:
+                continue
+            n += 1
+            for k, v in br.items():
+                if v not in ("", "?", None):
+                    seen[k] += 1
+        missing = [k for k in dims if not k.startswith("hdr_") and n and seen[re.split(r"[./]", k.split(":", 1)[-1])[-1]] == 0 and seen[k] == 0]
+        if missing:
+            row["problems"].append(f"scenario field {', '.join(missing)} found in none of {n} messages: check scenario_dims in "
+                                   "research.json (wrong path?) before building tests")
     (d / "replay-config.json").write_text(json.dumps(replay_config(flow, info["topic"]), indent=2), encoding="utf-8")
     fx = run([TOOLS / "fixtures_from_traces.py", d / "traces/traces.jsonl", d / "replay-config.json", "-o", d / "fixtures",
               "--per-scenario", a.per_scenario])
@@ -417,7 +436,7 @@ def main() -> None:
     rs = KIT / "skills" / "osb-research"
     emit("8_install_skill_osb_research.sh", "Skill osb-research (shareable research pack) under .pi/skills/ + researcher role + pi runner.",
          [(p, ".pi/skills/osb-research/" + rel(rs, p)) for p in files_under(rs, ["SKILL.md", "scripts/*.py", "references/*", "assets/*"])]
-         + [(KIT / "agents/researcher.md", "agents/researcher.md"), (KIT / "pi/run_research.sh", "pi/run_research.sh"), (KIT / "pi/pi_call.sh", "pi/pi_call.sh"), (KIT / "pi/osb-kit.env.example", "pi/osb-kit.env.example"), (KIT / "pi/init_env.sh", "pi/init_env.sh"), (KIT / "pi/make_review_pack.sh", "pi/make_review_pack.sh"), (KIT / "pi/run_overnight.sh", "pi/run_overnight.sh"), (KIT / "pi/rate_limit_probe.py", "pi/rate_limit_probe.py"),
+         + [(KIT / "agents/researcher.md", "agents/researcher.md"), (KIT / "pi/run_research.sh", "pi/run_research.sh"), (KIT / "pi/pi_call.sh", "pi/pi_call.sh"), (KIT / "pi/osb-kit.env.example", "pi/osb-kit.env.example"), (KIT / "pi/init_env.sh", "pi/init_env.sh"), (KIT / "pi/make_review_pack.sh", "pi/make_review_pack.sh"), (KIT / "pi/run_overnight.sh", "pi/run_overnight.sh"), (KIT / "pi/rate_limit_probe.py", "pi/rate_limit_probe.py"), (KIT / "pi/demo_limits.py", "pi/demo_limits.py"),
             (KIT / "pi/prompts/osb-research.md", ".pi/prompts/osb-research.md")],
          ["chmod +x .pi/skills/osb-research/scripts/*.py pi/run_research.sh 2>/dev/null || true"], "skill osb-research")
     ck = KIT / "skills" / "osb-camelk-route"
@@ -2343,7 +2362,7 @@ Interactive alternative (same rules): start `pi` in `$KIT`, then `/osb-camelk mo
 
 K1 card approved · K2 no `TODO(flow-card)` left · K3 every branch/output/backend id present · K4 no hosts, ports,
 credentials · K5 generated tests and frozen cases unchanged, nothing disabled · K6 stub per used backend reply ·
-K7 error test per error scope · K8 `mvn test` green · K9 every scenario has a case. Plus the mutation check
+K7 error test per error scope · K8 `mvn test` green · K9 every scenario has a case · K10 property values valid, every key defined · K11 each destination once. Plus the mutation check
 (every deliberate defect must fail a test) and the review list in section 4.
 
 ## 3 Compare with another code-generation skill
@@ -2464,7 +2483,7 @@ flowchart LR
 | synthetic messages for scenarios Splunk cannot supply | **script first** (`synth_from_schema.py`, from the XSD/nXSD, no AI); **pi** (tester) only for what the script cannot build | fake values; the scenario fields get the scenario's values |
 | Camel K route that the tests run against | **pi** (implementer) | writing code; needed to prove the tests (and for the migration itself) |
 | masking, splitting, scenarios, expected outputs, test classes, mocks | script | deterministic; the same input always gives the same tests |
-| running the tests, checks K1–K9, mutation check | script + Maven | the judge must not be an AI |
+| running the tests, checks K1–K11, mutation check | script + Maven | the judge must not be an AI |
 | reports (STATUS, TEST_MATRIX, COVERAGE, FUNCTIONAL_TEST_REPORT) | script | counts from the files, reproducible |
 
 pi never writes or changes a test, an expected result or a report.
@@ -2519,6 +2538,25 @@ task1 → tests → build → matrix → report; restartable, one failing flow n
 
 If a stage stops: masking residue → add the field with `MASK_JSON_KEYS='field'`; `429` → raise `PI_PAUSE`;
 `FAILED research` → `research/<p>/<x>/agent-logs/research.err`; tests red → `modules/<p>/<x>/target/surefire-reports`.
+
+## 5b One flow against a local broker (L2)
+
+The L1 tests mock every queue. `skills/osb-camel-agent-kit/broker/LOCAL_BROKER_TEST.md` runs the same route, unchanged,
+on Camel Main against a local Apache ActiveMQ Artemis and sends it the same masked cases: `artemis_setup.sh`
+(install, create, start), `artemis_prepare.sh <module>` (subscription queue with the OSB selector as filter, one queue
+per output), `run_local.sh <module>`, `send_case.sh <module> <case>`, `queues.sh <module>` (counts = the evidence).
+Local names come from `env/local.properties` (JNDI names without `jndi.`, an assumption until the platform's mapping
+is known); the connection from `BROKER_URL` / `BROKER_USER` / `BROKER_PASSWORD`, which the platform provides on a
+cluster. Older modules: `REFRESH=pom,env … run_domain.sh tests` rewrites their pom (camel-amqp, profile run-local)
+and writes `env/local.properties`; the route itself is untouched.
+
+## 5c When the model platform answers 429
+
+The platform's gateway limits requests per time; an agent fires its requests back to back and pi aborts the whole run
+on a 429. `pi/llm_pacer.py` sits between pi and the platform on the VDI: one request at a time, a minimum gap, and a
+429/502/503/504 is waited out and the same request sent again, so the run continues. Window 1:
+`python $KIT/pi/llm_pacer.py pi-on` once, then `python $KIT/pi/llm_pacer.py` (stays open, one log line per request);
+window 2: the usual `run_domain.sh` / `run_overnight.sh`. Back to direct: `python $KIT/pi/llm_pacer.py pi-off`.
 
 ## 6 Known limits (and their next step)
 

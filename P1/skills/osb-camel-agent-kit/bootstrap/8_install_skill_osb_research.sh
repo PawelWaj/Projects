@@ -298,7 +298,7 @@ source does not say. No code, no hosts, no data (see SKILL.md rules).
 | Q2 | **Message format.** What arrives (JSON or XML; root element or top-level keys), is there an nXSD/JSON-to-XML translation (which one, is the file in the export), what `$body` contains after it | short text + field list |
 | Q3 | **Flow overview.** The pipeline in order: stage → action type → what it does in one sentence. Include route nodes, branches, publish, service callouts, Java callouts, reply/resume | numbered list |
 | Q4 | **Branches.** For each branch/if-then: condition in plain words, the condition expression (one line), which values lead to which path, what happens on each path, default path | table per branch |
-| Q5 | **Scenario mapping.** Branches decide on payload fields: list those fields in `scenario_dims` (JSON path such as `data.hasPartnerEngagement`, or the element name). Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). A flow without branches has one row with scenario `*` (every message). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
+| Q5 | **Scenario mapping.** Branches decide on payload fields: list those fields in `scenario_dims` exactly as the condition finds them: a condition with `//*:name` (any depth, the usual OSB form) becomes `//name`; only a condition that spells a full path (`$body/*:a/*:b`) becomes the path `a.b` (check it against the nXSD/XSD element nesting). Never invent a path the source does not show. Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). A flow without branches has one row with scenario `*` (every message). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
 | Q6 | **Outputs.** Request-response proxies (HTTP, local, SOAP): the answer to the caller is an output named `reply` (use it in branches and scenario_mapping). Name each other output after the business service that writes it (the same name in branches, scenario_mapping and backends). Every destination the flow writes to (business service → queue/topic/HTTP path/operation): on which path, which body (built by which transform), which JMS properties / transport headers / HTTP headers are set and from where | table |
 | Q7 | **Transforms.** For each XQuery/XSLT/assign/replace that builds a message: purpose, inputs (external params), output root, field mapping `source path → target path → rule` (copy, constant, format, lookup, condition), fn-bea functions used, constants | table per transform |
 | Q8 | **Backends.** Each business service / service callout: type, operation, when it is called, request built from, how the response is used, retry count/interval, timeout, load balancing, result caching, what happens on fault | table |
@@ -787,7 +787,23 @@ cat > 'pi/pi_call.sh' <<'KIT_EOF_PI_PI_CALL_SH'
 # Exit 75 when the endpoint still refuses after all retries (quota used up): the runners stop instead of moving on.
 # PI_TIMEOUT (seconds, default 1800): a single pi run that takes longer is killed (a hanging call never returns);
 # exit 124 = timed out.
-pi_call() {
+pi_call() {   # every FLOW_CARD.md is a person's decision: pi may read it, any change it makes is undone
+  local guard c b rc
+  guard=$(mktemp -d 2>/dev/null || { mkdir -p "${TMPDIR:-/tmp}/picards.$$" && echo "${TMPDIR:-/tmp}/picards.$$"; })
+  for c in "${WS:-.}"/modules/*/*/FLOW_CARD.md; do [ -f "$c" ] && cp "$c" "$guard/$(printf '%s' "$c" | tr '/: ' '___')"; done
+  _pi_call_inner "$@"; rc=$?
+  for c in "${WS:-.}"/modules/*/*/FLOW_CARD.md; do
+    b="$guard/$(printf '%s' "$c" | tr '/: ' '___')"
+    if [ -f "$b" ] && ! cmp -s "$b" "$c"; then
+      cp "$b" "$c"; echo "   pi changed $c: change undone (only a person edits a flow card)"
+      [ -n "${WS:-}" ] && echo "$(date '+%F %T') card restored: $c" >> "$WS/domain/card-guard.log" 2>/dev/null
+    fi
+  done
+  rm -rf "${guard:?}"
+  return $rc
+}
+
+_pi_call_inner() {
   local out=$1 err=$2; shift 2
   local n=0 wait=${PI_BACKOFF:-60}
   while :; do
@@ -832,7 +848,11 @@ export MVN_ARGS="${MVN_ARGS:--s $HOME/.m2/settings.xml}"                        
 export PI_OFFLINE="${PI_OFFLINE:-1}" PI_TELEMETRY="${PI_TELEMETRY:-0}" PI_PAUSE="${PI_PAUSE:-60}"   # pi: no outside calls, stay under the rate limit
 export SPLUNK_INDEX="${SPLUNK_INDEX:-<e2e_index>}"                                     # used in the Splunk searches of the guides
 export SPLUNK_SOURCETYPE="${SPLUNK_SOURCETYPE:-<osb_sourcetype>}"
-# export MASK_KEY=...   # do NOT put the masking key here: type it per session, it comes from the data owner
+export ARTEMIS_HOME="${ARTEMIS_HOME:-/e/Pawel/apache-artemis-<version>}"              # local broker (broker/LOCAL_BROKER_TEST.md)
+export ARTEMIS_BROKER="${ARTEMIS_BROKER:-/e/Pawel/artemis-broker}"                   # the broker instance (artemis_setup.sh create)
+export ARTEMIS_ZIP="${ARTEMIS_ZIP:-/e/Pawel/apache-artemis-<version>-bin.zip}"       # the download, for artemis_setup.sh install
+export ARTEMIS_USER="${ARTEMIS_USER:-artemis}"
+# export MASK_KEY=... / ARTEMIS_PASSWORD=...   # NEVER here: type them per session (data owner / broker password)
 KIT_EOF_PI_OSB_KIT_ENV_EXAMPLE
 mkdir -p "$(dirname "pi/init_env.sh")"
 cat > 'pi/init_env.sh' <<'KIT_EOF_PI_INIT_ENV_SH'
@@ -863,7 +883,10 @@ export SPLUNK_COVERAGE="\${SPLUNK_COVERAGE:-$(first "$(pwd)/splunk-payload.csv")
 export MASK_JSON_KEYS="\${MASK_JSON_KEYS:-reason}"
 export POC="\${POC:-1}"
 export BATCH_SIZE="\${BATCH_SIZE:-10}"
-# MASK_KEY is NOT stored here: export it per session (key from the data owner)
+export ARTEMIS_HOME="\${ARTEMIS_HOME:-$(ls -d "$(dirname "$(pwd)")"/apache-artemis-* 2>/dev/null | head -1)}"   # local broker (broker/)
+export ARTEMIS_BROKER="\${ARTEMIS_BROKER:-$(dirname "$(pwd)")/artemis-broker}"
+export ARTEMIS_USER="\${ARTEMIS_USER:-artemis}"
+# MASK_KEY and ARTEMIS_PASSWORD are NOT stored here: export them per session (data owner / broker password)
 ENV
 echo "written $(pwd)/.osb-kit.env"
 grep -E '^export (KIT|APP|WS|JAVA_HOME|EXPORT|SPLUNK_COVERAGE)=' .osb-kit.env | sed 's/^export /  /'
@@ -873,14 +896,20 @@ KIT_EOF_PI_INIT_ENV_SH
 mkdir -p "$(dirname "pi/make_review_pack.sh")"
 cat > 'pi/make_review_pack.sh' <<'KIT_EOF_PI_MAKE_REVIEW_PACK_SH'
 #!/usr/bin/env bash
-# One review package per flow: research -> card -> generated Camel K code -> tests -> results, with a reviewer checklist.
-# Stays on the client machine (it contains the original XQuery and masked test data).
+# One review package per flow: research -> card -> the module (standard Maven layout, runnable as is) -> results, with
+# a reviewer checklist. Stays on the client machine (it contains the original XQuery and masked test data).
 #
 # Usage (in the workspace):  bash <kit>/pi/make_review_pack.sh <project> <proxy> [reference-route-dir]
 # Env: ROUTE_AUTHOR (default "pi agent (osb-camelk-route)"): who wrote the route, shown in README_REVIEW.md
 #   reference-route-dir  optional: another route for the same flow (e.g. the hand-written pilot) -> compared against
 #                        the SAME frozen tests with compare_codegen.py
 # Result: review/<project>-<proxy>/ + review/<project>-<proxy>.tgz   (agent logs and build output are left out)
+#   1-research/   RESEARCH.md, research.json, facts.json, SHARE_CHECK.json
+#   2-card/       FLOW_CARD.md
+#   module/       pom.xml, src/main (route, properties, beans), src/test (frozen tests, cases, stubs), env/,
+#                 MIGRATION_NOTES.md, .scaffold.json  ->  `mvn test` and the broker scripts work in this folder
+#   5-results/    TEST_MATRIX.md, GATES.json, MUTATION.json, surefire summaries
+#   6-compare/    (optional) generated route vs reference route on the same tests
 set -uo pipefail
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
 MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
@@ -893,12 +922,11 @@ PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
 R="$WS/research/$P/$X"; M="$WS/modules/$P/$X"; O="$WS/review/$P-$X"
 [ -s "$R/research.json" ] || { echo "no research pack in $R: run run_domain.sh research first"; exit 2; }
 [ -d "$M" ] || { echo "no module in $M: run run_domain.sh tests (and build) first"; exit 2; }
-rm -rf "$O"; mkdir -p "$O"/{1-research,2-card,3-code,4-tests,5-results}
+rm -rf "$O"; mkdir -p "$O"/{1-research,2-card,module,5-results}
 cp "$R"/RESEARCH.md "$R"/research.json "$R"/facts.json "$R"/SHARE_CHECK.json "$O/1-research/" 2>/dev/null
 cp "$M/FLOW_CARD.md" "$O/2-card/" 2>/dev/null
-[ -d "$M/src/main" ] && cp -r "$M/src/main" "$O/3-code/"
-cp "$M/MIGRATION_NOTES.md" "$M/pom.xml" "$O/3-code/" 2>/dev/null
-[ -d "$M/src/test" ] && cp -r "$M/src/test" "$O/4-tests/"
+for f in pom.xml FLOW_CARD.md MIGRATION_NOTES.md .scaffold.json .gitignore; do [ -f "$M/$f" ] && cp "$M/$f" "$O/module/"; done
+for d in src env; do [ -d "$M/$d" ] && cp -r "$M/$d" "$O/module/"; done
 cp "$M/GATES.json" "$M/MUTATION.json" "$M/TEST_MATRIX.md" "$M/test-matrix.csv" "$O/5-results/" 2>/dev/null
 [ -d "$M/target/surefire-reports" ] && cp "$M"/target/surefire-reports/*.txt "$O/5-results/" 2>/dev/null
 if [ -n "$REF" ] && [ -d "$REF" ]; then
@@ -922,13 +950,15 @@ k8 = g.get("gates", {}).get("K8_tests_green", {})
 routes = sorted(p_.name for p_ in (m / "src/main/resources/routes").glob("*.yaml")) if (m / "src/main/resources/routes").is_dir() else []
 lines = [f"# Review package: {p} / {x}", "",
          "Everything below stays on the client machine. Read in this order:", "",
-         "| # | Folder | What to check |", "|---|---|---|",
+         "| # | Where | What to check |", "|---|---|---|",
          "| 1 | `1-research/RESEARCH.md` | what the OSB flow does (entry, branches, outputs, errors, logs) with evidence; open questions |",
          "| 2 | `2-card/FLOW_CARD.md` | the behaviour the code must implement; status of the approval |",
-         f"| 3 | `3-code/main/resources/routes/` | **the Camel K route, written by: {author}** (YAML DSL), helper beans in `3-code/main/java`, endpoints in `application.properties`, `MIGRATION_NOTES.md` |",
-         "| 4 | `4-tests/` | generated tests (FlowParityTest, frozen), FlowErrorTest, expected outputs (`flow-test.json`), test messages (`resources/parity`, masked / synthetic), stubs |",
-         "| 5 | `5-results/` | TEST_MATRIX.md, GATES.json (K1-K9), MUTATION.json, surefire summaries |",
+         f"| 3 | `module/src/main/resources/routes/` | **the Camel route, written by: {author}** (YAML DSL); helper beans in `module/src/main/java`; `application.properties` = production descriptor (OSB names, selector, connection from the environment); `MIGRATION_NOTES.md` |",
+         "| 4 | `module/src/test/` | FlowParityTest (generated, frozen), FlowErrorTest, expected outputs (`flow-test.json`), test messages (`resources/parity`, masked / synthetic), stubs |",
+         "| 5 | `5-results/` | TEST_MATRIX.md, GATES.json (K1-K11), MUTATION.json, surefire summaries |",
          "| 6 | `6-compare/COMPARISON.md` | (if present) generated route vs reference route on the same tests |", "",
+         "Run it yourself: `cd module && mvn -B -s <team settings.xml> test` (JDK 21, Maven 3.9); against a local Artemis:",
+         "`broker/LOCAL_BROKER_TEST.md` of the kit (`env/local.properties` is in the module).", "",
          "## Summary", "",
          f"- Route written by: **{author}**",
          f"- Card status: **{st}**",
@@ -941,16 +971,18 @@ lines = [f"# Review package: {p} / {x}", "",
          f"- Open questions in the research: {len(res.get('open_questions') or [])}", "",
          "## Reviewer checklist", "",
          "- [ ] Every branch, output, retry and error header of the card is in the route, nothing that is not on the card",
+         "- [ ] One send per destination (a JMS business service that writes an output IS that output)",
          "- [ ] OSB log lines kept with the same text and logName (the tests do not check log text)",
          "- [ ] Original XQuery/XSLT used unchanged (not rewritten)",
-         "- [ ] Body forwarded unchanged where OSB forwards it",
-         "- [ ] Endpoints only as properties; no hosts, ports, secrets",
+         "- [ ] Body forwarded unchanged where OSB forwards it; routing fields are exchange properties, not headers",
+         "- [ ] Endpoints only as properties with the OSB names; connection only as {{env:...}}; no hosts, ports, secrets",
+         "- [ ] Error message: errorCode / errorMessage / debugInfo (osbStage) / correlation id as on the card",
          "- [ ] Helper beans small and readable; YAML DSL idiomatic for Camel 4.18",
          "- [ ] Differences to OSB listed in MIGRATION_NOTES.md and acceptable",
          "- [ ] Open questions answered or accepted before the card is approved", "",
          "Reviewer: ____________  Date: ________  Result: approve / changes needed"]
 (o / "README_REVIEW.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-print("\n".join(lines[14:24]))
+print("\n".join(lines[16:26]))
 PY
 (cd "$WS/review" && tar -czf "$P-$X.tgz" "$P-$X")
 echo "review package: $O  (+ $WS/review/$P-$X.tgz). Keep it on the client machine."
@@ -963,7 +995,7 @@ cat > 'pi/run_overnight.sh' <<'KIT_EOF_PI_RUN_OVERNIGHT_SH'
 #
 # Usage (in the workspace, .osb-kit.env loaded, MASK_KEY exported):
 #   bash <kit>/pi/run_overnight.sh <stage> [hours]          e.g.  POC=1 PROJECTS='a-prj' bash .../run_overnight.sh functional 10
-# Env: QUOTA_SLEEP (seconds to wait after the endpoint refused everything, default 1800), MAX_ROUNDS (default 12),
+# Env: QUIET=1 (output only to domain/overnight.log, not the terminal), QUOTA_SLEEP (seconds to wait after the endpoint refused everything, default 1800), MAX_ROUNDS (default 12),
 #      plus the run_domain.sh env.
 # Every round runs `run_domain.sh <stage>`; finished flows are skipped, so each round only does what is left.
 # Log: domain/overnight.log. At the end: domain/FUNCTIONAL_TEST_REPORT.md and domain/TIME_PROJECTION.md.
@@ -984,9 +1016,12 @@ while [ "$(date +%s)" -lt "$end" ] && [ "$round" -lt "${MAX_ROUNDS:-12}" ]; do
   # one tiny call first: on this endpoint a short call before a long run helped (login/token refresh or limit window)
   timeout 120 pi --print --no-session ${OSB_PI_MODEL:+--model "$OSB_PI_MODEL"} "Reply with the word OK" >> "$LOG" 2>&1 < /dev/null \
     || echo "$(date '+%F %T') warm-up call failed" >> "$LOG"
-  ALL=${ALL:-1} bash "$KIT/pi/run_domain.sh" "$STAGE" "$WS" >> "$LOG" 2>&1 < /dev/null
-  rc=$?
-  tail -1 "$LOG"
+  if [ "${QUIET:-0}" = 1 ]; then          # QUIET=1: log file only; default: log file AND this terminal
+    ALL=${ALL:-1} bash "$KIT/pi/run_domain.sh" "$STAGE" "$WS" >> "$LOG" 2>&1 < /dev/null; rc=$?
+    tail -1 "$LOG"
+  else
+    ALL=${ALL:-1} bash "$KIT/pi/run_domain.sh" "$STAGE" "$WS" 2>&1 < /dev/null | tee -a "$LOG"; rc=${PIPESTATUS[0]}
+  fi
   if [ "$rc" = 75 ] || tail -40 "$LOG" | grep -q "^STOP: the model endpoint"; then
     echo "$(date '+%F %T') quota used up: sleeping ${QUOTA_SLEEP:-1800}s" | tee -a "$LOG"
     sleep "${QUOTA_SLEEP:-1800}"; continue
@@ -1073,6 +1108,319 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 KIT_EOF_PI_RATE_LIMIT_PROBE_PY
+mkdir -p "$(dirname "pi/demo_limits.py")"
+cat > 'pi/demo_limits.py' <<'KIT_EOF_PI_DEMO_LIMITS_PY'
+#!/usr/bin/env python3
+"""Live demo of the model platform limits that slow the pi agent down, and of the workaround. Stdlib only.
+
+    python demo_limits.py config                         # which model pi uses, context window, pacer on or off
+    python demo_limits.py burst  [--n 6] [--parallel 3]  # N tiny requests at once, DIRECT to the platform -> 429s
+    python demo_limits.py paced  [--n 6]                 # the same requests through the pacer -> all 200, waits shown
+    python demo_limits.py size   [--sizes 2,8,16,32,48]  # one request per prompt size (thousand tokens) -> time, 429, context
+    python demo_limits.py agent  --project <osb-prj> --research <research/prj/proxy> [--turns 12]
+                                                         # what ONE research run sends: tokens per call and per minute
+    python demo_limits.py log    [domain/pacer.log]      # what the real runs met: calls, 429 retries, waiting, longest call
+
+Every request carries SYNTHETIC text only ("line 0001 ...", "Reply OK"): no client data, no OSB source. Prints status,
+seconds and token counts, never the API key, the answer text or the source. Keep --n small: the endpoint is shared.
+Reads the provider from pi's models.json like rate_limit_probe.py; if pi points at the pacer, `burst` and `size` use
+the platform URL saved in models.json.pacer.json, so they show what pi meets without the pacer."""
+import argparse
+import json
+import os
+import re
+import ssl
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+CHARS_PER_TOKEN = 4          # rough rule for English text and XML; good enough to compare sizes
+PACER = "http://127.0.0.1:{port}"
+
+
+def models_file() -> Path:
+    return Path(os.environ.get("PI_CODING_AGENT_DIR", Path.home() / ".pi/agent")) / "models.json"
+
+
+def load_provider(model: str):
+    """(provider name, provider dict, model dict, platform base URL, pacer active)."""
+    mf = models_file()
+    if not mf.is_file():
+        sys.exit(f"no pi models.json at {mf} (set PI_CODING_AGENT_DIR)")
+    models = json.loads(mf.read_text(encoding="utf-8"))
+    for pname, prov in (models.get("providers") or {}).items():
+        for m in prov.get("models") or []:
+            if model.split("/")[-1] in (m.get("id"), m.get("name")):
+                base = (prov.get("baseUrl") or prov.get("baseURL") or "").rstrip("/")
+                paced = "127.0.0.1" in base or "localhost" in base
+                side = mf.with_name("models.json.pacer.json")
+                if paced and side.is_file():
+                    base = (json.loads(side.read_text(encoding="utf-8")).get(pname) or base).rstrip("/")
+                return pname, prov, m, base, paced
+    sys.exit(f"model '{model}' not in {mf}; providers: {list((models.get('providers') or {}).keys())}")
+
+
+def api_key(prov: dict) -> str:
+    key = prov.get("apiKey") or ""
+    if key and key.upper() == key and not key.startswith(("sk-", "ey")) and os.environ.get(key):
+        key = os.environ[key]                     # apiKey given as the NAME of an environment variable
+    return key
+
+
+def host(url: str) -> str:
+    return url.split("/")[2] if "//" in url else "?"
+
+
+def call(base: str, prov: dict, model_id: str, prompt: str, max_tokens: int, timeout: float, ctx) -> dict:
+    """One chat request. Returns status, seconds, usage and rate-limit headers; never the answer text."""
+    body = json.dumps({"model": model_id, "messages": [{"role": "user", "content": prompt}],
+                       "max_tokens": max_tokens, "temperature": 0}).encode()
+    key = api_key(prov)
+    headers = {"Content-Type": "application/json", **({"Authorization": f"Bearer {key}"} if key else {}),
+               **(prov.get("headers") or {})}
+    req = urllib.request.Request(base + "/chat/completions", data=body, method="POST", headers=headers)
+    t0 = time.time()
+    out = {"status": None, "usage": {}, "limits": {}, "note": ""}
+    try:
+        r = urllib.request.urlopen(req, timeout=timeout, context=ctx)
+        out["status"], hdrs = r.status, dict(r.headers)
+        try:
+            out["usage"] = json.loads(r.read()).get("usage") or {}
+        except ValueError:
+            out["note"] = "answer not JSON"
+    except urllib.error.HTTPError as e:
+        out["status"], hdrs = e.code, dict(e.headers)
+        text = e.read()[:400].decode("utf-8", "replace").lower()
+        if "context" in text or "maximum" in text or "too long" in text or "tokens" in text:
+            out["note"] = "refused: prompt longer than the context window"
+        elif e.code == 429:
+            out["note"] = "rate limit"
+    except TimeoutError:
+        out["status"], hdrs, out["note"] = "timeout", {}, f"no answer within {timeout:.0f}s"
+    except Exception as e:                         # noqa: BLE001
+        out["status"], hdrs = type(e).__name__, {}
+        if "timed out" in str(e):
+            out["status"], out["note"] = "timeout", f"no answer within {timeout:.0f}s"
+    out["seconds"] = time.time() - t0
+    out["limits"] = {k: v for k, v in hdrs.items() if any(w in k.lower() for w in ("ratelimit", "rate-limit", "retry-after", "quota"))}
+    return out
+
+
+def ssl_ctx():
+    ctx = ssl.create_default_context()
+    if os.environ.get("PACER_INSECURE") == "1":
+        ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    return ctx
+
+
+def filler(tokens: int) -> str:
+    """Synthetic numbered lines of about `tokens` tokens, then one question about them."""
+    line = "line {:05d}: the service reads a message, maps the fields and sends it to the next queue.\n"
+    n = max(1, tokens * CHARS_PER_TOKEN // len(line.format(0)))
+    return "".join(line.format(i) for i in range(1, n + 1)) + "\nReply with the number of the last line only."
+
+
+def fmt(r: dict) -> str:
+    u = r["usage"]
+    tok = f"  prompt {u.get('prompt_tokens')} tok, answer {u.get('completion_tokens')} tok" if u else ""
+    lim = ("  " + " ".join(f"{k}={v}" for k, v in sorted(r["limits"].items()))) if r["limits"] else ""
+    return f"{str(r['status']):>8}  {r['seconds']:6.1f}s{tok}{('  ' + r['note']) if r['note'] else ''}{lim}"
+
+
+def cmd_config(a) -> int:
+    pname, prov, m, base, paced = load_provider(a.model)
+    print(f"model      : {m.get('id')}  (provider {pname}, api {prov.get('api') or m.get('api') or 'openai-completions'})")
+    print(f"platform   : {host(base)}")
+    print(f"context    : {m.get('contextWindow', '? (not in models.json)')} tokens   max answer: {m.get('maxTokens', '?')} tokens")
+    print(f"pi -> pacer: {'yes (127.0.0.1)' if paced else 'no, pi calls the platform directly'}")
+    print(f"pi timeout : PI_TIMEOUT={os.environ.get('PI_TIMEOUT', '1800')}s per pi run (pi_call.sh), pacer 900s per call")
+    return 0
+
+
+def run_many(base, prov, m, n, parallel, prompt, max_tokens, timeout, label) -> list:
+    ctx, results, lock, sem = ssl_ctx(), [None] * n, threading.Lock(), threading.Semaphore(parallel)
+    t_start = time.time()
+
+    def one(i):
+        with sem:
+            r = call(base, prov, m.get("id"), prompt, max_tokens, timeout, ctx)
+            r["at"] = time.time() - t_start
+            results[i] = r
+            with lock:
+                print(f"  #{i + 1:<2} start+{r['at'] - r['seconds']:5.1f}s {fmt(r)}", flush=True)
+
+    print(f"{label}: {n} requests, {parallel} at a time, to {host(base)}")
+    threads = [threading.Thread(target=one, args=(i,)) for i in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    counts: dict = {}
+    for r in results:
+        counts[str(r["status"])] = counts.get(str(r["status"]), 0) + 1
+    print(f"result: {counts}  in {time.time() - t_start:.1f}s")
+    return results
+
+
+def cmd_burst(a) -> int:
+    pname, prov, m, base, _ = load_provider(a.model)
+    rs = run_many(base, prov, m, a.n, a.parallel, "Reply OK", 5, a.timeout, "burst DIRECT (what pi does without the pacer)")
+    refused = sum(1 for r in rs if r["status"] == 429)
+    print(f"=> {refused} of {a.n} refused with 429 although each request is tiny: the platform limits requests per time,"
+          " and an agent fires its calls back to back" if refused else
+          "=> no 429 this time: raise --n / --parallel a little, or run `size` (the limit also counts tokens per minute)")
+    return 0
+
+
+def cmd_paced(a) -> int:
+    pname, prov, m, _, _ = load_provider(a.model)
+    base = PACER.format(port=a.port)
+    import socket
+    with socket.socket() as so:
+        so.settimeout(2)
+        if so.connect_ex(("127.0.0.1", a.port)) != 0:
+            sys.exit(f"pacer not running on {base}: bash $KIT/pi/vdi_session.sh start (or python llm_pacer.py)")
+    run_many(base, prov, m, a.n, a.parallel, "Reply OK", 5, a.timeout + 600, "same requests THROUGH THE PACER (gap, retry on 429)")
+    print("=> the pacer spaces the calls and repeats a refused call itself; pi never sees the 429. Cost: waiting time"
+          " (see the pacer window / domain/pacer.log: 'retry n/30 in 15s')")
+    return 0
+
+
+def cmd_size(a) -> int:
+    pname, prov, m, base, _ = load_provider(a.model)
+    ctx = ssl_ctx()
+    window = m.get("contextWindow")
+    print(f"prompt size test, synthetic text, one request each, {a.pause:.0f}s pause, to {host(base)}"
+          f" (context window in models.json: {window or '?'})")
+    for k in a.sizes:
+        tokens = int(k * 1000)
+        r = call(base, prov, m.get("id"), filler(tokens), 16, a.timeout, ctx)
+        print(f"  ~{k:>4}k tokens {fmt(r)}", flush=True)
+        if a.pause:
+            time.sleep(a.pause)
+    print("=> time grows with the prompt; past the window the platform refuses; several big prompts within a minute"
+          " hit the tokens-per-minute limit (429) although the requests are few")
+    return 0
+
+
+def tokens_of(paths) -> int:
+    return sum(p.stat().st_size for p in paths if p.is_file()) // CHARS_PER_TOKEN
+
+
+def cmd_agent(a) -> int:
+    """Estimate, from file sizes only, what one research run (pi) sends to the model."""
+    kit = Path(a.kit)
+    sk = next((d for d in (kit / "skills/osb-research", kit / ".pi/skills/osb-research") if d.is_dir()), None)
+    if not sk:
+        sys.exit(f"skill osb-research not found under {kit}")
+    research, project = Path(a.research), Path(a.project)
+    sources = research / "SOURCES.txt"
+    if not sources.is_file():
+        sys.exit(f"{sources} missing: run research step 1 (facts) first")
+    src = [project / s.strip() for s in sources.read_text(encoding="utf-8").splitlines() if s.strip()]
+    fixed = {"pi system prompt + tool definitions (estimate)": 3000,
+             "role prompt agents/researcher.md": tokens_of([kit / "agents/researcher.md"]),
+             "skill osb-research (SKILL.md, questions, template, schema)": tokens_of(
+                 [sk / "SKILL.md", sk / "references/questions.md", sk / "assets/RESEARCH_TEMPLATE.md", sk / "assets/research.schema.json"]),
+             f"OSB sources of this proxy ({len(src)} files, one bundle)": tokens_of(src),
+             "facts.json (step 1)": tokens_of([research / "facts.json"])}
+    first = sum(fixed.values())
+    print(f"one research run of {research.name}: what the model must hold (file sizes / {CHARS_PER_TOKEN}, no content shown)")
+    for k, v in fixed.items():
+        print(f"  {v:>7} tok  {k}")
+    print(f"  {first:>7} tok  = context after the first turns (read skill + bundle)")
+    print(f"\nan agent resends the WHOLE conversation on every call; each turn adds its own tool output and answer"
+          f" (~{a.grow} tok here, thinking 'high' adds more):")
+    total, ctx_now = 0, first
+    for t in range(1, a.turns + 1):
+        total += ctx_now
+        flag = "  <- over the 64k window" if ctx_now > a.window else ""
+        print(f"  call {t:>2}: sends {ctx_now:>7} tok   running total {total:>8} tok{flag}")
+        ctx_now += a.grow
+    per_min = total * 60 // max(1, int(a.turns * (a.gap + a.call_s)))
+    print(f"\n=> ESTIMATE: {a.turns} calls = {total} tokens for ONE proxy; at {a.call_s:.0f}s per answer + {a.gap:.0f}s gap"
+          f" that is ~{per_min} tokens per minute. The per-minute limit counts these tokens, not the number of calls."
+          " A 4-proxy project = 4 such runs. Measured numbers: `demo_limits.py log` after a run through the pacer.")
+    return 0
+
+
+LOG_RE = re.compile(r"^(\d\d:\d\d:\d\d) (POST|GET) \S+ -> (\S+) attempts (\d+) waited (\d+)s total (\d+)s(?: sent (\d+) bytes)?")
+RETRY_RE = re.compile(r"^(\d\d:\d\d:\d\d) \S+ -> (\S+), retry (\d+)/(\d+) in (\d+)s")
+
+
+def _secs(hms: str) -> int:
+    h, m, s = (int(x) for x in hms.split(":"))
+    return h * 3600 + m * 60 + s
+
+
+def cmd_log(a) -> int:
+    p = Path(a.file)
+    if not p.is_file():
+        sys.exit(f"{p} not found (the pacer writes it when started by vdi_session.sh start)")
+    calls, retries, statuses, waited, longest, per_hour, sizes = 0, 0, {}, 0, 0, {}, []
+    retry_status: dict = {}
+    for line in p.read_text(encoding="utf-8", errors="replace").splitlines():
+        m = LOG_RE.match(line)
+        if m and m.group(2) == "POST":
+            calls += 1
+            statuses[m.group(3)] = statuses.get(m.group(3), 0) + 1
+            waited += int(m.group(5))
+            longest = max(longest, int(m.group(6)))
+            per_hour[m.group(1)[:2]] = per_hour.get(m.group(1)[:2], 0) + 1
+            if m.group(7):
+                sizes.append((m.group(1), int(m.group(7)) // CHARS_PER_TOKEN, int(m.group(6))))
+            continue
+        m = RETRY_RE.match(line)
+        if m:
+            retries += 1
+            retry_status[m.group(2)] = retry_status.get(m.group(2), 0) + 1
+    print(f"{p}: {calls} model calls answered, final status {statuses}")
+    print(f"  refused and repeated by the pacer: {retries} times {retry_status}")
+    print(f"  waiting caused by the limits: {waited}s ({waited / 60:.0f} min); longest single call {longest}s")
+    print("  calls per hour of day: " + "  ".join(f"{h}h:{n}" for h, n in sorted(per_hour.items())))
+    if sizes:
+        last = sizes[-a.last:]
+        print(f"  last {len(last)} calls, measured request size (bytes / {CHARS_PER_TOKEN}): an agent resends the whole conversation")
+        for t, tok, secs in last:
+            print(f"    {t}  ~{tok:>7} tok sent  answered in {secs:>4}s{'  <- over 64k' if tok > a.window else ''}")
+        span = max(60, _secs(last[-1][0]) - _secs(last[0][0]) + last[-1][2])
+        print(f"  ~{sum(t for _, t, _ in last) * 60 // span} tokens per minute over these calls")
+    print("=> without the pacer every one of those refusals would have ended the pi run and restarted it from the beginning")
+    return 0
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("action", choices=["config", "burst", "paced", "size", "agent", "log"])
+    ap.add_argument("file", nargs="?", default=os.path.join(os.environ.get("WS", "."), "domain", "pacer.log"))
+    ap.add_argument("--model", default=os.environ.get("OSB_PI_MODEL", "fast"))
+    ap.add_argument("--n", type=int, default=6)
+    ap.add_argument("--parallel", type=int, default=3)
+    ap.add_argument("--port", type=int, default=int(os.environ.get("PACER_PORT", 8765)))
+    ap.add_argument("--timeout", type=float, default=300, help="seconds per request")
+    ap.add_argument("--sizes", type=lambda s: [float(x) for x in s.split(",")], default=[2, 8, 16, 32, 48])
+    ap.add_argument("--pause", type=float, default=0, help="seconds between the size requests (0 = show the per-minute limit)")
+    ap.add_argument("--project", help="OSB project folder (agent)")
+    ap.add_argument("--research", help="research/<project>/<proxy> folder (agent)")
+    ap.add_argument("--kit", default=os.environ.get("KIT", str(Path(__file__).resolve().parents[1])))
+    ap.add_argument("--turns", type=int, default=12, help="model calls of one research run (agent)")
+    ap.add_argument("--grow", type=int, default=2500, help="tokens one turn adds (agent)")
+    ap.add_argument("--window", type=int, default=64000)
+    ap.add_argument("--call-s", type=float, default=20, help="seconds one answer takes (agent estimate)")
+    ap.add_argument("--last", type=int, default=15, help="calls shown with their size (log)")
+    ap.add_argument("--gap", type=float, default=float(os.environ.get("PACER_GAP", 4)))
+    a = ap.parse_args()
+    if a.action == "agent" and not (a.project and a.research):
+        ap.error("agent needs --project <osb-project-dir> --research <research/<project>/<proxy>>")
+    return {"config": cmd_config, "burst": cmd_burst, "paced": cmd_paced, "size": cmd_size, "agent": cmd_agent, "log": cmd_log}[a.action](a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+KIT_EOF_PI_DEMO_LIMITS_PY
 mkdir -p "$(dirname ".pi/prompts/osb-research.md")"
 cat > '.pi/prompts/osb-research.md' <<'KIT_EOF__PI_PROMPTS_OSB_RESEARCH_MD'
 ---
@@ -1084,4 +1432,4 @@ Use skill osb-research on the OSB export $1 for proxy $2 (scenarios from $3/trac
 Write research/$2/RESEARCH.md and research/$2/research.json, run the share check until it passes, then give the five-line report.
 KIT_EOF__PI_PROMPTS_OSB_RESEARCH_MD
 chmod +x .pi/skills/osb-research/scripts/*.py pi/run_research.sh 2>/dev/null || true
-echo "installed: 15 files (skill osb-research)"
+echo "installed: 16 files (skill osb-research)"

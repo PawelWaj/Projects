@@ -12,7 +12,8 @@ forwards them (same path, headers, body; streamed answers stream through), but
   - a 429 / 502 / 503 / 504 before any answer byte is not passed to pi: the pacer waits (Retry-After if the platform
     sends one, else 15 s doubling up to 300 s) and sends the SAME request again, up to --retries times. pi never sees
     the refusal, so its run continues instead of failing and being restarted from the beginning.
-Logs one line per request to stdout: time, path, status, attempts, seconds waited, seconds total. No content, no key.
+Logs one line per request to stdout: time, path, status, attempts, seconds waited, seconds total, request size in
+bytes (an agent resends the whole conversation, so the size grows per call). No content, no key.
 Env: PACER_INSECURE=1 skips TLS verification (only if the platform certificate is not trusted on this machine)."""
 import argparse
 import json
@@ -97,8 +98,8 @@ def make_handler(upstream: str, pacer: Pacer, retries: int, ctx: ssl.SSLContext,
                     self.wfile.write(chunk)
                     self.wfile.flush()
                 self.close_connection = True
-            print(f"{time.strftime('%H:%M:%S')} {method} {self.path} -> {status} attempts {attempt} waited {waited:.0f}s total {time.time() - t0:.0f}s",
-                  flush=True)
+            print(f"{time.strftime('%H:%M:%S')} {method} {self.path} -> {status} attempts {attempt} waited {waited:.0f}s total {time.time() - t0:.0f}s"
+                  f" sent {len(body or b'')} bytes", flush=True)
 
         def do_POST(self):
             self.forward("POST")
