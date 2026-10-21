@@ -46,7 +46,7 @@ class Pacer:
             return delay
 
 
-def make_handler(upstream: str, pacer: Pacer, retries: int, ctx: ssl.SSLContext, timeout: float):
+def make_handler(routes: dict, default: str, pacer: Pacer, retries: int, ctx: ssl.SSLContext, timeout: float):
     class H(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
 
@@ -56,6 +56,12 @@ def make_handler(upstream: str, pacer: Pacer, retries: int, ctx: ssl.SSLContext,
         def forward(self, method: str):
             body = self.rfile.read(int(self.headers.get("Content-Length") or 0)) if method in ("POST", "PUT") else None
             headers = {k: v for k, v in self.headers.items() if k.lower() not in HOP}
+            upstream = default                                   # several providers: the request's model picks the platform
+            if body and len(routes) > 1:
+                try:
+                    upstream = routes.get(json.loads(body).get("model"), default)
+                except (ValueError, AttributeError):
+                    pass
             prefix = urlparse(upstream).path.rstrip("/")         # pi may send /api/... or /... : never /api/api/...
             path = self.path[len(prefix):] if prefix and self.path.startswith(prefix + "/") else self.path
             url = upstream.rstrip("/") + path
@@ -152,16 +158,25 @@ def main() -> int:
     a = ap.parse_args()
     if a.action != "serve":
         return switch(a.action == "pi-on", a.port)
+    routes: dict = {}
     if not a.upstream:
         side = models_path().with_name("models.json.pacer.json")
         saved = json.loads(side.read_text(encoding="utf-8")) if side.is_file() else {}
         if not saved:
             sys.exit("no upstream: run 'llm_pacer.py pi-on' first, or give --upstream https://<platform>/api")
         a.upstream = next(iter(saved.values()))
+        provs = json.loads(models_path().read_text(encoding="utf-8")).get("providers", {})
+        for name, url in saved.items():                 # model id -> its own platform (not all to the first one)
+            for m in (provs.get(name) or {}).get("models") or []:
+                for k in (m.get("id"), m.get("name")):
+                    if k:
+                        routes[k] = url
     ctx = ssl.create_default_context()
     if os.environ.get("PACER_INSECURE") == "1":
         ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
-    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(a.upstream, Pacer(a.gap, a.parallel), a.retries, ctx, a.timeout))
+    srv = ThreadingHTTPServer(("127.0.0.1", a.port), make_handler(routes, a.upstream, Pacer(a.gap, a.parallel), a.retries, ctx, a.timeout))
+    for model, url in sorted(routes.items()):
+        print(f"  model {model} -> {url}", flush=True)
     print(f"pacer on http://127.0.0.1:{a.port} -> {a.upstream} (gap {a.gap}s, parallel {a.parallel}, retries {a.retries}); Ctrl+C stops it",
           flush=True)
     try:

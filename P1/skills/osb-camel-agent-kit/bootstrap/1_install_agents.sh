@@ -1525,6 +1525,7 @@ cat > 'pi/vdi_session.sh' <<'KIT_EOF_PI_VDI_SESSION_SH'
 #   bash <kit>/pi/vdi_session.sh flows 'a-prj|b-prj'      research (pi) -> task1 (needs EXPORT) -> review archive
 #   bash <kit>/pi/vdi_session.sh review 'a-prj|b-prj'     only the delivery part (no pi): delivery, tests, broker, archive
 #   bash <kit>/pi/vdi_session.sh stop [--broker]          routes stopped, pi back to the platform, pacer stopped
+#   PACER=0 before start/flows: no pacer, pi talks to the model directly (an endpoint without a rate limit)
 #
 # Secrets are never written to a file: ARTEMIS_PASSWORD and MASK_KEY are asked for when they are not exported.
 # Logs: domain/pacer.log (one line per model call), domain/session-<date>.log (everything a flows/review run printed).
@@ -1558,6 +1559,12 @@ start_pacer() {
   echo "pi: models.json -> pacer"
 }
 
+use_model_directly() {   # PACER=0: pi -> model platform, no pacer in between
+  pi_on_pacer && "$PY" "$KIT/pi/llm_pacer.py" pi-off
+  echo "pi: talks to the model directly (PACER=0, no pacer)"
+}
+model_link() { if [ "${PACER:-1}" = 0 ]; then use_model_directly; else pacer_up && pi_on_pacer || start_pacer; fi; }
+
 start_broker() {
   [ -n "${ARTEMIS_HOME:-}" ] || { echo "broker: ARTEMIS_HOME not set in .osb-kit.env (bash \$KIT/broker/artemis_setup.sh setup <folder>)"; return 1; }
   ask ARTEMIS_PASSWORD "Artemis password (user ${ARTEMIS_USER:-artemis})"
@@ -1578,7 +1585,8 @@ case "${1:-}" in
     echo "kit: $KIT ($(cd "$KIT/../.." 2>/dev/null && git log --oneline -1 2>/dev/null || ls -l --time-style=+%F "$KIT/pi/run_domain.sh" | awk '{print "downloaded " $6}'))"
     "${JAVA_HOME:+$JAVA_HOME/bin/}java" -version 2>&1 | grep -v "Picked up" | head -1
     mvn -v 2> /dev/null | head -1 || echo "mvn not on PATH: check .osb-kit.env"
-    start_pacer
+    command -v pi > /dev/null && echo "pi: $(pi --version 2>/dev/null | head -1) model ${OSB_PI_MODEL:-<pi default>}" || echo "pi: NOT on PATH"
+    model_link
     start_broker
     echo; echo "ready. Projects: bash $KIT/pi/vdi_session.sh flows 'a-prj|b-prj'   (export EXPORT=<Splunk CSV> and MASK_KEY for task1)" ;;
 
@@ -1591,7 +1599,7 @@ case "${1:-}" in
 
   flows)
     P=${2:?usage: vdi_session.sh flows 'a-prj|b-prj'}
-    pacer_up || start_pacer || exit 1
+    model_link || exit 1
     ask ARTEMIS_PASSWORD "Artemis password (user ${ARTEMIS_USER:-artemis})"
     broker_up || start_broker || echo "broker not running: the review stage skips the broker test"
     {
@@ -1626,7 +1634,7 @@ case "${1:-}" in
     pacer_up && echo "pacer still listening on :$PACER_PORT (close its window)" || echo "pacer: stopped"
     if [ "${2:-}" = "--broker" ]; then ask ARTEMIS_PASSWORD "Artemis password"; bash "$KIT/broker/artemis_setup.sh" stop; fi ;;
 
-  *) sed -n '2,16p' "$0"; exit 2 ;;
+  *) sed -n '2,17p' "$0"; exit 2 ;;
 esac
 KIT_EOF_PI_VDI_SESSION_SH
 mkdir -p "$(dirname "pi/PI_SETUP.md")"
