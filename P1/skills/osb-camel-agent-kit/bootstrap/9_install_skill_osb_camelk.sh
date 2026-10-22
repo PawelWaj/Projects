@@ -3913,16 +3913,19 @@ class FlowErrorTest {
         assertErrorPath("not json at all", Map.of(corr, "t-invalid"));
     }
 
+    static final String NO_BACKEND = "(none)";
+
     static Stream<String> backends() throws Exception {
         List<String> b = new ArrayList<>();
         cfg().path("backends").fieldNames().forEachRemaining(b::add);
-        return b.stream();
+        return b.isEmpty() ? Stream.of(NO_BACKEND) : b.stream();   // JUnit rejects an empty source: one skipped run instead
     }
 
     /** OSB error handler of the service: a backend that fails (fault, timeout, HTTP error) takes the error path. */
     @ParameterizedTest(name = "backend {0} fails")
     @MethodSource("backends")
     void backendFaultTakesTheErrorPath(String backend) throws Exception {
+        Assumptions.assumeFalse(NO_BACKEND.equals(backend), "the flow calls no backend");
         Path c = firstCase();
         Assumptions.assumeTrue(c != null, "no test case to send");
         mock(cfg().path("backends").path(backend).path("mock").asText())
