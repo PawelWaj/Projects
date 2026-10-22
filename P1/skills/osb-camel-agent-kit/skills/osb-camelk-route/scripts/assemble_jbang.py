@@ -20,6 +20,7 @@ Per OSB project (from the work modules <ws>/modules/<project>/<proxy>/ and the O
       test/<Flow>Test.java           tests, run with `jbang test/<Flow>Test.java` (JUnit via //DEPS, no pom, no broker)
       test/resources/<proxy>/        flow-test.json + the masked cases
       docs/<proxy>/                  FLOW_CARD.md, TEST_MATRIX.md, GATES.json, BODY_CHAIN.md
+      camel-k/                       integration.yaml, configmaps.yaml, DEPLOY.md (camelk_manifests.py)
 
 Routing comes from the frozen scenario table of the module (flow-test.json, checked against the Splunk cases);
 transformations never come from an agent: what OSB does to the body is read from the pipeline and run with OSB's
@@ -37,6 +38,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 import body_chain  # noqa: E402
+import camelk_manifests  # noqa: E402
 
 TPL = HERE.parent / "assets/templates"
 CAMEL_VERSION = "4.18.4"
@@ -493,6 +495,7 @@ def assemble(ws: Path, osb_app: Path, out: Path, app: str, rx: str | None) -> di
         for x, cfg, bc, e_headers in flows:
             write_test(dst, short, x, cfg, [f[0] for f in flows], e_headers)
         write_run_local(dst, short, [f[0] for f in flows])
+        camelk_manifests.manifests(dst)
         n_proj += 1
     (root / "README.md").write_text(readme(app, summary), encoding="utf-8", newline="\n")
     return {"projects": n_proj, "flows": n_flow, "out": str(root)}
@@ -524,7 +527,8 @@ def readme(app: str, summary: list) -> str:
           "## Layout", "", "```", f"{app}/", "  README.md  set-env.sh  run.sh", "  tools/          jbang.sh  artemis.sh  e2e.sh",
           "  Common-setup/   osb-jms-source / osb-jms-sink kamelets, OsbNxsd.java, OsbXQuery.java",
           "  <project>/      <domain>-route.yaml  application.properties  local.properties  run-local.sh  RUN_LOCAL.md",
-          "                  transformations/ (OSB .xqy and nXSD .xsd)  test/ (jbang tests, cases)  docs/<proxy>/", "```", ""]
+          "                  transformations/ (OSB .xqy and nXSD .xsd)  test/ (jbang tests, cases)  docs/<proxy>/",
+          "                  camel-k/ (integration.yaml, configmaps.yaml, DEPLOY.md: the project on Camel K)", "```", ""]
     return "\n".join(L)
 
 

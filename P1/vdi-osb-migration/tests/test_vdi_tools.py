@@ -681,6 +681,28 @@ class SyntheticAndReplyTests(unittest.TestCase):
             for f in ("README.md", "run.sh", "set-env.sh", "tools/jbang.sh", "tools/artemis.sh", "tools/e2e.sh"):
                 self.assertTrue((app / f).is_file(), f)
             self.assertIn("| x-prj | x | x-register | xml |", (app / "README.md").read_text())
+            # Camel K: Integration + ConfigMaps + DEPLOY.md, no credential value anywhere
+            k = p / "camel-k"
+            integ = (k / "integration.yaml").read_text()
+            for s in ("kind: Integration", "name: x\n", "contentRef: x-sources", "contentKey: x-route.yaml", "contentKey: OsbXQuery.java",
+                      '"configmap:x-config"', '"secret:x-broker"', '"configmap:x-transformations@/etc/camel/resources/osb/transformations"',
+                      '"OSB_FILES_DIR=/etc/camel/resources/osb"', 'list: "osb-jms-sink,osb-jms-source"', "mvn:net.sf.saxon:Saxon-HE:12.9",
+                      "imagePullPolicy: Always", "    environment:"):
+                self.assertIn(s, integ, s)
+            self.assertNotIn("password", integ.lower().replace("broker user/password", ""))
+            cms = (k / "configmaps.yaml").read_text()
+            self.assertEqual(cms.count("kind: ConfigMap"), 3)
+            self.assertIn("x-register.xqy:", cms)
+            self.assertIn("osb.files.dir={{env:OSB_FILES_DIR:.}}", cms)
+            self.assertNotIn(".password={{env:BROKER_PASSWORD", cms, "credentials only from the Secret")
+            self.assertIn("--from-file=broker.properties", (k / "DEPLOY.md").read_text())
+            try:
+                import yaml  # optional: full parse when PyYAML is present
+                docs = list(yaml.safe_load_all(cms))
+                self.assertEqual(docs[2]["data"]["x-register.xqy"], (p / "transformations/x-register.xqy").read_text())
+                self.assertEqual(yaml.safe_load(integ)["spec"]["traits"]["mount"]["configs"], ["configmap:x-config", "secret:x-broker"])
+            except ImportError:
+                pass
             # a module older than the selector: no flow.input.selector in its properties -> taken from research.json
             mprops = ws / "modules/x-prj/x/src/main/resources/application.properties"
             mprops.write_text("\n".join(l for l in mprops.read_text().splitlines() if not l.startswith("flow.input.selector")))
