@@ -270,6 +270,67 @@ class CamelkRouteTests(unittest.TestCase):
         "logs": [{"stage": "s1", "level": "INFO", "template": "Request {x}"}, {"stage": "error stage", "template": "Error {x}"}],
         "open_questions": ["q1"]}
 
+    HTTP_PACK = {
+        "proxy": "Lookup", "entry": {"transport": "http", "destination": "/a/b/lookup", "payload_format": "json"},
+        "branches": [], "scenario_dims": [],
+        "scenario_mapping": [{"scenario": "*", "outputs": ["LookupBS"]}],
+        "outputs": [{"name": "reply", "destination": "HTTP response on /a/b/lookup"},
+                    {"name": "LookupBS", "destination": "HTTP POST to /v1/x/y", "business_service": "LookupBS",
+                     "headers": [{"name": "k", "source": "dvm:lookup(D.dvm, Attribute=K)"}]}],
+        "backends": [{"name": "LookupBS", "type": "HTTP, Mixed binding, POST operation", "operation": "POST /v1/x/y",
+                      "request_from": "query params a and b; body deleted", "response_use": "mapped into the reply"}],
+        "transforms": [{"name": "Response", "mappings": [{"from": "x", "to": "y", "rule": "copy"}]}],
+        "errors": [{"scope": "service", "goes_to": "Reply with isError=true back to the HTTP caller",
+                    "headers": ["HTTP response code: outbound value or default 500"]}],
+        "logs": [{"stage": "request", "template": "Request {body}"}], "open_questions": []}
+
+    def test_scaffold_http_request_reply_calls_backend_and_checks_reply_body(self):
+        with tempfile.TemporaryDirectory() as d:
+            res, mod = Path(d, "res"), Path(d, "mod")
+            res.mkdir()
+            (res / "research.json").write_text(json.dumps(self.HTTP_PACK), encoding="utf-8")
+            r = subprocess.run([sys.executable, str(self.SK / "scaffold_camelk.py"), str(res), "-o", str(mod), "--project", "h-prj"],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            cfg = json.loads((mod / "src/test/resources/flow-test.json").read_text())
+            self.assertEqual(list(cfg["outputs"]), ["reply"])                    # the HTTP business service is no output
+            self.assertIn("lookupbs", cfg["backends"])                           # ... but a call, mocked with its stub
+            self.assertEqual(cfg["scenario_mapping"][0]["outputs"], ["reply"])
+            self.assertEqual(cfg["error_output"], "reply")
+            self.assertEqual(cfg["error_http_status"], 500)
+            props = (mod / "src/main/resources/application.properties").read_text()
+            self.assertIn("flow.input=platform-http:/a/b/lookup", props)
+            self.assertIn("backend.lookupbs=https://{{env:LOOKUPBS_HOST}}/v1/x/y", props)
+            self.assertNotIn("amqp", props)                                      # HTTP-only: no broker needed to start
+            route = next(mod.rglob("*.camel.yaml")).read_text()
+            self.assertIn("id: backend-lookupbs", route)
+            self.assertIn("CamelHttpResponseCode", route)
+            self.assertNotIn("uri: \"{{out.reply}}\"", route)
+            self.assertIn("camel-platform-http-main", (mod / "pom.xml").read_text())
+            self.assertTrue(any(mod.rglob("FlowErrorTest.java")))
+            case = mod / "src/test/resources/parity/h-prj-Lookup-synthetic/all/case1"
+            case.mkdir(parents=True)
+            (case.parent / "SCENARIO.txt").write_text("*")
+            (case / "input.payload").write_text("{}")
+            (case / "expected.json").write_text('{"outcome": "success"}')
+            subprocess.run([sys.executable, str(self.SK / "check_camelk.py"), str(mod), "--no-surefire"], capture_output=True, text=True)
+            self.assertFalse(json.loads((mod / "GATES.json").read_text())["gates"]["K12_reply_expected"]["ok"])
+            (case / "expected-output.json").write_text('{"y": 1}')
+            subprocess.run([sys.executable, str(self.SK / "check_camelk.py"), str(mod), "--no-surefire"], capture_output=True, text=True)
+            self.assertTrue(json.loads((mod / "GATES.json").read_text())["gates"]["K12_reply_expected"]["ok"])
+
+    def test_verify_module_yaml_lint_names_the_line(self):
+        import importlib.util
+        s = importlib.util.spec_from_file_location("vm", self.SK / "verify_module.py")
+        vm = importlib.util.module_from_spec(s)
+        s.loader.exec_module(vm)
+        ok = "- route:\n    from:\n      uri: x\n      steps:\n        - log:\n            message: \"a ${body}\"\n"
+        self.assertEqual(vm.yaml_lint(ok), [])
+        bad_msg = ok.replace('message: "a ${body}"', 'message:\n              simple: "a ${body}"')
+        self.assertIn("line 6", vm.yaml_lint(bad_msg)[0])
+        bad_steps = "- route:\n    from:\n      uri: x\n    steps:\n      - log:\n          message: a\n"
+        self.assertIn("UNDER 'from:'", vm.yaml_lint(bad_steps)[0])
+
     def test_scaffold_normalises_outputs_and_check_flags_gaps(self):
         with tempfile.TemporaryDirectory() as d:
             res, mod = Path(d, "res"), Path(d, "mod")
@@ -297,7 +358,8 @@ class CamelkRouteTests(unittest.TestCase):
             self.assertFalse(gates["K2_no_gaps"]["ok"])
             self.assertTrue(gates["K3_route_ids"]["ok"])
             self.assertTrue(gates["K4_no_infrastructure"]["ok"])
-            self.assertFalse(gates["K7_error_tests"]["ok"])
+            self.assertTrue(gates["K7_error_tests"]["ok"])          # the scaffold writes a compiling FlowErrorTest start
+            self.assertTrue(any(mod.rglob("FlowErrorTest.java")))
             # editing a generated test is caught; a host in the properties is caught
             t = next(mod.rglob("FlowParityTest.java"))
             t.write_text(t.read_text() + "\n// weakened\n")

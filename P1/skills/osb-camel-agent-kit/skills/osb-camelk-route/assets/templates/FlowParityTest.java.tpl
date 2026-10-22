@@ -277,6 +277,7 @@ class FlowParityTest {
     void unreadablePayloadGoesToTheErrorOutput() throws Exception {
         String err = CFG.path("error_output").asText("");
         Assumptions.assumeTrue("json".equals(CFG.path("payload_format").asText()) && !err.isEmpty(), "not a JSON flow or no error output");
+        Assumptions.assumeFalse(REPLY.equals(err), "the error is a reply to the caller: FlowErrorTest checks it");
         for (var it = CFG.path("outputs").fields(); it.hasNext(); ) {
             var o = it.next();
             if (!REPLY.equals(o.getKey())) {

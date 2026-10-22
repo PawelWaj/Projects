@@ -436,6 +436,17 @@ stage set the property osbStage to that stage's name; the error handler sends it
 exception class name, errorMessage the exception message. Inbound headers OSB copies to the error message travel
 with the message: never re-set them, never invent a default for them.
 Behaviour that is not on the card is not implemented: record it as an open question in MIGRATION_NOTES.md.
+Transformation without an original file to run: a mapping written INLINE in the pipeline (Replace/Assign action, no
+.xqy file) or a JSON nXSD whose schema is not in the module is implemented from research.json `transforms[].mappings`,
+field by field with every rule (rename, date reformat, value mapping, filter such as "first record with status X"),
+in a helper bean or simple/jsonpath steps; each mapping row is one line of code, nothing added. Passing the body
+through unchanged is wrong when research lists a transform: gate K12 and the body test compare the reply.
+Request/reply (HTTP) flows: the body at the end of the route is the answer to the caller; the HTTP call is the
+`backend-*` step the scaffold placed (method, query, headers from the card; secrets and DVM values from properties
+or env, never literals); on an error set CamelHttpResponseCode as the scaffold did and answer, never throw.
+FlowErrorTest.java is generated as a compiling start: extend it, keep its helper methods, never rewrite it from
+scratch. YAML: `steps:` of a route belong under `from:`; in `doCatch` each item is `- exception: [..]` with its
+`steps:` at the same level as `exception`.
 Run tests only through scripts/verify_module.py (short summary), never raw mvn. Finish when it prints PASS, or stop and report which gate fails and why it cannot pass.
 KIT_EOF_AGENTS_IMPLEMENTER_CAMELK_MD
 mkdir -p "$(dirname "agents/implementer.md")"
@@ -553,8 +564,15 @@ parity/sample-transform-prj-sample-transform-synthetic/all/case1/input.payload  
 - `headers.json`: transport headers the flow reads (resource, eventType ...) + a traceId.
 - `expected.json`: {"outcome": "success", "destination": "see mapping", "correlation": "<the traceId>"}.
 - `../SCENARIO.txt`: `<project>/<proxy>|success|k=v|...` with every key of the row.
+Request/reply flows (flow-test.json has `reply` in outputs and `backends`): the reply body must be testable, so also
+- `src/test/resources/stubs/<backend>.json` per backend: its answer with FAKE values and ONLY the fields research.json
+  names (transforms[].mappings[].from, backends[].response_use); include one record each filter of the transforms
+  selects (e.g. the status the reply keeps) and one it skips;
+- `expected-output.json` next to each `input.payload`: the reply research.json transforms build from that stub, field
+  by field, every rule applied (renames, date reformat, value mapping). Never a field research does not name.
 You never write or change the route, the beans, FlowParityTest.java, flow-test.json, or real (Splunk) case folders.
-If the schema is missing from the export, write nothing for that row and report it.
+If the schema is missing from the export, build the message from the field names research.json / RESEARCH.md give
+(message format, mappings) and say so in your answer; if research names no fields either, write nothing for that row.
 KIT_EOF_AGENTS_TESTER_CAMELK_MD
 mkdir -p "$(dirname "agents/tester.md")"
 cat > 'agents/tester.md' <<'KIT_EOF_AGENTS_TESTER_MD'
@@ -752,8 +770,18 @@ _pi_call_inner() {
       if [ $rc = 124 ] || [ $rc = 137 ]; then
         echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
       fi
-    else
-      "$@" > "$out" 2> "$err" && return 0
+    else   # no `timeout` (macOS): a watchdog kills the run after PI_TIMEOUT
+      "$@" > "$out" 2> "$err" & local pid=$!
+      rm -f "$err.timeout"
+      ( sleep "${PI_TIMEOUT:-1800}"; kill -0 "$pid" 2>/dev/null || exit 0; touch "$err.timeout"; kill -TERM "$pid" 2>/dev/null
+        sleep 30; kill -KILL "$pid" 2>/dev/null ) &
+      local dog=$!
+      wait "$pid"; local rc=$?
+      kill "$dog" 2>/dev/null; wait "$dog" 2>/dev/null
+      [ $rc = 0 ] && return 0
+      if [ -f "$err.timeout" ]; then
+        rm -f "$err.timeout"; echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
+      fi
     fi
     if grep -qiE '(^|[^0-9])429([^0-9]|$)|too many requests|rate.?limit|overloaded|503 service unavailable' "$err" 2>/dev/null \
        && [ "$n" -lt "${PI_RETRIES:-5}" ]; then
@@ -916,7 +944,7 @@ PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --to
 VERIFY="$PY $SK/scripts/verify_module.py $MOD"
 RULES="Never run mvn directly: '$VERIFY' runs the tests and the gates and prints a short summary. Never edit FlowParityTest.java, flow-test.json, FLOW_CARD.md or any test case folder. Write nothing outside $MOD. Do not read target/ or the parity cases."
 export VERIFY_MVN="mvn -B -q ${MVN_ARGS:-}"
-pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route, write FlowErrorTest (one test per error scope at least) and the backend stubs. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
+pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route (request/reply: step 3b, the reply built from research.json transforms row by row), extend the generated FlowErrorTest (keep its helpers; one test per error scope at least), and write a backend stub only where src/test/resources/stubs has none. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
 for round in $(seq 1 "${PI_FIX_ROUNDS:-3}"); do
   SUMMARY=$($VERIFY 2>&1) && { echo "   verify: PASS after $round call(s)"; break; }
   echo "   verify round $round: $(echo "$SUMMARY" | head -1)"
@@ -1490,7 +1518,13 @@ if [ "$UNCOV" != 0 ] && [ "${PI_TESTER:-1}" = 0 ]; then
 elif [ "$UNCOV" != 0 ]; then
   PT=(pi --print --no-session --thinking "${PI_TESTER_THINKING:-low}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
   [ -n "${OSB_PI_MODEL:-}" ] && PT+=(--model "$OSB_PI_MODEL")
-  pi_call "$LOG/tester.out" "$LOG/tester.err" "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." || true
+  REPLY_TASK=""
+  if "$PY" -c "import json,sys; c=json.load(open(sys.argv[1])); sys.exit(0 if 'reply' in c.get('outputs',{}) and c.get('backends') else 1)" "$MOD/src/test/resources/flow-test.json"; then
+    # request/reply with HTTP calls: the reply body must be tested (gate K12), so the case needs the backend's answer and
+    # the reply OSB would build from it
+    REPLY_TASK=" This flow answers the caller and calls backend(s) $("$PY" -c "import json,sys; print(', '.join(json.load(open(sys.argv[1]))['backends']))" "$MOD/src/test/resources/flow-test.json"). For each backend write $MOD/src/test/resources/stubs/<backend>.json: the backend's answer with FAKE values, ONLY fields that research.json names (transforms[].mappings[].from, backends[].response_use); include at least one record that matches every filter the transforms use (e.g. a status the reply selects) and one that does not. For each case write expected-output.json next to input.payload: the reply as research.json transforms build it from that stub, field by field (apply every rule: renames, date reformat, value mapping). Gate K12 checks it."
+  fi
+  pi_call "$LOG/tester.out" "$LOG/tester.err" "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md and $RES/research.json. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gates K9 and K12). Fake values only.$REPLY_TASK Write nothing outside $MOD/src/test/resources/parity and $MOD/src/test/resources/stubs." || true
 else
   echo "   every scenario already has a real Splunk case"
 fi

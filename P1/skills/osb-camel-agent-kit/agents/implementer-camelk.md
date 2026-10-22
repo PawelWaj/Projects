@@ -15,4 +15,15 @@ stage set the property osbStage to that stage's name; the error handler sends it
 exception class name, errorMessage the exception message. Inbound headers OSB copies to the error message travel
 with the message: never re-set them, never invent a default for them.
 Behaviour that is not on the card is not implemented: record it as an open question in MIGRATION_NOTES.md.
+Transformation without an original file to run: a mapping written INLINE in the pipeline (Replace/Assign action, no
+.xqy file) or a JSON nXSD whose schema is not in the module is implemented from research.json `transforms[].mappings`,
+field by field with every rule (rename, date reformat, value mapping, filter such as "first record with status X"),
+in a helper bean or simple/jsonpath steps; each mapping row is one line of code, nothing added. Passing the body
+through unchanged is wrong when research lists a transform: gate K12 and the body test compare the reply.
+Request/reply (HTTP) flows: the body at the end of the route is the answer to the caller; the HTTP call is the
+`backend-*` step the scaffold placed (method, query, headers from the card; secrets and DVM values from properties
+or env, never literals); on an error set CamelHttpResponseCode as the scaffold did and answer, never throw.
+FlowErrorTest.java is generated as a compiling start: extend it, keep its helper methods, never rewrite it from
+scratch. YAML: `steps:` of a route belong under `from:`; in `doCatch` each item is `- exception: [..]` with its
+`steps:` at the same level as `exception`.
 Run tests only through scripts/verify_module.py (short summary), never raw mvn. Finish when it prints PASS, or stop and report which gate fails and why it cannot pass.

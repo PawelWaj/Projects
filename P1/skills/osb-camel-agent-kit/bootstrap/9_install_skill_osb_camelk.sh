@@ -72,7 +72,14 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    `${exchangeProperty.<field>}` (set by OsbJson.annotate), never headers; a path with no output in OSB gets no
    `when`; set the property `osbStage` before each OSB stage (debugInfo); errorCode = exception class name. Log templates become simple
    expressions with the same literal text. Conditions use the headers the helper bean sets (`${header.x}`).
-4. **Error tests:** `src/test/java/<pkg>/FlowErrorTest.java`, at least one test per error scope on the card: invalid
+3b. **Request/reply HTTP flows:** the scaffold makes the proxy a `platform-http` entry, each HTTP business service a
+   `backend-*` call (mocked in tests, answering with its stub) and the end of the route the reply; on an error the
+   route answers with `CamelHttpResponseCode` (from research) instead of sending to a queue. A mapping OSB writes
+   inline in the pipeline (no .xqy file) or a JSON nXSD without its schema in the module is implemented from
+   research.json `transforms[].mappings`, row by row (helper bean or jsonpath); never a pass-through when research
+   lists a transform. Gate K12 requires an expected reply per case, so a pass-through fails.
+4. **Error tests:** `src/test/java/<pkg>/FlowErrorTest.java` is generated as a compiling start (invalid payload,
+   every backend failing): extend it, keep its helpers. At least one test per error scope on the card: invalid
    payload, each output/backend failing (mock `whenAnyExchangeReceived` throwing), retries counted
    (`getReceivedCounter()`), error headers and original body on the error output, generated traceId. Set retry delays
    to 0 through properties in the test, never by changing production defaults.
@@ -84,7 +91,8 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    K5 generated tests and frozen synthetic cases untouched, nothing disabled · K6 stubs · K7 error tests ≥ error scopes ·
    K8 tests green · K9 every scenario_mapping row has a case · K10 every property value a plain endpoint (no notes,
    no spaces) and every `{{key}}` defined · K11 each destination once: a JMS business service that writes an `out-*`
-   IS that output, so never add a `backend-<x>-bs` send next to `out-<x>` (production would get every message twice).
+   IS that output, so never add a `backend-<x>-bs` send next to `out-<x>` (production would get every message twice) ·
+   K12 request/reply: every case that ends in the reply has `expected-output.json|xml`.
 7. **Prove the tests bite:** `python <skill>/scripts/mutate_route.py modules/<project>/<proxy> --mvn "mvn -B -q -s ~/.m2/settings.xml"`
    breaks the route on purpose (conditions negated, outputs swapped or dropped, retries removed); every mutation must
    make a test fail. A survivor means a missing test: add it to FlowErrorTest, never weaken the route to pass.
@@ -1546,6 +1554,8 @@ K10 properties valid   application.properties: no spaces or notes in a value, no
                        is defined (the tests replace endpoints with mocks, so a broken production value stays green)
 K11 single destination no destination twice: a backend-<x>-bs next to out-<x> (the JMS business service IS the output),
                        or two keys with the same endpoint value: production would get every message twice
+K12 reply expected     request/reply flows: every case that ends in the reply has expected-output.json/.xml, so the
+                       reply body is compared (a route that passes the request through unchanged must fail)
 Writes GATES.json next to the module's pom; exit 1 if any gate fails."""
 import argparse
 import hashlib
@@ -1630,6 +1640,21 @@ def main() -> int:
         return bool(key)
     uncovered = [m["scenario"] for m in cfg.get("scenario_mapping", []) if not any(hit(m["scenario"], v) for v in scen)]
     gates["K9_scenarios_covered"] = {"ok": not uncovered, "uncovered": uncovered}
+
+    # K12: a request/reply flow is only tested when the REPLY BODY is compared: every case that ends in the reply
+    # has expected-output.json/.xml (OSB's logged answer, or synthetic: built from the stub by research transforms)
+    reply_rows = [m["scenario"] for m in cfg.get("scenario_mapping", []) if "reply" in (m.get("outputs") or [])]
+    no_expected = []
+    if reply_rows and "reply" in (cfg.get("outputs") or {}):
+        for sc in (mod / "src/test/resources/parity").glob("*/*/SCENARIO.txt"):
+            v = dict(p.split("=", 1) for p in sc.read_text(encoding="utf-8").strip().split("|") if "=" in p)
+            if not any(hit(r_, v) for r_ in reply_rows):
+                continue
+            for case in sorted(p.parent for p in sc.parent.glob("*/input.payload")):
+                exp = json.loads((case / "expected.json").read_text(encoding="utf-8")) if (case / "expected.json").is_file() else {}
+                if exp.get("outcome", "success") == "success" and not any((case / f"expected-output{e}").is_file() for e in (".json", ".xml")):
+                    no_expected.append(case.relative_to(mod / "src/test/resources/parity").as_posix())
+    gates["K12_reply_expected"] = {"ok": not no_expected, "cases_without_expected_reply": no_expected[:20]}
 
     props, bad = {}, []
     pf = mod / "src/main/resources/application.properties"
@@ -2608,6 +2633,24 @@ def clean(s) -> str:
     return s.split()[0] if s.split() else ""
 
 
+HTTP_WORDS = re.compile(r"(?i)^\s*(?:https?\b|(?:get|post|put|delete|patch)\s+/)")
+
+
+def http_path(text) -> str:
+    """The URI path of an HTTP destination as research writes it ('HTTP POST to /v1/x', 'POST /v1/x', 'http:/v1/x',
+    'HTTP response on /a/b'); '' when the text is not an HTTP destination."""
+    t = str(text or "")
+    if not HTTP_WORDS.search(t):
+        return ""
+    m = re.search(r"(?<![\w:])(/[\w\-./{}~%]+)", t.replace("http:/", " /").replace("https:/", " /"))
+    return m.group(1) if m else ""
+
+
+def is_http(o: dict, b: dict | None) -> bool:
+    """An output that is an HTTP call (its answer can be used), not a queue the flow writes to."""
+    return bool(http_path(o.get("destination_raw")) or (b and str(b.get("type") or "").lower().startswith("http")))
+
+
 def endpoint(dest: str, kind: str) -> str:
     """Production endpoint for a research destination (scheme:name, never a host)."""
     d = clean(dest)
@@ -2616,6 +2659,9 @@ def endpoint(dest: str, kind: str) -> str:
     m = re.match(r"^(https?):(/.*)$", d)
     if m:
         return f"{m.group(1)}://{{{{env:{slug(kind).upper().replace('-', '_')}_HOST}}}}{m.group(2)}"
+    path = http_path(dest)
+    if path:                             # 'HTTP POST to /v1/x', 'POST /v1/x': host from env, method set in the route
+        return f"https://{{{{env:{slug(kind).upper().replace('-', '_')}_HOST}}}}{path}"
     name = re.sub(r"^(jms|amqp|queue|topic):", "", d)
     kind_ = "topic" if d.startswith("topic:") else "queue"
     return f"amqp:{kind_}:{name}"
@@ -2633,7 +2679,8 @@ def model(r: dict, facts: dict, corr: str) -> dict:
                       or (bs and slug(clean(b.get("name"))) == slug(bs))), None)
         key = slug(bs or (clean(owner.get("name")) if owner else o.get("name")))
         outputs[key] = {"name": o.get("name"), "destination": dest, "on_path": o.get("on_path") or o.get("on") or "",
-                        "headers": o.get("headers") or [], "backend": owner.get("name") if owner else None}
+                        "headers": o.get("headers") or [], "backend": owner.get("name") if owner else None,
+                        "destination_raw": str(o.get("destination") or ""), "body_from": o.get("body_from") or ""}
         for a in (o.get("name"), dest, clean(owner.get("name")) if owner else None, key):
             if a:
                 alias[slug(a)] = key
@@ -2641,12 +2688,21 @@ def model(r: dict, facts: dict, corr: str) -> dict:
     wants_reply = (str(entry.get("transport") or "").lower().startswith(("http", "local", "sb"))
                    or str(entry.get("response_required") or "").lower() == "true"
                    or any(str(o).lower() == "reply" for x in r.get("scenario_mapping") or [] for o in (x.get("outputs") or [])))
+    calls = {}       # request/reply flow: an HTTP business service is a CALL (mocked, answers with its stub), not an output
     if wants_reply:
         outputs["reply"] = {"name": "reply to the caller", "destination": "caller", "on_path": "end of the request pipeline",
                             "headers": [], "backend": None}
         alias["reply"] = "reply"
+        for k in [k for k in outputs if k != "reply"]:
+            o = outputs[k]
+            b = next((x for x in raw_backends if slug(clean(x.get("name"))) in (k, slug(o.get("backend") or ""))), None)
+            if is_http(o, b):
+                calls[k] = {**(b or {}), "name": clean((b or {}).get("name")) or o.get("name") or k, "headers": o["headers"],
+                            "operation": (b or {}).get("operation") or o["destination_raw"], "body_from": o["body_from"],
+                            "type": (b or {}).get("type") or "HTTP"}
+                del outputs[k]
 
-    def resolve(x):
+    def resolve_(x):
         """An output as research names it in a table: exact alias, else the one output whose key contains the name as
         whole words ('bulk-register' -> 'business-service-bulk-register-bix'; the shortest wins over '...-error-queue-bix')."""
         for k in (slug(clean(x)), slug(x)):
@@ -2655,12 +2711,19 @@ def model(r: dict, facts: dict, corr: str) -> dict:
         k = slug(clean(x))
         hits = sorted((o_ for o_ in outputs if k and re.search(rf"(^|-){re.escape(k)}(-|$)", o_)), key=len)
         return hits[0] if hits and (len(hits) == 1 or len(hits[0]) < len(hits[1])) else k
+
+    def resolve(x):
+        """As resolve_, but a scenario that 'goes to' an HTTP call ends in the reply to the caller (the call is a step)."""
+        k = resolve_(x)
+        return "reply" if k in calls else k
     err = next((k for k, o in outputs.items() if re.search(r"error", f"{o['on_path']} {o['name']} {o['destination']}", re.I)), None)
     for e in r.get("errors") or []:
         if err:
             break
         g = e.get("goes_to") or ""
         err = next((k for a, k in alias.items() if a and a in slug(g)), None)
+    if err in calls:
+        err = "reply"
     if err is None:
         outputs["error"] = {"name": "error", "destination": "", "on_path": "error handler", "headers": [], "backend": None}
         err = "error"
@@ -2669,6 +2732,7 @@ def model(r: dict, facts: dict, corr: str) -> dict:
     backends = {slug(clean(b.get("name"))): {**b, "name": clean(b.get("name"))} for b in raw_backends
                 if slug(clean(b.get("name"))) not in outputs and slug(clean(b.get("name"))) not in alias
                 and not (clean(b.get("operation")) in out_dests or clean(b.get("destination")) in out_dests)}
+    backends = {**calls, **backends}
     paths = []
     for b in r.get("branches") or []:
         for p in b.get("paths") or []:
@@ -2679,7 +2743,7 @@ def model(r: dict, facts: dict, corr: str) -> dict:
     mapping = []
     for x in r.get("scenario_mapping") or []:
         outs = x.get("outputs") if isinstance(x.get("outputs"), list) else [x.get("output")]
-        outs = [resolve(o) for o in outs if o and str(o).lower() not in ("none", "-")]
+        outs = list(dict.fromkeys(resolve(o) for o in outs if o and str(o).lower() not in ("none", "-")))
         sc = x.get("scenario", "")
         # keys as the Splunk step labels the cases: last path segment ("data.hasX" / "body:data.hasX" -> "hasX")
         sc = "|".join(re.sub(r"^([^=!]+)(!?=)", lambda g: alias.get(dim_name(g.group(1)), dim_name(g.group(1))) + g.group(2), p_.strip()) for p_ in sc.split("|")) if "=" in sc else sc
@@ -2692,7 +2756,15 @@ def model(r: dict, facts: dict, corr: str) -> dict:
             "format": fmt, "corr": corr, "logs": r.get("logs") or [], "transforms": r.get("transforms") or [],
             "branches": r.get("branches") or [], "entry": r.get("entry") or {}, "errors": r.get("errors") or [],
             "corr_generated": "uuid" in hdr_src,                       # OSB: traceId = inbound header, else fn-bea:uuid()
-            "selector": str((r.get("entry") or {}).get("selector") or "").strip()}
+            "selector": str((r.get("entry") or {}).get("selector") or "").strip(),
+            "calls": sorted(calls), "http_entry": str(entry.get("transport") or "").lower().startswith("http"),
+            "error_status": error_status(r.get("errors") or []) if err == "reply" else None}
+
+
+def error_status(errors: list) -> int | None:
+    """The HTTP status OSB answers with on an error, when research names one ('... else default 500')."""
+    m = re.search(r"\b([45]\d\d)\b", json.dumps(errors))
+    return int(m.group(1)) if m else None
 
 
 def route_yaml(proxy: str, project: str, pkg: str, m: dict) -> str:
@@ -2723,8 +2795,23 @@ def route_yaml(proxy: str, project: str, pkg: str, m: dict) -> str:
     for t in m["transforms"]:
         L.append(f"{ind}# transform {t.get('name')}: {t.get('purpose', '')} -> keep the original file, see FLOW_CARD.md")
     for k, b in m["backends"].items():
+        if k in m.get("calls", []):
+            continue
         L.append(f"{ind}# place: - to: {{id: backend-{k}, uri: \"{{{{backend.{k}}}}}\"}}   ({b.get('type', '')} {b.get('operation', '')}; "
                  f"called when: {b.get('called_when', '')})")
+    for k in m.get("calls", []):        # request/reply: the HTTP call in place, the agent fills request and response mapping
+        b = m["backends"][k]
+        method = (re.search(r"(?i)\b(GET|POST|PUT|DELETE|PATCH)\b", f"{b.get('request_from', '')} {b.get('operation', '')}") or [None, "POST"])[1].upper()
+        L += [f"{ind}# HTTP call {b.get('name')}: {b.get('type', '')} {b.get('operation', '')}",
+              f"{ind}#   request from: {b.get('request_from') or b.get('body_from') or '-'}",
+              f"{ind}#   headers: " + (", ".join(f"{h.get('name')} <- {h.get('source')}" for h in b.get("headers") or [] if isinstance(h, dict)) or "-"),
+              f"{ind}# Secrets and per-environment values (API keys, DVM lookups) come from properties/env, never literals.",
+              f"{ind}- setProperty:", f"{ind}    name: osbStage", f"{ind}    constant: {q('call ' + str(b.get('name')))}",
+              f"{ind}- setHeader:", f"{ind}    name: CamelHttpMethod", f"{ind}    constant: {q(TODO + ' ' + method + ' unless the pipeline overrides it (FLOW_CARD section 7)')}",
+              f"{ind}- setHeader:", f"{ind}    name: CamelHttpQuery", f"{ind}    simple: {q(TODO + ' query string, or remove this step')}",
+              f"{ind}# {TODO} request headers and body for {b.get('name')} (see the list above)",
+              f"{ind}- to:", f"{ind}    id: backend-{k}", f'{ind}    uri: "{{{{backend.{k}}}}}"',
+              f"{ind}# {TODO} build the reply from the answer of {b.get('name')}: research.json transforms (field by field)"]
     by_branch = {}
     for p in m["paths"]:
         by_branch.setdefault(p["branch"], []).append(p)
@@ -2759,7 +2846,15 @@ def route_yaml(proxy: str, project: str, pkg: str, m: dict) -> str:
         L += ["                  - log:", "                      loggingLevel: INFO", "                      logName: oracle.osb.logging.pipeline",
               f"                      message: {q(TODO + ' convert to simple: ' + (lg.get('template') or ''))}"]
     L += error_header_steps(m)
-    L += ["                  - to:", f"                      id: out-{m['error']}", f'                      uri: "{{{{out.{m["error"]}}}}}"']
+    if m["error"] == "reply":           # OSB replies to the caller with the error: no queue, the body is the answer
+        if m.get("error_status"):
+            L += ["                  - setHeader:", "                      name: CamelHttpResponseCode",
+                  f"                      constant: {m['error_status']}"]
+        L += [f"                  # {TODO} error reply body as OSB builds it (FLOW_CARD section 9), or remove this line"]
+    else:
+        L += ["                  - to:", f"                      id: out-{m['error']}", f'                      uri: "{{{{out.{m["error"]}}}}}"']
+    if "reply" in m["outputs"]:
+        L.append("# The body at the end of the route is the reply to the caller (request/reply).")
     return "\n".join(L) + "\n"
 
 
@@ -2782,6 +2877,12 @@ def error_header_steps(m: dict) -> list[str]:
         names = [("errorCode", "$fault errorCode"), ("errorMessage", "$fault reason"), ("debugInfo", "$fault location stage")]
     L = []
     for n, src in names:
+        if not re.fullmatch(r"[A-Za-z][\w.-]*", n):     # research wrote a sentence, not a header name: keep it as a note
+            if re.search(r"(?i)http.*(response|status).*code|status code", n):
+                L.append(f"{ind}# OSB: {n} (set as CamelHttpResponseCode below when research names the status)")
+            else:
+                L.append(f"{ind}# {TODO} OSB error header described as: {n}")
+            continue
         if n == m["corr"]:
             L.append(f"{ind}# {n}: already on the message (set at the start of the route)")
         elif "inbound" in src.lower():
@@ -2805,7 +2906,10 @@ def properties(proxy: str, m: dict) -> str:
     if sub.lower() in ("true", "yes"):
         sub = proxy                      # OSB names the subscription itself; on Artemis the subscription queue is ours to name
     name = re.sub(r"^(jms|amqp|queue|topic):", "", dest)
-    if not name or name.upper() == "UNKNOWN":
+    if m.get("http_entry"):             # OSB HTTP proxy = an HTTP endpoint of the integration (Camel K exposes it)
+        path = http_path("http " + str(e.get("destination") or "")) or (dest if dest.startswith("/") else "")
+        inp = f"platform-http:{path}" if path else f"{TODO} HTTP path of the proxy"
+    elif not name or name.upper() == "UNKNOWN":
         inp = f"{TODO} entry destination"
     elif e.get("is_topic") and sub:
         inp = f"amqp:queue:{name}::{sub}"
@@ -2823,8 +2927,14 @@ def properties(proxy: str, m: dict) -> str:
     L += [f"out.{k}={endpoint(o['destination'], k)}" for k, o in m["outputs"].items() if k != "reply"]
     L += [f"backend.{k}={endpoint(b.get('operation') if (b.get('type') or '').lower().startswith('http') else b.get('name'), k)}"
           for k, b in m["backends"].items()]
-    L += BROKER_LINES
+    if uses_broker(L):
+        L += BROKER_LINES
     return "\n".join(L) + "\n"
+
+
+def uses_broker(lines: list) -> bool:
+    """Broker lines only when an endpoint is a queue/topic: an HTTP-only flow must not need BROKER_URL to start."""
+    return any(re.search(r"=amqp:", x) for x in lines)
 
 
 # the broker connection comes from the platform environment (Secret / ConfigMap) on every environment, and from
@@ -2855,8 +2965,9 @@ def local_properties(proxy: str, m: dict) -> str:
 
 
 def test_props(m: dict) -> list[str]:
+    prod = properties("x", m).splitlines()
     return (["flow.input=direct:in"] + [f"out.{k}=mock:out-{k}" for k in m["outputs"] if k != "reply"]
-            + [f"backend.{k}=mock:backend-{k}" for k in m["backends"]] + TEST_BROKER_LINES)
+            + [f"backend.{k}=mock:backend-{k}" for k in m["backends"]] + (TEST_BROKER_LINES if uses_broker(prod) else []))
 
 
 UUID_RX = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -3003,6 +3114,7 @@ def main() -> int:
             if k in meta["generated"]:
                 meta["generated"][k.rsplit("/", 1)[0] + "/case1/" + k.rsplit("/", 1)[1]] = meta["generated"].pop(k)
         syn = sorted(p for p in (a.out / "src/test/resources/parity").glob("*-synthetic/**/*") if p.is_file())
+        syn += sorted(p for p in (a.out / "src/test/resources/stubs").glob("*") if p.suffix in (".json", ".xml", ".txt"))
         for p in syn:                       # first freeze wins: a later change shows up in gate K5, it is never re-blessed
             meta["generated"].setdefault(p.relative_to(a.out).as_posix(), sha(p))
         (a.out / ".scaffold.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
@@ -3025,6 +3137,10 @@ def main() -> int:
         deps.append("camel-saxon")
     if "xsl" in ref_kinds or "xslt" in kinds:
         deps.append("camel-xslt-saxon")
+    if m.get("http_entry"):
+        deps.append("camel-platform-http-main")     # the proxy's HTTP endpoint (Camel Main / Camel K)
+    if m.get("calls"):
+        deps.append("camel-http")                   # HTTP business services
     pom = (TPL / "pom.xml").read_text(encoding="utf-8").replace("@@GROUP@@", "osb." + slug(a.project)).replace(
         "@@ARTIFACT@@", slug(proxy)).replace("@@PROJECT@@", a.project).replace("@@PROXY@@", proxy).replace(
         "<!-- @@EXTRA_DEPS@@ -->", "\n    ".join(f"<dependency><groupId>org.apache.camel</groupId><artifactId>{d}</artifactId></dependency>"
@@ -3057,13 +3173,21 @@ def main() -> int:
            "correlation_header": m["corr"], "correlation_generated": bool(m.get("corr_generated")),
            "scenario_fields": [h for h, _ in m["dims"]], "payload_format": m["format"],
            "generated_fields": generated_fields(o / "src/test/resources/parity") if (o / "src/test/resources/parity").is_dir() else []}
+    if m.get("error_status"):           # request/reply: the HTTP status of OSB's error answer (FlowErrorTest checks it)
+        cfg["error_http_status"] = m["error_status"]
     tp = o / f"src/test/java/{jdir}/FlowParityTest.java"
     cp = o / "src/test/resources/flow-test.json"
     for path, text in [(tp, test), (cp, json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         written.append(path.relative_to(o).as_posix())
-    stubs = ["# Backend stubs for the L1 tests", "", "One file per backend, named <backend>.json / .xml / .txt: the response shape from",
+    # FlowErrorTest: a compiling start with one test per error scope; the implementer extends it (not frozen, gate K7)
+    etp = o / f"src/test/java/{jdir}/FlowErrorTest.java"
+    err_tpl = (TPL / "FlowErrorTest.java.tpl").read_text(encoding="utf-8").replace("@@PACKAGE@@", pkg).replace(
+        "@@PROJECT@@", a.project).replace("@@PROXY@@", proxy).replace("@@TEST_PROPERTIES@@", ", ".join(q(p) for p in test_props(m)))
+    if write_once(etp, err_tpl, False):
+        written.append(etp.relative_to(o).as_posix())
+    stubs = ["# Backend stubs for the L1 tests", "","One file per backend, named <backend>.json / .xml / .txt: the response shape from",
              "research Q8 (WSDL/XSD), with FAKE values only. FlowErrorTest makes the same mocks throw for the error tests.", ""]
     stubs += [f"- `{k}.*`: {b.get('type', '')} {b.get('operation', '')}; response use: {b.get('response_use', '') or '-'}" for k, b in m["backends"].items()] or ["- no backends"]
     write_once(o / "src/test/resources/stubs/README.md", "\n".join(stubs) + "\n", True)
@@ -3081,7 +3205,7 @@ def main() -> int:
     ids = ([f"branch-{b}" for b in {p["branch"] for p in active}] + [p["id"] for p in active]
            + [f"out-{k}" for k in m["outputs"] if k != "reply"] + [f"backend-{k}" for k in m["backends"]])
     meta = {"proxy": proxy, "project": a.project, "package": pkg, "research_sha256": sha(rp),
-            "generated": {**{k: v for k, v in (old_meta.get("generated") or {}).items() if "-synthetic/" in k},
+            "generated": {**{k: v for k, v in (old_meta.get("generated") or {}).items() if "-synthetic/" in k or "/stubs/" in k},
                           tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp)},
             "route_ids": sorted(ids), "errors": len(r.get("errors") or []),
             "task1": str(a.parity.parent.parent.resolve()) if a.parity and a.parity.is_dir() else (old_meta.get("task1") or ""),
@@ -3515,6 +3639,33 @@ def win_path(arg: str) -> str:
     return re.sub(r"^/([a-zA-Z])/", r"\1:/", arg) if os.name == "nt" else arg
 
 
+SCALAR_KEYS = ("message", "uri", "logName", "loggingLevel", "beanType", "method", "id")
+
+
+def yaml_lint(text: str) -> list[str]:
+    """Structure mistakes models make in Camel YAML routes that make the WHOLE route fail to load (every test errors
+    with one cryptic line). Line-based, no YAML library: a scalar key left empty with a block below it
+    (`message:` + `simple: "..."`), and `steps:` next to `from:` instead of under it."""
+    out, lines = [], text.splitlines()
+    ind = lambda s: len(s) - len(s.lstrip(" "))  # noqa: E731
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if s.startswith("#") or not s:
+            continue
+        m = re.match(r"^-?\s*(\w+):\s*$", s)
+        if m and m.group(1) in SCALAR_KEYS:
+            nxt = next((x for x in lines[i + 1:] if x.strip() and not x.strip().startswith("#")), "")
+            if ind(nxt) > ind(ln):
+                out.append(f"line {i + 1}: '{m.group(1)}:' must be a plain value on the same line "
+                           f"(e.g. {m.group(1)}: \"...${{body}}\"), not a block with '{nxt.strip().split(':')[0]}:' below")
+        if s == "steps:":
+            prev = next((x for x in reversed(lines[:i]) if x.strip() and not x.strip().startswith("#")), "")
+            frm = next((x for x in reversed(lines[:i]) if x.strip() == "from:"), None)
+            if frm is not None and ind(frm) == ind(ln) and not prev.strip().startswith("- "):
+                out.append(f"line {i + 1}: route 'steps:' belongs UNDER 'from:' (indent it below from:)")
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("module", type=Path)
@@ -3527,6 +3678,13 @@ def main() -> int:
     if not exe:
         print(f"cannot find {args[0]} on PATH")
         return 2
+    lint = [f"{p.name} {x}" for p in sorted((mod / "src/main/resources/routes").glob("*.yaml")) for x in yaml_lint(p.read_text(encoding="utf-8"))]
+    if lint:                            # the route would not load: every test errors; say where, before a Maven run
+        print(f"ROUTE YAML STRUCTURE ({len(lint)}): fix these lines first, the route cannot load")
+        for x in lint[:a.max]:
+            print("  " + x)
+        print("FIX NEEDED")
+        return 1
     rep = mod / "target/surefire-reports"
     if rep.is_dir():
         for f in rep.glob("TEST-*.xml"):
@@ -3603,6 +3761,144 @@ Tests: `@CamelMainTest(properties = {"flow.input=direct:in", "out.x=mock:out-x",
 `@Produce("direct:in") ProducerTemplate in`, mocks by `in.getCamelContext().getEndpoint("mock:out-x", MockEndpoint.class)`,
 failures by `mock.whenAnyExchangeReceived(e -> { throw new IOException("down"); })`, retries by `getReceivedCounter()`.
 KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_REFERENCES_YAML_PATTERNS_MD
+mkdir -p "$(dirname ".pi/skills/osb-camelk-route/assets/templates/FlowErrorTest.java.tpl")"
+cat > '.pi/skills/osb-camelk-route/assets/templates/FlowErrorTest.java.tpl' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_ASSETS_TEMPLATES_FLOWERRORTEST_JAVA_TPL'
+package @@PACKAGE@@;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.camel.CamelContext;
+import org.apache.camel.Exchange;
+import org.apache.camel.ExchangePattern;
+import org.apache.camel.Produce;
+import org.apache.camel.ProducerTemplate;
+import org.apache.camel.component.mock.MockEndpoint;
+import org.apache.camel.test.main.junit5.CamelMainTest;
+import org.junit.jupiter.api.Assumptions;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.MethodSource;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Stream;
+
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+
+/**
+ * Error tests for OSB project @@PROJECT@@, proxy @@PROXY@@: one test per error scope at least (gate K7).
+ * GENERATED START by osb-camelk-route; the implementer may add tests for further error scopes of FLOW_CARD section 9.
+ * Error path as in OSB: either the error output (a queue, mock) receives the message with the correlation header,
+ * or (request/reply flows, error_output = "reply") the caller gets an answer, not an exception, with the HTTP status
+ * OSB sets (flow-test.json error_http_status, when research names one).
+ */
+@CamelMainTest(properties = {@@TEST_PROPERTIES@@})
+class FlowErrorTest {
+
+    static final Path PARITY = Path.of("src/test/resources/parity");
+    static final ObjectMapper JSON = new ObjectMapper();
+    static final String REPLY = "reply";
+
+    @Produce("direct:in")
+    ProducerTemplate in;
+
+    static JsonNode cfg() throws Exception {
+        return JSON.readTree(Path.of("src/test/resources/flow-test.json").toFile());
+    }
+
+    CamelContext ctx() {
+        return in.getCamelContext();
+    }
+
+    MockEndpoint mock(String uri) {
+        return ctx().getEndpoint(uri, MockEndpoint.class);
+    }
+
+    /** Sends the message and checks it took OSB's error path. */
+    void assertErrorPath(String body, Map<String, Object> headers) throws Exception {
+        JsonNode cfg = cfg();
+        String err = cfg.path("error_output").asText("");
+        Assumptions.assumeFalse(err.isEmpty(), "research.json names no error output");
+        String corr = cfg.path("correlation_header").asText("traceId");
+        for (var it = cfg.path("outputs").fields(); it.hasNext(); ) {
+            var o = it.next();
+            if (!REPLY.equals(o.getKey())) {
+                mock(o.getValue().asText()).expectedMessageCount(o.getKey().equals(err) ? 1 : 0);
+            }
+        }
+        boolean reply = REPLY.equals(err);
+        Exchange ex = in.send(e -> {
+            e.setPattern(reply ? ExchangePattern.InOut : ExchangePattern.InOnly);
+            e.getMessage().setBody(body);
+            e.getMessage().setHeaders(new HashMap<>(headers));
+        });
+        MockEndpoint.assertIsSatisfied(ctx());
+        if (reply) {
+            assertNull(ex.getException(), "OSB answers the caller on an error, the route must not end with an exception");
+            JsonNode status = cfg.path("error_http_status");
+            if (status.isInt()) {
+                assertEquals(status.asInt(), ex.getMessage().getHeader(Exchange.HTTP_RESPONSE_CODE, Integer.class),
+                    "HTTP status of the error reply");
+            }
+            assertEquals(headers.get(corr), ex.getMessage().getHeader(corr), corr + " must reach the error reply");
+        } else {
+            var m = mock(cfg.path("outputs").path(err).asText()).getExchanges().get(0).getMessage();
+            assertEquals(headers.get(corr), m.getHeader(corr), corr + " must reach the error output");
+        }
+    }
+
+    @Test
+    void unreadablePayloadTakesTheErrorPath() throws Exception {
+        Assumptions.assumeTrue("json".equals(cfg().path("payload_format").asText()), "not a JSON flow");
+        String corr = cfg().path("correlation_header").asText("traceId");
+        assertErrorPath("not json at all", Map.of(corr, "t-invalid"));
+    }
+
+    static Stream<String> backends() throws Exception {
+        List<String> b = new ArrayList<>();
+        cfg().path("backends").fieldNames().forEachRemaining(b::add);
+        return b.stream();
+    }
+
+    /** OSB error handler of the service: a backend that fails (fault, timeout, HTTP error) takes the error path. */
+    @ParameterizedTest(name = "backend {0} fails")
+    @MethodSource("backends")
+    void backendFaultTakesTheErrorPath(String backend) throws Exception {
+        Path c = firstCase();
+        Assumptions.assumeTrue(c != null, "no test case to send");
+        mock(cfg().path("backends").path(backend).path("mock").asText())
+            .whenAnyExchangeReceived(e -> { throw new IllegalStateException("backend " + backend + " fault (test)"); });
+        @SuppressWarnings("unchecked")
+        Map<String, Object> headers = JSON.readValue(c.resolve("headers.json").toFile(), Map.class);
+        String corr = cfg().path("correlation_header").asText("traceId");
+        headers.putIfAbsent(corr, "t-backend-fault");
+        assertErrorPath(Files.readString(c.resolve("input.payload")), headers);
+    }
+
+    static Path firstCase() throws Exception {
+        if (!Files.isDirectory(PARITY)) {
+            return null;
+        }
+        try (Stream<Path> s = Files.walk(PARITY)) {
+            return s.filter(p -> p.getFileName().toString().equals("input.payload")).map(Path::getParent).sorted()
+                .findFirst().orElse(null);
+        }
+    }
+
+    @Test
+    void flowTestConfigIsReadable() throws Exception {
+        assertNotNull(cfg().path("outputs"));
+        assertFalse(cfg().path("outputs").isEmpty(), "flow-test.json has no outputs");
+    }
+}
+KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_ASSETS_TEMPLATES_FLOWERRORTEST_JAVA_TPL
 mkdir -p "$(dirname ".pi/skills/osb-camelk-route/assets/templates/FlowJBangTest.java.tpl")"
 cat > '.pi/skills/osb-camelk-route/assets/templates/FlowJBangTest.java.tpl' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_ASSETS_TEMPLATES_FLOWJBANGTEST_JAVA_TPL'
 ///usr/bin/env jbang "$0" "$@" ; exit $?
@@ -4166,6 +4462,7 @@ class FlowParityTest {
     void unreadablePayloadGoesToTheErrorOutput() throws Exception {
         String err = CFG.path("error_output").asText("");
         Assumptions.assumeTrue("json".equals(CFG.path("payload_format").asText()) && !err.isEmpty(), "not a JSON flow or no error output");
+        Assumptions.assumeFalse(REPLY.equals(err), "the error is a reply to the caller: FlowErrorTest checks it");
         for (var it = CFG.path("outputs").fields(); it.hasNext(); ) {
             var o = it.next();
             if (!REPLY.equals(o.getKey())) {
@@ -4545,6 +4842,17 @@ stage set the property osbStage to that stage's name; the error handler sends it
 exception class name, errorMessage the exception message. Inbound headers OSB copies to the error message travel
 with the message: never re-set them, never invent a default for them.
 Behaviour that is not on the card is not implemented: record it as an open question in MIGRATION_NOTES.md.
+Transformation without an original file to run: a mapping written INLINE in the pipeline (Replace/Assign action, no
+.xqy file) or a JSON nXSD whose schema is not in the module is implemented from research.json `transforms[].mappings`,
+field by field with every rule (rename, date reformat, value mapping, filter such as "first record with status X"),
+in a helper bean or simple/jsonpath steps; each mapping row is one line of code, nothing added. Passing the body
+through unchanged is wrong when research lists a transform: gate K12 and the body test compare the reply.
+Request/reply (HTTP) flows: the body at the end of the route is the answer to the caller; the HTTP call is the
+`backend-*` step the scaffold placed (method, query, headers from the card; secrets and DVM values from properties
+or env, never literals); on an error set CamelHttpResponseCode as the scaffold did and answer, never throw.
+FlowErrorTest.java is generated as a compiling start: extend it, keep its helper methods, never rewrite it from
+scratch. YAML: `steps:` of a route belong under `from:`; in `doCatch` each item is `- exception: [..]` with its
+`steps:` at the same level as `exception`.
 Run tests only through scripts/verify_module.py (short summary), never raw mvn. Finish when it prints PASS, or stop and report which gate fails and why it cannot pass.
 KIT_EOF_AGENTS_IMPLEMENTER_CAMELK_MD
 mkdir -p "$(dirname "agents/tester-camelk.md")"
@@ -4565,8 +4873,15 @@ parity/sample-transform-prj-sample-transform-synthetic/all/case1/input.payload  
 - `headers.json`: transport headers the flow reads (resource, eventType ...) + a traceId.
 - `expected.json`: {"outcome": "success", "destination": "see mapping", "correlation": "<the traceId>"}.
 - `../SCENARIO.txt`: `<project>/<proxy>|success|k=v|...` with every key of the row.
+Request/reply flows (flow-test.json has `reply` in outputs and `backends`): the reply body must be testable, so also
+- `src/test/resources/stubs/<backend>.json` per backend: its answer with FAKE values and ONLY the fields research.json
+  names (transforms[].mappings[].from, backends[].response_use); include one record each filter of the transforms
+  selects (e.g. the status the reply keeps) and one it skips;
+- `expected-output.json` next to each `input.payload`: the reply research.json transforms build from that stub, field
+  by field, every rule applied (renames, date reformat, value mapping). Never a field research does not name.
 You never write or change the route, the beans, FlowParityTest.java, flow-test.json, or real (Splunk) case folders.
-If the schema is missing from the export, write nothing for that row and report it.
+If the schema is missing from the export, build the message from the field names research.json / RESEARCH.md give
+(message format, mappings) and say so in your answer; if research names no fields either, write nothing for that row.
 KIT_EOF_AGENTS_TESTER_CAMELK_MD
 mkdir -p "$(dirname "pi/run_camelk.sh")"
 cat > 'pi/run_camelk.sh' <<'KIT_EOF_PI_RUN_CAMELK_SH'
@@ -4622,7 +4937,7 @@ PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --to
 VERIFY="$PY $SK/scripts/verify_module.py $MOD"
 RULES="Never run mvn directly: '$VERIFY' runs the tests and the gates and prints a short summary. Never edit FlowParityTest.java, flow-test.json, FLOW_CARD.md or any test case folder. Write nothing outside $MOD. Do not read target/ or the parity cases."
 export VERIFY_MVN="mvn -B -q ${MVN_ARGS:-}"
-pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route, write FlowErrorTest (one test per error scope at least) and the backend stubs. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
+pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route (request/reply: step 3b, the reply built from research.json transforms row by row), extend the generated FlowErrorTest (keep its helpers; one test per error scope at least), and write a backend stub only where src/test/resources/stubs has none. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
 for round in $(seq 1 "${PI_FIX_ROUNDS:-3}"); do
   SUMMARY=$($VERIFY 2>&1) && { echo "   verify: PASS after $round call(s)"; break; }
   echo "   verify round $round: $(echo "$SUMMARY" | head -1)"
@@ -4974,7 +5289,13 @@ if [ "$UNCOV" != 0 ] && [ "${PI_TESTER:-1}" = 0 ]; then
 elif [ "$UNCOV" != 0 ]; then
   PT=(pi --print --no-session --thinking "${PI_TESTER_THINKING:-low}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
   [ -n "${OSB_PI_MODEL:-}" ] && PT+=(--model "$OSB_PI_MODEL")
-  pi_call "$LOG/tester.out" "$LOG/tester.err" "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." || true
+  REPLY_TASK=""
+  if "$PY" -c "import json,sys; c=json.load(open(sys.argv[1])); sys.exit(0 if 'reply' in c.get('outputs',{}) and c.get('backends') else 1)" "$MOD/src/test/resources/flow-test.json"; then
+    # request/reply with HTTP calls: the reply body must be tested (gate K12), so the case needs the backend's answer and
+    # the reply OSB would build from it
+    REPLY_TASK=" This flow answers the caller and calls backend(s) $("$PY" -c "import json,sys; print(', '.join(json.load(open(sys.argv[1]))['backends']))" "$MOD/src/test/resources/flow-test.json"). For each backend write $MOD/src/test/resources/stubs/<backend>.json: the backend's answer with FAKE values, ONLY fields that research.json names (transforms[].mappings[].from, backends[].response_use); include at least one record that matches every filter the transforms use (e.g. a status the reply selects) and one that does not. For each case write expected-output.json next to input.payload: the reply as research.json transforms build it from that stub, field by field (apply every rule: renames, date reformat, value mapping). Gate K12 checks it."
+  fi
+  pi_call "$LOG/tester.out" "$LOG/tester.err" "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md and $RES/research.json. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gates K9 and K12). Fake values only.$REPLY_TASK Write nothing outside $MOD/src/test/resources/parity and $MOD/src/test/resources/stubs." || true
 else
   echo "   every scenario already has a real Splunk case"
 fi
@@ -5032,8 +5353,18 @@ _pi_call_inner() {
       if [ $rc = 124 ] || [ $rc = 137 ]; then
         echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
       fi
-    else
-      "$@" > "$out" 2> "$err" && return 0
+    else   # no `timeout` (macOS): a watchdog kills the run after PI_TIMEOUT
+      "$@" > "$out" 2> "$err" & local pid=$!
+      rm -f "$err.timeout"
+      ( sleep "${PI_TIMEOUT:-1800}"; kill -0 "$pid" 2>/dev/null || exit 0; touch "$err.timeout"; kill -TERM "$pid" 2>/dev/null
+        sleep 30; kill -KILL "$pid" 2>/dev/null ) &
+      local dog=$!
+      wait "$pid"; local rc=$?
+      kill "$dog" 2>/dev/null; wait "$dog" 2>/dev/null
+      [ $rc = 0 ] && return 0
+      if [ -f "$err.timeout" ]; then
+        rm -f "$err.timeout"; echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
+      fi
     fi
     if grep -qiE '(^|[^0-9])429([^0-9]|$)|too many requests|rate.?limit|overloaded|503 service unavailable' "$err" 2>/dev/null \
        && [ "$n" -lt "${PI_RETRIES:-5}" ]; then
@@ -5702,4 +6033,4 @@ cat > '.pi/skills/osb-research/assets/research.schema.json' <<'KIT_EOF__PI_SKILL
 }
 KIT_EOF__PI_SKILLS_OSB_RESEARCH_ASSETS_RESEARCH_SCHEMA_JSON
 chmod +x .pi/skills/osb-camelk-route/scripts/*.py pi/*.sh 2>/dev/null || true
-echo "installed: 36 files (skill osb-camelk-route + domain runner)"
+echo "installed: 37 files (skill osb-camelk-route + domain runner)"

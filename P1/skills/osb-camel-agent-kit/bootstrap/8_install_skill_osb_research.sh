@@ -814,8 +814,18 @@ _pi_call_inner() {
       if [ $rc = 124 ] || [ $rc = 137 ]; then
         echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
       fi
-    else
-      "$@" > "$out" 2> "$err" && return 0
+    else   # no `timeout` (macOS): a watchdog kills the run after PI_TIMEOUT
+      "$@" > "$out" 2> "$err" & local pid=$!
+      rm -f "$err.timeout"
+      ( sleep "${PI_TIMEOUT:-1800}"; kill -0 "$pid" 2>/dev/null || exit 0; touch "$err.timeout"; kill -TERM "$pid" 2>/dev/null
+        sleep 30; kill -KILL "$pid" 2>/dev/null ) &
+      local dog=$!
+      wait "$pid"; local rc=$?
+      kill "$dog" 2>/dev/null; wait "$dog" 2>/dev/null
+      [ $rc = 0 ] && return 0
+      if [ -f "$err.timeout" ]; then
+        rm -f "$err.timeout"; echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
+      fi
     fi
     if grep -qiE '(^|[^0-9])429([^0-9]|$)|too many requests|rate.?limit|overloaded|503 service unavailable' "$err" 2>/dev/null \
        && [ "$n" -lt "${PI_RETRIES:-5}" ]; then

@@ -17,6 +17,8 @@ K10 properties valid   application.properties: no spaces or notes in a value, no
                        is defined (the tests replace endpoints with mocks, so a broken production value stays green)
 K11 single destination no destination twice: a backend-<x>-bs next to out-<x> (the JMS business service IS the output),
                        or two keys with the same endpoint value: production would get every message twice
+K12 reply expected     request/reply flows: every case that ends in the reply has expected-output.json/.xml, so the
+                       reply body is compared (a route that passes the request through unchanged must fail)
 Writes GATES.json next to the module's pom; exit 1 if any gate fails."""
 import argparse
 import hashlib
@@ -101,6 +103,21 @@ def main() -> int:
         return bool(key)
     uncovered = [m["scenario"] for m in cfg.get("scenario_mapping", []) if not any(hit(m["scenario"], v) for v in scen)]
     gates["K9_scenarios_covered"] = {"ok": not uncovered, "uncovered": uncovered}
+
+    # K12: a request/reply flow is only tested when the REPLY BODY is compared: every case that ends in the reply
+    # has expected-output.json/.xml (OSB's logged answer, or synthetic: built from the stub by research transforms)
+    reply_rows = [m["scenario"] for m in cfg.get("scenario_mapping", []) if "reply" in (m.get("outputs") or [])]
+    no_expected = []
+    if reply_rows and "reply" in (cfg.get("outputs") or {}):
+        for sc in (mod / "src/test/resources/parity").glob("*/*/SCENARIO.txt"):
+            v = dict(p.split("=", 1) for p in sc.read_text(encoding="utf-8").strip().split("|") if "=" in p)
+            if not any(hit(r_, v) for r_ in reply_rows):
+                continue
+            for case in sorted(p.parent for p in sc.parent.glob("*/input.payload")):
+                exp = json.loads((case / "expected.json").read_text(encoding="utf-8")) if (case / "expected.json").is_file() else {}
+                if exp.get("outcome", "success") == "success" and not any((case / f"expected-output{e}").is_file() for e in (".json", ".xml")):
+                    no_expected.append(case.relative_to(mod / "src/test/resources/parity").as_posix())
+    gates["K12_reply_expected"] = {"ok": not no_expected, "cases_without_expected_reply": no_expected[:20]}
 
     props, bad = {}, []
     pf = mod / "src/main/resources/application.properties"

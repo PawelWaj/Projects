@@ -82,6 +82,24 @@ def clean(s) -> str:
     return s.split()[0] if s.split() else ""
 
 
+HTTP_WORDS = re.compile(r"(?i)^\s*(?:https?\b|(?:get|post|put|delete|patch)\s+/)")
+
+
+def http_path(text) -> str:
+    """The URI path of an HTTP destination as research writes it ('HTTP POST to /v1/x', 'POST /v1/x', 'http:/v1/x',
+    'HTTP response on /a/b'); '' when the text is not an HTTP destination."""
+    t = str(text or "")
+    if not HTTP_WORDS.search(t):
+        return ""
+    m = re.search(r"(?<![\w:])(/[\w\-./{}~%]+)", t.replace("http:/", " /").replace("https:/", " /"))
+    return m.group(1) if m else ""
+
+
+def is_http(o: dict, b: dict | None) -> bool:
+    """An output that is an HTTP call (its answer can be used), not a queue the flow writes to."""
+    return bool(http_path(o.get("destination_raw")) or (b and str(b.get("type") or "").lower().startswith("http")))
+
+
 def endpoint(dest: str, kind: str) -> str:
     """Production endpoint for a research destination (scheme:name, never a host)."""
     d = clean(dest)
@@ -90,6 +108,9 @@ def endpoint(dest: str, kind: str) -> str:
     m = re.match(r"^(https?):(/.*)$", d)
     if m:
         return f"{m.group(1)}://{{{{env:{slug(kind).upper().replace('-', '_')}_HOST}}}}{m.group(2)}"
+    path = http_path(dest)
+    if path:                             # 'HTTP POST to /v1/x', 'POST /v1/x': host from env, method set in the route
+        return f"https://{{{{env:{slug(kind).upper().replace('-', '_')}_HOST}}}}{path}"
     name = re.sub(r"^(jms|amqp|queue|topic):", "", d)
     kind_ = "topic" if d.startswith("topic:") else "queue"
     return f"amqp:{kind_}:{name}"
@@ -107,7 +128,8 @@ def model(r: dict, facts: dict, corr: str) -> dict:
                       or (bs and slug(clean(b.get("name"))) == slug(bs))), None)
         key = slug(bs or (clean(owner.get("name")) if owner else o.get("name")))
         outputs[key] = {"name": o.get("name"), "destination": dest, "on_path": o.get("on_path") or o.get("on") or "",
-                        "headers": o.get("headers") or [], "backend": owner.get("name") if owner else None}
+                        "headers": o.get("headers") or [], "backend": owner.get("name") if owner else None,
+                        "destination_raw": str(o.get("destination") or ""), "body_from": o.get("body_from") or ""}
         for a in (o.get("name"), dest, clean(owner.get("name")) if owner else None, key):
             if a:
                 alias[slug(a)] = key
@@ -115,12 +137,21 @@ def model(r: dict, facts: dict, corr: str) -> dict:
     wants_reply = (str(entry.get("transport") or "").lower().startswith(("http", "local", "sb"))
                    or str(entry.get("response_required") or "").lower() == "true"
                    or any(str(o).lower() == "reply" for x in r.get("scenario_mapping") or [] for o in (x.get("outputs") or [])))
+    calls = {}       # request/reply flow: an HTTP business service is a CALL (mocked, answers with its stub), not an output
     if wants_reply:
         outputs["reply"] = {"name": "reply to the caller", "destination": "caller", "on_path": "end of the request pipeline",
                             "headers": [], "backend": None}
         alias["reply"] = "reply"
+        for k in [k for k in outputs if k != "reply"]:
+            o = outputs[k]
+            b = next((x for x in raw_backends if slug(clean(x.get("name"))) in (k, slug(o.get("backend") or ""))), None)
+            if is_http(o, b):
+                calls[k] = {**(b or {}), "name": clean((b or {}).get("name")) or o.get("name") or k, "headers": o["headers"],
+                            "operation": (b or {}).get("operation") or o["destination_raw"], "body_from": o["body_from"],
+                            "type": (b or {}).get("type") or "HTTP"}
+                del outputs[k]
 
-    def resolve(x):
+    def resolve_(x):
         """An output as research names it in a table: exact alias, else the one output whose key contains the name as
         whole words ('bulk-register' -> 'business-service-bulk-register-bix'; the shortest wins over '...-error-queue-bix')."""
         for k in (slug(clean(x)), slug(x)):
@@ -129,12 +160,19 @@ def model(r: dict, facts: dict, corr: str) -> dict:
         k = slug(clean(x))
         hits = sorted((o_ for o_ in outputs if k and re.search(rf"(^|-){re.escape(k)}(-|$)", o_)), key=len)
         return hits[0] if hits and (len(hits) == 1 or len(hits[0]) < len(hits[1])) else k
+
+    def resolve(x):
+        """As resolve_, but a scenario that 'goes to' an HTTP call ends in the reply to the caller (the call is a step)."""
+        k = resolve_(x)
+        return "reply" if k in calls else k
     err = next((k for k, o in outputs.items() if re.search(r"error", f"{o['on_path']} {o['name']} {o['destination']}", re.I)), None)
     for e in r.get("errors") or []:
         if err:
             break
         g = e.get("goes_to") or ""
         err = next((k for a, k in alias.items() if a and a in slug(g)), None)
+    if err in calls:
+        err = "reply"
     if err is None:
         outputs["error"] = {"name": "error", "destination": "", "on_path": "error handler", "headers": [], "backend": None}
         err = "error"
@@ -143,6 +181,7 @@ def model(r: dict, facts: dict, corr: str) -> dict:
     backends = {slug(clean(b.get("name"))): {**b, "name": clean(b.get("name"))} for b in raw_backends
                 if slug(clean(b.get("name"))) not in outputs and slug(clean(b.get("name"))) not in alias
                 and not (clean(b.get("operation")) in out_dests or clean(b.get("destination")) in out_dests)}
+    backends = {**calls, **backends}
     paths = []
     for b in r.get("branches") or []:
         for p in b.get("paths") or []:
@@ -153,7 +192,7 @@ def model(r: dict, facts: dict, corr: str) -> dict:
     mapping = []
     for x in r.get("scenario_mapping") or []:
         outs = x.get("outputs") if isinstance(x.get("outputs"), list) else [x.get("output")]
-        outs = [resolve(o) for o in outs if o and str(o).lower() not in ("none", "-")]
+        outs = list(dict.fromkeys(resolve(o) for o in outs if o and str(o).lower() not in ("none", "-")))
         sc = x.get("scenario", "")
         # keys as the Splunk step labels the cases: last path segment ("data.hasX" / "body:data.hasX" -> "hasX")
         sc = "|".join(re.sub(r"^([^=!]+)(!?=)", lambda g: alias.get(dim_name(g.group(1)), dim_name(g.group(1))) + g.group(2), p_.strip()) for p_ in sc.split("|")) if "=" in sc else sc
@@ -166,7 +205,15 @@ def model(r: dict, facts: dict, corr: str) -> dict:
             "format": fmt, "corr": corr, "logs": r.get("logs") or [], "transforms": r.get("transforms") or [],
             "branches": r.get("branches") or [], "entry": r.get("entry") or {}, "errors": r.get("errors") or [],
             "corr_generated": "uuid" in hdr_src,                       # OSB: traceId = inbound header, else fn-bea:uuid()
-            "selector": str((r.get("entry") or {}).get("selector") or "").strip()}
+            "selector": str((r.get("entry") or {}).get("selector") or "").strip(),
+            "calls": sorted(calls), "http_entry": str(entry.get("transport") or "").lower().startswith("http"),
+            "error_status": error_status(r.get("errors") or []) if err == "reply" else None}
+
+
+def error_status(errors: list) -> int | None:
+    """The HTTP status OSB answers with on an error, when research names one ('... else default 500')."""
+    m = re.search(r"\b([45]\d\d)\b", json.dumps(errors))
+    return int(m.group(1)) if m else None
 
 
 def route_yaml(proxy: str, project: str, pkg: str, m: dict) -> str:
@@ -197,8 +244,23 @@ def route_yaml(proxy: str, project: str, pkg: str, m: dict) -> str:
     for t in m["transforms"]:
         L.append(f"{ind}# transform {t.get('name')}: {t.get('purpose', '')} -> keep the original file, see FLOW_CARD.md")
     for k, b in m["backends"].items():
+        if k in m.get("calls", []):
+            continue
         L.append(f"{ind}# place: - to: {{id: backend-{k}, uri: \"{{{{backend.{k}}}}}\"}}   ({b.get('type', '')} {b.get('operation', '')}; "
                  f"called when: {b.get('called_when', '')})")
+    for k in m.get("calls", []):        # request/reply: the HTTP call in place, the agent fills request and response mapping
+        b = m["backends"][k]
+        method = (re.search(r"(?i)\b(GET|POST|PUT|DELETE|PATCH)\b", f"{b.get('request_from', '')} {b.get('operation', '')}") or [None, "POST"])[1].upper()
+        L += [f"{ind}# HTTP call {b.get('name')}: {b.get('type', '')} {b.get('operation', '')}",
+              f"{ind}#   request from: {b.get('request_from') or b.get('body_from') or '-'}",
+              f"{ind}#   headers: " + (", ".join(f"{h.get('name')} <- {h.get('source')}" for h in b.get("headers") or [] if isinstance(h, dict)) or "-"),
+              f"{ind}# Secrets and per-environment values (API keys, DVM lookups) come from properties/env, never literals.",
+              f"{ind}- setProperty:", f"{ind}    name: osbStage", f"{ind}    constant: {q('call ' + str(b.get('name')))}",
+              f"{ind}- setHeader:", f"{ind}    name: CamelHttpMethod", f"{ind}    constant: {q(TODO + ' ' + method + ' unless the pipeline overrides it (FLOW_CARD section 7)')}",
+              f"{ind}- setHeader:", f"{ind}    name: CamelHttpQuery", f"{ind}    simple: {q(TODO + ' query string, or remove this step')}",
+              f"{ind}# {TODO} request headers and body for {b.get('name')} (see the list above)",
+              f"{ind}- to:", f"{ind}    id: backend-{k}", f'{ind}    uri: "{{{{backend.{k}}}}}"',
+              f"{ind}# {TODO} build the reply from the answer of {b.get('name')}: research.json transforms (field by field)"]
     by_branch = {}
     for p in m["paths"]:
         by_branch.setdefault(p["branch"], []).append(p)
@@ -233,7 +295,15 @@ def route_yaml(proxy: str, project: str, pkg: str, m: dict) -> str:
         L += ["                  - log:", "                      loggingLevel: INFO", "                      logName: oracle.osb.logging.pipeline",
               f"                      message: {q(TODO + ' convert to simple: ' + (lg.get('template') or ''))}"]
     L += error_header_steps(m)
-    L += ["                  - to:", f"                      id: out-{m['error']}", f'                      uri: "{{{{out.{m["error"]}}}}}"']
+    if m["error"] == "reply":           # OSB replies to the caller with the error: no queue, the body is the answer
+        if m.get("error_status"):
+            L += ["                  - setHeader:", "                      name: CamelHttpResponseCode",
+                  f"                      constant: {m['error_status']}"]
+        L += [f"                  # {TODO} error reply body as OSB builds it (FLOW_CARD section 9), or remove this line"]
+    else:
+        L += ["                  - to:", f"                      id: out-{m['error']}", f'                      uri: "{{{{out.{m["error"]}}}}}"']
+    if "reply" in m["outputs"]:
+        L.append("# The body at the end of the route is the reply to the caller (request/reply).")
     return "\n".join(L) + "\n"
 
 
@@ -256,6 +326,12 @@ def error_header_steps(m: dict) -> list[str]:
         names = [("errorCode", "$fault errorCode"), ("errorMessage", "$fault reason"), ("debugInfo", "$fault location stage")]
     L = []
     for n, src in names:
+        if not re.fullmatch(r"[A-Za-z][\w.-]*", n):     # research wrote a sentence, not a header name: keep it as a note
+            if re.search(r"(?i)http.*(response|status).*code|status code", n):
+                L.append(f"{ind}# OSB: {n} (set as CamelHttpResponseCode below when research names the status)")
+            else:
+                L.append(f"{ind}# {TODO} OSB error header described as: {n}")
+            continue
         if n == m["corr"]:
             L.append(f"{ind}# {n}: already on the message (set at the start of the route)")
         elif "inbound" in src.lower():
@@ -279,7 +355,10 @@ def properties(proxy: str, m: dict) -> str:
     if sub.lower() in ("true", "yes"):
         sub = proxy                      # OSB names the subscription itself; on Artemis the subscription queue is ours to name
     name = re.sub(r"^(jms|amqp|queue|topic):", "", dest)
-    if not name or name.upper() == "UNKNOWN":
+    if m.get("http_entry"):             # OSB HTTP proxy = an HTTP endpoint of the integration (Camel K exposes it)
+        path = http_path("http " + str(e.get("destination") or "")) or (dest if dest.startswith("/") else "")
+        inp = f"platform-http:{path}" if path else f"{TODO} HTTP path of the proxy"
+    elif not name or name.upper() == "UNKNOWN":
         inp = f"{TODO} entry destination"
     elif e.get("is_topic") and sub:
         inp = f"amqp:queue:{name}::{sub}"
@@ -297,8 +376,14 @@ def properties(proxy: str, m: dict) -> str:
     L += [f"out.{k}={endpoint(o['destination'], k)}" for k, o in m["outputs"].items() if k != "reply"]
     L += [f"backend.{k}={endpoint(b.get('operation') if (b.get('type') or '').lower().startswith('http') else b.get('name'), k)}"
           for k, b in m["backends"].items()]
-    L += BROKER_LINES
+    if uses_broker(L):
+        L += BROKER_LINES
     return "\n".join(L) + "\n"
+
+
+def uses_broker(lines: list) -> bool:
+    """Broker lines only when an endpoint is a queue/topic: an HTTP-only flow must not need BROKER_URL to start."""
+    return any(re.search(r"=amqp:", x) for x in lines)
 
 
 # the broker connection comes from the platform environment (Secret / ConfigMap) on every environment, and from
@@ -329,8 +414,9 @@ def local_properties(proxy: str, m: dict) -> str:
 
 
 def test_props(m: dict) -> list[str]:
+    prod = properties("x", m).splitlines()
     return (["flow.input=direct:in"] + [f"out.{k}=mock:out-{k}" for k in m["outputs"] if k != "reply"]
-            + [f"backend.{k}=mock:backend-{k}" for k in m["backends"]] + TEST_BROKER_LINES)
+            + [f"backend.{k}=mock:backend-{k}" for k in m["backends"]] + (TEST_BROKER_LINES if uses_broker(prod) else []))
 
 
 UUID_RX = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
@@ -477,6 +563,7 @@ def main() -> int:
             if k in meta["generated"]:
                 meta["generated"][k.rsplit("/", 1)[0] + "/case1/" + k.rsplit("/", 1)[1]] = meta["generated"].pop(k)
         syn = sorted(p for p in (a.out / "src/test/resources/parity").glob("*-synthetic/**/*") if p.is_file())
+        syn += sorted(p for p in (a.out / "src/test/resources/stubs").glob("*") if p.suffix in (".json", ".xml", ".txt"))
         for p in syn:                       # first freeze wins: a later change shows up in gate K5, it is never re-blessed
             meta["generated"].setdefault(p.relative_to(a.out).as_posix(), sha(p))
         (a.out / ".scaffold.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
@@ -499,6 +586,10 @@ def main() -> int:
         deps.append("camel-saxon")
     if "xsl" in ref_kinds or "xslt" in kinds:
         deps.append("camel-xslt-saxon")
+    if m.get("http_entry"):
+        deps.append("camel-platform-http-main")     # the proxy's HTTP endpoint (Camel Main / Camel K)
+    if m.get("calls"):
+        deps.append("camel-http")                   # HTTP business services
     pom = (TPL / "pom.xml").read_text(encoding="utf-8").replace("@@GROUP@@", "osb." + slug(a.project)).replace(
         "@@ARTIFACT@@", slug(proxy)).replace("@@PROJECT@@", a.project).replace("@@PROXY@@", proxy).replace(
         "<!-- @@EXTRA_DEPS@@ -->", "\n    ".join(f"<dependency><groupId>org.apache.camel</groupId><artifactId>{d}</artifactId></dependency>"
@@ -531,13 +622,21 @@ def main() -> int:
            "correlation_header": m["corr"], "correlation_generated": bool(m.get("corr_generated")),
            "scenario_fields": [h for h, _ in m["dims"]], "payload_format": m["format"],
            "generated_fields": generated_fields(o / "src/test/resources/parity") if (o / "src/test/resources/parity").is_dir() else []}
+    if m.get("error_status"):           # request/reply: the HTTP status of OSB's error answer (FlowErrorTest checks it)
+        cfg["error_http_status"] = m["error_status"]
     tp = o / f"src/test/java/{jdir}/FlowParityTest.java"
     cp = o / "src/test/resources/flow-test.json"
     for path, text in [(tp, test), (cp, json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")]:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         written.append(path.relative_to(o).as_posix())
-    stubs = ["# Backend stubs for the L1 tests", "", "One file per backend, named <backend>.json / .xml / .txt: the response shape from",
+    # FlowErrorTest: a compiling start with one test per error scope; the implementer extends it (not frozen, gate K7)
+    etp = o / f"src/test/java/{jdir}/FlowErrorTest.java"
+    err_tpl = (TPL / "FlowErrorTest.java.tpl").read_text(encoding="utf-8").replace("@@PACKAGE@@", pkg).replace(
+        "@@PROJECT@@", a.project).replace("@@PROXY@@", proxy).replace("@@TEST_PROPERTIES@@", ", ".join(q(p) for p in test_props(m)))
+    if write_once(etp, err_tpl, False):
+        written.append(etp.relative_to(o).as_posix())
+    stubs = ["# Backend stubs for the L1 tests", "","One file per backend, named <backend>.json / .xml / .txt: the response shape from",
              "research Q8 (WSDL/XSD), with FAKE values only. FlowErrorTest makes the same mocks throw for the error tests.", ""]
     stubs += [f"- `{k}.*`: {b.get('type', '')} {b.get('operation', '')}; response use: {b.get('response_use', '') or '-'}" for k, b in m["backends"].items()] or ["- no backends"]
     write_once(o / "src/test/resources/stubs/README.md", "\n".join(stubs) + "\n", True)
@@ -555,7 +654,7 @@ def main() -> int:
     ids = ([f"branch-{b}" for b in {p["branch"] for p in active}] + [p["id"] for p in active]
            + [f"out-{k}" for k in m["outputs"] if k != "reply"] + [f"backend-{k}" for k in m["backends"]])
     meta = {"proxy": proxy, "project": a.project, "package": pkg, "research_sha256": sha(rp),
-            "generated": {**{k: v for k, v in (old_meta.get("generated") or {}).items() if "-synthetic/" in k},
+            "generated": {**{k: v for k, v in (old_meta.get("generated") or {}).items() if "-synthetic/" in k or "/stubs/" in k},
                           tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp)},
             "route_ids": sorted(ids), "errors": len(r.get("errors") or []),
             "task1": str(a.parity.parent.parent.resolve()) if a.parity and a.parity.is_dir() else (old_meta.get("task1") or ""),

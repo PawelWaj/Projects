@@ -25,6 +25,33 @@ def win_path(arg: str) -> str:
     return re.sub(r"^/([a-zA-Z])/", r"\1:/", arg) if os.name == "nt" else arg
 
 
+SCALAR_KEYS = ("message", "uri", "logName", "loggingLevel", "beanType", "method", "id")
+
+
+def yaml_lint(text: str) -> list[str]:
+    """Structure mistakes models make in Camel YAML routes that make the WHOLE route fail to load (every test errors
+    with one cryptic line). Line-based, no YAML library: a scalar key left empty with a block below it
+    (`message:` + `simple: "..."`), and `steps:` next to `from:` instead of under it."""
+    out, lines = [], text.splitlines()
+    ind = lambda s: len(s) - len(s.lstrip(" "))  # noqa: E731
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if s.startswith("#") or not s:
+            continue
+        m = re.match(r"^-?\s*(\w+):\s*$", s)
+        if m and m.group(1) in SCALAR_KEYS:
+            nxt = next((x for x in lines[i + 1:] if x.strip() and not x.strip().startswith("#")), "")
+            if ind(nxt) > ind(ln):
+                out.append(f"line {i + 1}: '{m.group(1)}:' must be a plain value on the same line "
+                           f"(e.g. {m.group(1)}: \"...${{body}}\"), not a block with '{nxt.strip().split(':')[0]}:' below")
+        if s == "steps:":
+            prev = next((x for x in reversed(lines[:i]) if x.strip() and not x.strip().startswith("#")), "")
+            frm = next((x for x in reversed(lines[:i]) if x.strip() == "from:"), None)
+            if frm is not None and ind(frm) == ind(ln) and not prev.strip().startswith("- "):
+                out.append(f"line {i + 1}: route 'steps:' belongs UNDER 'from:' (indent it below from:)")
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("module", type=Path)
@@ -37,6 +64,13 @@ def main() -> int:
     if not exe:
         print(f"cannot find {args[0]} on PATH")
         return 2
+    lint = [f"{p.name} {x}" for p in sorted((mod / "src/main/resources/routes").glob("*.yaml")) for x in yaml_lint(p.read_text(encoding="utf-8"))]
+    if lint:                            # the route would not load: every test errors; say where, before a Maven run
+        print(f"ROUTE YAML STRUCTURE ({len(lint)}): fix these lines first, the route cannot load")
+        for x in lint[:a.max]:
+            print("  " + x)
+        print("FIX NEEDED")
+        return 1
     rep = mod / "target/surefire-reports"
     if rep.is_dir():
         for f in rep.glob("TEST-*.xml"):

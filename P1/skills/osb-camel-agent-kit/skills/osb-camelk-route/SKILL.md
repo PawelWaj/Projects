@@ -66,7 +66,14 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    `${exchangeProperty.<field>}` (set by OsbJson.annotate), never headers; a path with no output in OSB gets no
    `when`; set the property `osbStage` before each OSB stage (debugInfo); errorCode = exception class name. Log templates become simple
    expressions with the same literal text. Conditions use the headers the helper bean sets (`${header.x}`).
-4. **Error tests:** `src/test/java/<pkg>/FlowErrorTest.java`, at least one test per error scope on the card: invalid
+3b. **Request/reply HTTP flows:** the scaffold makes the proxy a `platform-http` entry, each HTTP business service a
+   `backend-*` call (mocked in tests, answering with its stub) and the end of the route the reply; on an error the
+   route answers with `CamelHttpResponseCode` (from research) instead of sending to a queue. A mapping OSB writes
+   inline in the pipeline (no .xqy file) or a JSON nXSD without its schema in the module is implemented from
+   research.json `transforms[].mappings`, row by row (helper bean or jsonpath); never a pass-through when research
+   lists a transform. Gate K12 requires an expected reply per case, so a pass-through fails.
+4. **Error tests:** `src/test/java/<pkg>/FlowErrorTest.java` is generated as a compiling start (invalid payload,
+   every backend failing): extend it, keep its helpers. At least one test per error scope on the card: invalid
    payload, each output/backend failing (mock `whenAnyExchangeReceived` throwing), retries counted
    (`getReceivedCounter()`), error headers and original body on the error output, generated traceId. Set retry delays
    to 0 through properties in the test, never by changing production defaults.
@@ -78,7 +85,8 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    K5 generated tests and frozen synthetic cases untouched, nothing disabled · K6 stubs · K7 error tests ≥ error scopes ·
    K8 tests green · K9 every scenario_mapping row has a case · K10 every property value a plain endpoint (no notes,
    no spaces) and every `{{key}}` defined · K11 each destination once: a JMS business service that writes an `out-*`
-   IS that output, so never add a `backend-<x>-bs` send next to `out-<x>` (production would get every message twice).
+   IS that output, so never add a `backend-<x>-bs` send next to `out-<x>` (production would get every message twice) ·
+   K12 request/reply: every case that ends in the reply has `expected-output.json|xml`.
 7. **Prove the tests bite:** `python <skill>/scripts/mutate_route.py modules/<project>/<proxy> --mvn "mvn -B -q -s ~/.m2/settings.xml"`
    breaks the route on purpose (conditions negated, outputs swapped or dropped, retries removed); every mutation must
    make a test fail. A survivor means a missing test: add it to FlowErrorTest, never weaken the route to pass.

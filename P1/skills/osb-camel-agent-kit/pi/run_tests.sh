@@ -39,7 +39,13 @@ if [ "$UNCOV" != 0 ] && [ "${PI_TESTER:-1}" = 0 ]; then
 elif [ "$UNCOV" != 0 ]; then
   PT=(pi --print --no-session --thinking "${PI_TESTER_THINKING:-low}" --tools "read,bash,write" --append-system-prompt "$KIT/agents/tester-camelk.md")
   [ -n "${OSB_PI_MODEL:-}" ] && PT+=(--model "$OSB_PI_MODEL")
-  pi_call "$LOG/tester.out" "$LOG/tester.err" "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gate K9). Fake values only. Write nothing outside $MOD/src/test/resources/parity." || true
+  REPLY_TASK=""
+  if "$PY" -c "import json,sys; c=json.load(open(sys.argv[1])); sys.exit(0 if 'reply' in c.get('outputs',{}) and c.get('backends') else 1)" "$MOD/src/test/resources/flow-test.json"; then
+    # request/reply with HTTP calls: the reply body must be tested (gate K12), so the case needs the backend's answer and
+    # the reply OSB would build from it
+    REPLY_TASK=" This flow answers the caller and calls backend(s) $("$PY" -c "import json,sys; print(', '.join(json.load(open(sys.argv[1]))['backends']))" "$MOD/src/test/resources/flow-test.json"). For each backend write $MOD/src/test/resources/stubs/<backend>.json: the backend's answer with FAKE values, ONLY fields that research.json names (transforms[].mappings[].from, backends[].response_use); include at least one record that matches every filter the transforms use (e.g. a status the reply selects) and one that does not. For each case write expected-output.json next to input.payload: the reply as research.json transforms build it from that stub, field by field (apply every rule: renames, date reformat, value mapping). Gate K12 checks it."
+  fi
+  pi_call "$LOG/tester.out" "$LOG/tester.err" "${PT[@]}" "Module: $MOD. Research: $RES/RESEARCH.md and $RES/research.json. ${OSB_SRC:+OSB source (read only, for the message schema): $OSB_SRC.} Write synthetic case folders for the $UNCOV scenario_mapping rows of $MOD/src/test/resources/flow-test.json that have no case yet (check: $PY $SK/scripts/check_camelk.py $MOD --no-surefire, gates K9 and K12). Fake values only.$REPLY_TASK Write nothing outside $MOD/src/test/resources/parity and $MOD/src/test/resources/stubs." || true
 else
   echo "   every scenario already has a real Splunk case"
 fi
