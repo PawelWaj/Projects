@@ -9,6 +9,9 @@ Mutations (generic, from the route text):
   swap-out    every output endpoint {{out.a}} -> another output {{out.b}} (message sent to the wrong queue)
   drop-out    every output step removed (message silently lost)
   no-retry    every redelivery count -> 0 (business service retry ignored)
+  drop-call   every HTTP/backend call step removed (request/reply: the answer never fetched)
+  drop-bean   every transform bean step removed (the reply built without its mapping)
+  err-status  the error reply's HTTP status -> 200; http-method  GET <-> POST on the backend call
 Each mutation runs `mvn test`; a non-zero exit = caught. The route file is always restored, even on Ctrl-C.
 Writes MUTATION.json (what, killed) next to the pom. Exit 1 if any mutation survived, 2 if the check could not run."""
 import argparse
@@ -51,7 +54,35 @@ def mutations(text: str) -> list[tuple[str, str]]:
             out.append((f"drop the step sending to out-{target}", "".join(lines[:i]) + stub + "".join(lines[j:])))
     for m in re.finditer(r"(maximumRedeliveries:\s*\")([^\"]+)(\")", text):
         out.append(("retry count set to 0", text[:m.start(2)] + "0" + text[m.end(2):]))
+    # request/reply flows: the HTTP call, the mapping that builds the reply, the error status, the HTTP method
+    for i, line in enumerate(lines):
+        if re.match(r"\s*- (to|bean):\s*$", line):
+            j = block_end(lines, i)
+            blk = "".join(lines[i:j])
+            ind = len(line) - len(line.lstrip())
+            stub = " " * ind + "- log:\n" + " " * (ind + 4) + "message: \"mutation: step removed\"\n"
+            call = re.search(r"\{\{backend\.([\w.-]+)\}\}", blk)
+            bean = re.search(r"beanType:\s*([\w.]+)", blk)
+            if call:
+                out.append((f"drop the call to backend-{call.group(1)}", "".join(lines[:i]) + stub + "".join(lines[j:])))
+            elif bean and not bean.group(1).endswith(".OsbJson"):   # OsbJson.annotate only reads; any other bean transforms
+                out.append((f"drop the transform bean {bean.group(1).rsplit('.', 1)[-1]}", "".join(lines[:i]) + stub + "".join(lines[j:])))
+    for m in re.finditer(r"(name:\s*CamelHttpResponseCode\s*\n\s*constant:\s*\"?)(\d{3})", text):
+        if m.group(2) != "200":
+            out.append((f"error reply status {m.group(2)} -> 200", text[:m.start(2)] + "200" + text[m.end(2):]))
+    for m in re.finditer(r"(name:\s*CamelHttpMethod\s*\n\s*constant:\s*\"?)(GET|POST|PUT|DELETE|PATCH)\b", text):
+        other = "POST" if m.group(2) == "GET" else "GET"
+        out.append((f"HTTP method {m.group(2)} -> {other}", text[:m.start(2)] + other + text[m.end(2):]))
     return out
+
+
+def block_end(lines: list, i: int) -> int:
+    """End (exclusive) of the YAML list item starting at line i: the next line indented at most as deep."""
+    ind = len(lines[i]) - len(lines[i].lstrip())
+    j = i + 1
+    while j < len(lines) and (not lines[j].strip() or (len(lines[j]) - len(lines[j].lstrip())) > ind):
+        j += 1
+    return j
 
 
 def main() -> int:

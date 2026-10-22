@@ -202,8 +202,35 @@ class FlowParityTest {
                     assertNull(out.getHeader(f.asText()), f.asText() + " is a routing field, OSB sends no such header");
                 }
             }
+            backendRequestsAsOsb();
         } catch (AssertionError e) {
             throw new AssertionError("case " + name + ": " + e.getMessage(), e);   // surefire reports show only [n]
+        }
+    }
+
+    /** The request each called HTTP backend received has OSB's shape (flow-test.json backends.*.request, from research):
+     *  the method, every query parameter name, every header name (values may come from env/secrets: only presence). */
+    void backendRequestsAsOsb() {
+        for (var it = CFG.path("backends").fields(); it.hasNext(); ) {
+            var b = it.next();
+            JsonNode want = b.getValue().path("request");
+            MockEndpoint m = mock(b.getValue().path("mock").asText());
+            if (want.isMissingNode() || m.getReceivedCounter() == 0) {
+                continue;
+            }
+            Message rq = m.getExchanges().get(0).getMessage();
+            if (want.has("method")) {
+                assertEquals(want.path("method").asText(), rq.getHeader(Exchange.HTTP_METHOD, String.class),
+                    "HTTP method of the call to " + b.getKey());
+            }
+            String query = rq.getHeader(Exchange.HTTP_QUERY, "", String.class);
+            for (JsonNode q : want.path("query")) {
+                assertTrue(("&" + query).contains("&" + q.asText() + "="), "query parameter " + q.asText() + " missing in the call to "
+                    + b.getKey() + " (query: " + query + ")");
+            }
+            for (JsonNode h : want.path("headers")) {
+                assertTrue(rq.getHeaders().containsKey(h.asText()), "header " + h.asText() + " missing in the call to " + b.getKey());
+            }
         }
     }
 

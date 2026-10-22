@@ -2082,6 +2082,9 @@ Mutations (generic, from the route text):
   swap-out    every output endpoint {{out.a}} -> another output {{out.b}} (message sent to the wrong queue)
   drop-out    every output step removed (message silently lost)
   no-retry    every redelivery count -> 0 (business service retry ignored)
+  drop-call   every HTTP/backend call step removed (request/reply: the answer never fetched)
+  drop-bean   every transform bean step removed (the reply built without its mapping)
+  err-status  the error reply's HTTP status -> 200; http-method  GET <-> POST on the backend call
 Each mutation runs `mvn test`; a non-zero exit = caught. The route file is always restored, even on Ctrl-C.
 Writes MUTATION.json (what, killed) next to the pom. Exit 1 if any mutation survived, 2 if the check could not run."""
 import argparse
@@ -2124,7 +2127,35 @@ def mutations(text: str) -> list[tuple[str, str]]:
             out.append((f"drop the step sending to out-{target}", "".join(lines[:i]) + stub + "".join(lines[j:])))
     for m in re.finditer(r"(maximumRedeliveries:\s*\")([^\"]+)(\")", text):
         out.append(("retry count set to 0", text[:m.start(2)] + "0" + text[m.end(2):]))
+    # request/reply flows: the HTTP call, the mapping that builds the reply, the error status, the HTTP method
+    for i, line in enumerate(lines):
+        if re.match(r"\s*- (to|bean):\s*$", line):
+            j = block_end(lines, i)
+            blk = "".join(lines[i:j])
+            ind = len(line) - len(line.lstrip())
+            stub = " " * ind + "- log:\n" + " " * (ind + 4) + "message: \"mutation: step removed\"\n"
+            call = re.search(r"\{\{backend\.([\w.-]+)\}\}", blk)
+            bean = re.search(r"beanType:\s*([\w.]+)", blk)
+            if call:
+                out.append((f"drop the call to backend-{call.group(1)}", "".join(lines[:i]) + stub + "".join(lines[j:])))
+            elif bean and not bean.group(1).endswith(".OsbJson"):   # OsbJson.annotate only reads; any other bean transforms
+                out.append((f"drop the transform bean {bean.group(1).rsplit('.', 1)[-1]}", "".join(lines[:i]) + stub + "".join(lines[j:])))
+    for m in re.finditer(r"(name:\s*CamelHttpResponseCode\s*\n\s*constant:\s*\"?)(\d{3})", text):
+        if m.group(2) != "200":
+            out.append((f"error reply status {m.group(2)} -> 200", text[:m.start(2)] + "200" + text[m.end(2):]))
+    for m in re.finditer(r"(name:\s*CamelHttpMethod\s*\n\s*constant:\s*\"?)(GET|POST|PUT|DELETE|PATCH)\b", text):
+        other = "POST" if m.group(2) == "GET" else "GET"
+        out.append((f"HTTP method {m.group(2)} -> {other}", text[:m.start(2)] + other + text[m.end(2):]))
     return out
+
+
+def block_end(lines: list, i: int) -> int:
+    """End (exclusive) of the YAML list item starting at line i: the next line indented at most as deep."""
+    ind = len(lines[i]) - len(lines[i].lstrip())
+    j = i + 1
+    while j < len(lines) and (not lines[j].strip() or (len(lines[j]) - len(lines[j].lstrip())) > ind):
+        j += 1
+    return j
 
 
 def main() -> int:
@@ -2701,6 +2732,8 @@ def model(r: dict, facts: dict, corr: str) -> dict:
                             "operation": (b or {}).get("operation") or o["destination_raw"], "body_from": o["body_from"],
                             "type": (b or {}).get("type") or "HTTP"}
                 del outputs[k]
+        for k in calls:
+            calls[k]["expect"] = request_shape(calls[k], r)
 
     def resolve_(x):
         """An output as research names it in a table: exact alias, else the one output whose key contains the name as
@@ -2761,6 +2794,22 @@ def model(r: dict, facts: dict, corr: str) -> dict:
             "error_status": error_status(r.get("errors") or []) if err == "reply" else None}
 
 
+def request_shape(b: dict, r: dict) -> dict:
+    """What OSB sends to an HTTP business service, as far as research.json states it: header names (outputs[].headers,
+    except Host, which the HTTP client sets from the URI), query parameter names ("query param x" in the transforms or
+    the request description) and the method (backends[].method, else "overrides ... to GET" in research)."""
+    hdr = [h.get("name") for h in b.get("headers") or [] if isinstance(h, dict) and re.fullmatch(r"[A-Za-z][\w-]*", str(h.get("name") or ""))
+           and str(h.get("name")).lower() != "host"]
+    txt = json.dumps({"t": r.get("transforms"), "b": b.get("request_from"), "q": r.get("open_questions")})
+    stop = {"for", "and", "or", "the", "to", "from", "of", "are", "is", "in", "on", "with", "a", "an"}
+    query = list(dict.fromkeys(q for q in re.findall(r"(?i)query params?\s+([A-Za-z_][\w-]*)", txt) if q.lower() not in stop))
+    method = str(b.get("method") or "").upper()
+    if not method:
+        m = re.search(r"(?i)overrides?\s+(?:it\s+)?to\s+(GET|POST|PUT|DELETE|PATCH)\b", txt)
+        method = m.group(1).upper() if m else ""
+    return {k: v for k, v in {"method": method, "query": query, "headers": hdr}.items() if v}
+
+
 def error_status(errors: list) -> int | None:
     """The HTTP status OSB answers with on an error, when research names one ('... else default 500')."""
     m = re.search(r"\b([45]\d\d)\b", json.dumps(errors))
@@ -2801,7 +2850,7 @@ def route_yaml(proxy: str, project: str, pkg: str, m: dict) -> str:
                  f"called when: {b.get('called_when', '')})")
     for k in m.get("calls", []):        # request/reply: the HTTP call in place, the agent fills request and response mapping
         b = m["backends"][k]
-        method = (re.search(r"(?i)\b(GET|POST|PUT|DELETE|PATCH)\b", f"{b.get('request_from', '')} {b.get('operation', '')}") or [None, "POST"])[1].upper()
+        method = (b.get("expect") or {}).get("method") or (re.search(r"(?i)\b(GET|POST|PUT|DELETE|PATCH)\b", f"{b.get('request_from', '')} {b.get('operation', '')}") or [None, "POST"])[1].upper()
         L += [f"{ind}# HTTP call {b.get('name')}: {b.get('type', '')} {b.get('operation', '')}",
               f"{ind}#   request from: {b.get('request_from') or b.get('body_from') or '-'}",
               f"{ind}#   headers: " + (", ".join(f"{h.get('name')} <- {h.get('source')}" for h in b.get("headers") or [] if isinstance(h, dict)) or "-"),
@@ -3175,6 +3224,9 @@ def main() -> int:
            "generated_fields": generated_fields(o / "src/test/resources/parity") if (o / "src/test/resources/parity").is_dir() else []}
     if m.get("error_status"):           # request/reply: the HTTP status of OSB's error answer (FlowErrorTest checks it)
         cfg["error_http_status"] = m["error_status"]
+    for k in m.get("calls", []):        # the request OSB sends to the HTTP business service (FlowParityTest checks it)
+        if m["backends"][k].get("expect"):
+            cfg["backends"][k]["request"] = m["backends"][k]["expect"]
     tp = o / f"src/test/java/{jdir}/FlowParityTest.java"
     cp = o / "src/test/resources/flow-test.json"
     for path, text in [(tp, test), (cp, json.dumps(cfg, indent=2, ensure_ascii=False) + "\n")]:
@@ -4387,8 +4439,35 @@ class FlowParityTest {
                     assertNull(out.getHeader(f.asText()), f.asText() + " is a routing field, OSB sends no such header");
                 }
             }
+            backendRequestsAsOsb();
         } catch (AssertionError e) {
             throw new AssertionError("case " + name + ": " + e.getMessage(), e);   // surefire reports show only [n]
+        }
+    }
+
+    /** The request each called HTTP backend received has OSB's shape (flow-test.json backends.*.request, from research):
+     *  the method, every query parameter name, every header name (values may come from env/secrets: only presence). */
+    void backendRequestsAsOsb() {
+        for (var it = CFG.path("backends").fields(); it.hasNext(); ) {
+            var b = it.next();
+            JsonNode want = b.getValue().path("request");
+            MockEndpoint m = mock(b.getValue().path("mock").asText());
+            if (want.isMissingNode() || m.getReceivedCounter() == 0) {
+                continue;
+            }
+            Message rq = m.getExchanges().get(0).getMessage();
+            if (want.has("method")) {
+                assertEquals(want.path("method").asText(), rq.getHeader(Exchange.HTTP_METHOD, String.class),
+                    "HTTP method of the call to " + b.getKey());
+            }
+            String query = rq.getHeader(Exchange.HTTP_QUERY, "", String.class);
+            for (JsonNode q : want.path("query")) {
+                assertTrue(("&" + query).contains("&" + q.asText() + "="), "query parameter " + q.asText() + " missing in the call to "
+                    + b.getKey() + " (query: " + query + ")");
+            }
+            for (JsonNode h : want.path("headers")) {
+                assertTrue(rq.getHeaders().containsKey(h.asText()), "header " + h.asText() + " missing in the call to " + b.getKey());
+            }
         }
     }
 

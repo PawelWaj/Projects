@@ -278,7 +278,7 @@ class CamelkRouteTests(unittest.TestCase):
                     {"name": "LookupBS", "destination": "HTTP POST to /v1/x/y", "business_service": "LookupBS",
                      "headers": [{"name": "k", "source": "dvm:lookup(D.dvm, Attribute=K)"}]}],
         "backends": [{"name": "LookupBS", "type": "HTTP, Mixed binding, POST operation", "operation": "POST /v1/x/y",
-                      "request_from": "query params a and b; body deleted", "response_use": "mapped into the reply"}],
+                      "request_from": "query params qa and qb; body deleted", "response_use": "mapped into the reply"}],
         "transforms": [{"name": "Response", "mappings": [{"from": "x", "to": "y", "rule": "copy"}]}],
         "errors": [{"scope": "service", "goes_to": "Reply with isError=true back to the HTTP caller",
                     "headers": ["HTTP response code: outbound value or default 500"]}],
@@ -298,6 +298,7 @@ class CamelkRouteTests(unittest.TestCase):
             self.assertEqual(cfg["scenario_mapping"][0]["outputs"], ["reply"])
             self.assertEqual(cfg["error_output"], "reply")
             self.assertEqual(cfg["error_http_status"], 500)
+            self.assertEqual(cfg["backends"]["lookupbs"]["request"], {"query": ["qa"], "headers": ["k"]})   # no method stated
             props = (mod / "src/main/resources/application.properties").read_text()
             self.assertIn("flow.input=platform-http:/a/b/lookup", props)
             self.assertIn("backend.lookupbs=https://{{env:LOOKUPBS_HOST}}/v1/x/y", props)
@@ -318,6 +319,23 @@ class CamelkRouteTests(unittest.TestCase):
             (case / "expected-output.json").write_text('{"y": 1}')
             subprocess.run([sys.executable, str(self.SK / "check_camelk.py"), str(mod), "--no-surefire"], capture_output=True, text=True)
             self.assertTrue(json.loads((mod / "GATES.json").read_text())["gates"]["K12_reply_expected"]["ok"])
+
+    def test_mutations_cover_request_reply_routes(self):
+        import importlib.util
+        s = importlib.util.spec_from_file_location("mr", self.SK / "mutate_route.py")
+        mr = importlib.util.module_from_spec(s)
+        s.loader.exec_module(mr)
+        route = ("- route:\n    from:\n      uri: x\n      steps:\n        - setHeader:\n            name: CamelHttpMethod\n"
+                 "            constant: \"GET\"\n        - to:\n            id: backend-b\n            uri: \"{{backend.b}}\"\n"
+                 "        - bean:\n            beanType: p.Mapper\n            method: map\n        - bean:\n"
+                 "            beanType: p.OsbJson\n            method: annotate\n        - setHeader:\n"
+                 "            name: CamelHttpResponseCode\n            constant: 500\n")
+        what = [w for w, _ in mr.mutations(route)]
+        self.assertIn("drop the call to backend-b", what)
+        self.assertIn("drop the transform bean Mapper", what)
+        self.assertNotIn("drop the transform bean OsbJson", what)
+        self.assertIn("error reply status 500 -> 200", what)
+        self.assertIn("HTTP method GET -> POST", what)
 
     def test_verify_module_yaml_lint_names_the_line(self):
         import importlib.util
