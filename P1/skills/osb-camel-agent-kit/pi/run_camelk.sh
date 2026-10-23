@@ -63,4 +63,7 @@ done
 echo "== 4 verify"
 mvn -B -q ${MVN_ARGS:-} -f "$MOD/pom.xml" test > "$LOG/mvn.out" 2>&1 || true
 grep -h "Tests run:" "$LOG/mvn.out" | tail -1 || true
-"$PY" "$SK/scripts/check_camelk.py" "$MOD"
+rc=0; "$PY" "$SK/scripts/check_camelk.py" "$MOD" || rc=$?
+echo "== 5 Camel K deployment (camel-k/integration.yaml, DEPLOY.md)"
+"$PY" "$SK/scripts/camelk_manifests.py" "$MOD" || echo "   Camel K manifests not written (see the error above)"
+exit $rc

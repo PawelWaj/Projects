@@ -2,6 +2,8 @@
 
 AI-assisted engineering assets: agent skills, role prompts and the deterministic tooling around them.
 
+> **On the VDI: start with [`vdi-osb-migration/START_HERE.md`](vdi-osb-migration/START_HERE.md)** (setup, Splunk CSV -> tests + Camel K route -> `integration.yaml` on Dev).
+
 ## Contents
 
 | Path | What it is |

@@ -97,6 +97,11 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    deltas, `test/BROKER_RUN.txt`); work module `broker/e2e_local.sh`. Local queue names = JNDI names without `jndi.`
    (assumption until the platform mapping is decided). What it proves: selector + durable subscription, routing to the
    right queues, XML from the XQuery arrives. What it does not prove: byte equality with OSB, the real broker.
+8c. **Camel K deployment:** `python <skill>/scripts/camelk_manifests.py <delivery project | module>` writes
+   `camel-k/integration.yaml` (one file: Kamelets, ConfigMaps, Integration), `DEPLOY.md` (Secret commands) and
+   `CHECK.json` (ready / open CHANGE-ME values). Environment values come from `CAMELK_BROKER_URL`, `CAMELK_ENV_FILE`,
+   `CAMELK_NAMESPACE`, never from the repository; credential-looking `{{env:X}}` names are read from a Secret.
+   `vdi_session.sh deploy` runs it with an `oc` dry run; `APPLY=1` applies (a person's decision).
 9. **Report** (five lines): proxy, gates result, tests run/failed/skipped (skipped = golden outputs pending),
    differences recorded in MIGRATION_NOTES.md, open questions left.
 

@@ -957,7 +957,10 @@ done
 echo "== 4 verify"
 mvn -B -q ${MVN_ARGS:-} -f "$MOD/pom.xml" test > "$LOG/mvn.out" 2>&1 || true
 grep -h "Tests run:" "$LOG/mvn.out" | tail -1 || true
-"$PY" "$SK/scripts/check_camelk.py" "$MOD"
+rc=0; "$PY" "$SK/scripts/check_camelk.py" "$MOD" || rc=$?
+echo "== 5 Camel K deployment (camel-k/integration.yaml, DEPLOY.md)"
+"$PY" "$SK/scripts/camelk_manifests.py" "$MOD" || echo "   Camel K manifests not written (see the error above)"
+exit $rc
 KIT_EOF_PI_RUN_CAMELK_SH
 mkdir -p "$(dirname "pi/run_domain.sh")"
 cat > 'pi/run_domain.sh' <<'KIT_EOF_PI_RUN_DOMAIN_SH'
@@ -1559,6 +1562,9 @@ cat > 'pi/vdi_session.sh' <<'KIT_EOF_PI_VDI_SESSION_SH'
 #   bash <kit>/pi/vdi_session.sh status                   what is running, kit version, settings
 #   bash <kit>/pi/vdi_session.sh flows 'a-prj|b-prj'      research (pi) -> task1 (needs EXPORT) -> review archive
 #   bash <kit>/pi/vdi_session.sh review 'a-prj|b-prj'     only the delivery part (no pi): delivery, tests, broker, archive
+#   bash <kit>/pi/vdi_session.sh deploy 'a-prj|b-prj'     camel-k/integration.yaml per flow + oc dry run; APPLY=1 applies
+#     settings: CAMELK_NAMESPACE (required), CAMELK_BROKER_URL, CAMELK_ENV_FILE (KEY=VALUE, local file), DEPLOY_FROM=
+#     scripts|skills (default: scripts when a delivery exists, else the skills module)
 #   bash <kit>/pi/vdi_session.sh stop [--broker]          routes stopped, pi back to the platform, pacer stopped
 #   PACER=0 before start/flows: no pacer, pi talks to the model directly (an endpoint without a rate limit)
 #   GEN=scripts|skills|both before flows/review: who builds route + tests after research (default scripts)
@@ -1693,6 +1699,27 @@ case "${1:-}" in
     broker_up || start_broker || echo "broker not running: the review stage skips the broker test"
     [ "$GEN" = scripts ] || model_link || exit 1
     gen_stage "$P" 0 2>&1 | tee -a "$LOG" ;;
+
+  deploy)
+    P=${2:?usage: vdi_session.sh deploy 'a-prj|b-prj'   (CAMELK_NAMESPACE=<dev namespace>, APPLY=1 to apply)}
+    : "${CAMELK_NAMESPACE:?export CAMELK_NAMESPACE=<dev namespace> (and CAMELK_BROKER_URL, CAMELK_ENV_FILE)}"
+    command -v oc > /dev/null && OC=1 || { OC=0; echo "oc not on PATH: manifests only, no dry run / apply"; }
+    PROJECTS="$P" bash "$KIT/pi/run_domain.sh" list 2>/dev/null | awk 'NF==2 && $2 != "proxies"' | while read -r p x; do
+      d=$(ls -d "$WS"/delivery/*/"$p" 2>/dev/null | head -1); m="$WS/modules/$p/$x"
+      src=$([ "${DEPLOY_FROM:-}" = skills ] || [ -z "$d" ] && echo "$m" || echo "$d")
+      [ -d "$src" ] || { echo "$p/$x: nothing built yet (run flows or review first)"; continue; }
+      echo "=== $p/$x from $src"
+      "$PY" "$KIT/skills/osb-camelk-route/scripts/camelk_manifests.py" "$src" --namespace "$CAMELK_NAMESPACE" || continue
+      f="$src/camel-k/integration.yaml"
+      grep -q '"ready": true' "$src/camel-k/CHECK.json" || { echo "   NOT READY: fill the open values (CHANGE-ME), see $src/camel-k/DEPLOY.md"; continue; }
+      [ "$OC" = 1 ] || continue
+      oc apply -n "$CAMELK_NAMESPACE" --dry-run=server -f "$f" || { echo "   dry run refused: fix before applying"; continue; }
+      for s in $("$PY" -c "import json,sys; print(' '.join(json.load(open(sys.argv[1]))['secrets']))" "$src/camel-k/CHECK.json"); do
+        oc get secret "$s" -n "$CAMELK_NAMESPACE" > /dev/null 2>&1 || echo "   MISSING Secret $s: create it first (DEPLOY.md)"
+      done
+      if [ "${APPLY:-0}" = 1 ]; then oc apply -n "$CAMELK_NAMESPACE" -f "$f" && echo "   applied: oc get integration -n $CAMELK_NAMESPACE -w"
+      else echo "   dry run OK. Apply with: APPLY=1 bash $KIT/pi/vdi_session.sh deploy '$p'"; fi
+    done 2>&1 | tee -a "$LOG" ;;
 
   stop)
     D=$(ls -d "$WS"/delivery/*/ 2>/dev/null | head -1)

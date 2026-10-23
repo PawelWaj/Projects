@@ -767,26 +767,31 @@ class SyntheticAndReplyTests(unittest.TestCase):
             for f in ("README.md", "run.sh", "set-env.sh", "tools/jbang.sh", "tools/artemis.sh", "tools/e2e.sh"):
                 self.assertTrue((app / f).is_file(), f)
             self.assertIn("| x-prj | x | x-register | xml |", (app / "README.md").read_text())
-            # Camel K: Integration + ConfigMaps + DEPLOY.md, no credential value anywhere
+            # Camel K: ONE integration.yaml (kamelets + ConfigMaps + Integration) + DEPLOY.md, no credential value anywhere
             k = p / "camel-k"
-            integ = (k / "integration.yaml").read_text()
-            for s in ("kind: Integration", "name: x\n", "contentRef: x-sources", "contentKey: x-route.yaml", "contentKey: OsbXQuery.java",
+            allk = (k / "integration.yaml").read_text()
+            integ = allk.split("kind: Integration", 1)[1]
+            for s in ("name: x\n", "contentRef: x-sources", "contentKey: x-route.yaml", "contentKey: OsbXQuery.java",
                       '"configmap:x-config"', '"secret:x-broker"', '"configmap:x-transformations@/etc/camel/resources/osb/transformations"',
                       '"OSB_FILES_DIR=/etc/camel/resources/osb"', 'list: "osb-jms-sink,osb-jms-source"', "mvn:net.sf.saxon:Saxon-HE:12.9",
-                      "imagePullPolicy: Always", "    environment:"):
+                      "imagePullPolicy: Always", "    environment:", '"BROKER_URL=CHANGE-ME"'):
                 self.assertIn(s, integ, s)
-            self.assertNotIn("password", integ.lower().replace("broker user/password", ""))
-            cms = (k / "configmaps.yaml").read_text()
-            self.assertEqual(cms.count("kind: ConfigMap"), 3)
-            self.assertIn("x-register.xqy:", cms)
-            self.assertIn("osb.files.dir={{env:OSB_FILES_DIR:.}}", cms)
-            self.assertNotIn(".password={{env:BROKER_PASSWORD", cms, "credentials only from the Secret")
+            self.assertIn("service:\n      enabled: false", integ, "a JMS flow needs no Service")
+            self.assertEqual(allk.count("kind: ConfigMap"), 3)
+            self.assertEqual(allk.count("kind: Kamelet"), 2)
+            self.assertNotIn("password", integ.lower())
+            self.assertIn("x-register.xqy:", allk)
+            self.assertIn("osb.files.dir={{env:OSB_FILES_DIR:.}}", allk)
+            self.assertNotIn(".password={{env:BROKER_PASSWORD", allk, "credentials only from the Secret")
             self.assertIn("--from-file=broker.properties", (k / "DEPLOY.md").read_text())
+            self.assertFalse(json.loads((k / "CHECK.json").read_text())["ready"], "BROKER_URL not given yet")
+            self.assertFalse((k / "configmaps.yaml").exists())
             try:
                 import yaml  # optional: full parse when PyYAML is present
-                docs = list(yaml.safe_load_all(cms))
-                self.assertEqual(docs[2]["data"]["x-register.xqy"], (p / "transformations/x-register.xqy").read_text())
-                self.assertEqual(yaml.safe_load(integ)["spec"]["traits"]["mount"]["configs"], ["configmap:x-config", "secret:x-broker"])
+                docs = list(yaml.safe_load_all(allk))
+                self.assertEqual([d["kind"] for d in docs][-4:], ["ConfigMap", "ConfigMap", "ConfigMap", "Integration"])
+                self.assertEqual(docs[-2]["data"]["x-register.xqy"], (p / "transformations/x-register.xqy").read_text())
+                self.assertEqual(docs[-1]["spec"]["traits"]["mount"]["configs"], ["configmap:x-config", "secret:x-broker"])
             except ImportError:
                 pass
             # a module older than the selector: no flow.input.selector in its properties -> taken from research.json
@@ -1030,6 +1035,39 @@ class SynthFromSchemaTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CamelKModuleManifestTests(unittest.TestCase):
+    """skills-path module -> one integration.yaml: sources from routes + Java, env values from a local file,
+    credential-looking names from a Secret, a Service only for HTTP, CHANGE-ME listed as open."""
+
+    def test_http_module(self):
+        sk = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts"
+        with tempfile.TemporaryDirectory() as d:
+            m = Path(d) / "mod"
+            (m / "src/main/resources/routes").mkdir(parents=True)
+            (m / "src/main/java/o/p").mkdir(parents=True)
+            (m / "src/main/resources/routes/Lookup.camel.yaml").write_text(
+                '- route:\n    from:\n      uri: "{{flow.input}}"\n      steps:\n        - setHeader: {name: k, simple: "${env:LK_APIKEY}"}\n')
+            (m / "src/main/java/o/p/Mapper.java").write_text("package o.p;\npublic class Mapper {}\n")
+            (m / "src/main/resources/application.properties").write_text(
+                "camel.main.routes-include-pattern=classpath:routes/*.camel.yaml\nflow.input=platform-http:/a/b\n"
+                "backend.lk=https://{{env:LK_HOST}}/v1\n")
+            (m / "pom.xml").write_text("<artifactId>camel-main</artifactId><artifactId>camel-http</artifactId>"
+                                       "<artifactId>camel-platform-http-main</artifactId><artifactId>camel-amqp</artifactId>")
+            (m / ".scaffold.json").write_text(json.dumps({"proxy": "Lookup", "project": "p-prj"}))
+            env = Path(d) / "dev.env"
+            env.write_text("LK_HOST=h.example\n")
+            r = subprocess.run([sys.executable, str(sk / "camelk_manifests.py"), str(m), "--env-file", str(env)], capture_output=True, text=True)
+            out = json.loads(r.stdout)
+            self.assertTrue(out["ready"], r.stdout)
+            allk = (m / "camel-k/integration.yaml").read_text()
+            for s in ("name: lookup\n", "contentKey: Lookup.camel.yaml", "contentKey: Mapper.java", "- camel:platform-http",
+                      "- camel:http", '"LK_HOST=h.example"', '"LK_APIKEY=secret:lookup-env/LK_APIKEY"', "service:\n      enabled: true"):
+                self.assertIn(s, allk, s)
+            self.assertNotIn("camel:amqp", allk, "no amqp endpoint in the route")
+            self.assertNotIn("routes-include-pattern", allk)
+            self.assertIn("--from-literal=LK_APIKEY=", (m / "camel-k/DEPLOY.md").read_text())
 
 
 class ScenarioKeyNormalisationTests(unittest.TestCase):
