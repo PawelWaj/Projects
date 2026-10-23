@@ -83,7 +83,10 @@ compare_gen() {   # one line per flow: scripts delivery tests vs skills module g
 }
 
 start_broker() {
-  [ -n "${ARTEMIS_HOME:-}" ] || { echo "broker: ARTEMIS_HOME not set in .osb-kit.env (bash \$KIT/broker/artemis_setup.sh setup <folder>)"; return 1; }
+  if [ ! -f "${ARTEMIS_HOME:-}/lib/artemis-boot.jar" ]; then      # fresh VDI: the distribution comes through Maven (Nexus)
+    bash "$KIT/broker/artemis_setup.sh" install || { echo "broker: no Artemis (ARTEMIS_ZIP=<zip> or fix MVN_ARGS)"; return 1; }
+    . ./.osb-kit.env
+  fi
   ask ARTEMIS_PASSWORD "Artemis password (user ${ARTEMIS_USER:-artemis})"
   if broker_up; then echo "broker: already running"; return 0; fi
   [ -f "${ARTEMIS_BROKER:-x}/etc/broker.xml" ] || bash "$KIT/broker/artemis_setup.sh" create

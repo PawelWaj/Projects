@@ -12,11 +12,11 @@ ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }   
 
 echo "OS: $(uname -s 2>/dev/null) $(uname -r 2>/dev/null)"
 
-echo "Agent"
+echo "Agent (only research and the skills path need it; task1, the scripts path and the local tests run without pi)"
 if command -v node >/dev/null; then
-  v=$(node -v | tr -d v); ver_ge "$v" 22.19.0 && pass "node $v" || bad "node $v < 22.19 (pi requirement)"
-else bad "node not found (pi needs Node.js 22.19+)"; fi
-if command -v pi >/dev/null; then pass "pi $(pi --version 2>/dev/null | head -1)"; else bad "pi not found"; fi
+  v=$(node -v | tr -d v); ver_ge "$v" 22.19.0 && pass "node $v" || wrn "node $v < 22.19 (pi requirement)"
+else wrn "node not found (pi needs Node.js 22.19+)"; fi
+if command -v pi >/dev/null; then pass "pi $(pi --version 2>/dev/null | head -1)"; else wrn "pi not found (npm install -g --ignore-scripts @earendil-works/pi-coding-agent)"; fi
 [ -n "${OSB_PI_MODEL:-}" ] && pass "OSB_PI_MODEL=$OSB_PI_MODEL" || wrn "OSB_PI_MODEL unset: pi uses its default model"
 for f in "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/models.json" "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json"; do
   [ -f "$f" ] && pass "found $f" || wrn "no $f (needed for a custom endpoint or stored login)"
@@ -35,7 +35,7 @@ PY=$(command -v python3 || command -v python || command -v py)
 if [ -n "$PY" ]; then v=$("$PY" -c 'import sys;print("%d.%d"%sys.version_info[:2])'); ver_ge "$v" 3.10 && pass "python $v ($PY)" || bad "python $v < 3.10"
 else bad "python not found"; fi
 command -v git >/dev/null && pass "git" || wrn "git missing (lane checks still work, CI guard needs git)"
-command -v timeout >/dev/null && pass "timeout (a hanging pi call is stopped after PI_TIMEOUT, default 1800 s)" || wrn "no 'timeout' command: a hanging pi call is not stopped automatically"
+pass "pi calls stop after PI_TIMEOUT (default 1800 s): $(command -v timeout >/dev/null && echo 'timeout' || echo 'own watchdog, no timeout command needed')"
 
 echo "Build and test"
 if command -v java >/dev/null; then
@@ -45,25 +45,23 @@ if command -v mvn >/dev/null; then pass "maven $(mvn -v 2>/dev/null | head -1 | 
   [ -f "$HOME/.m2/settings.xml" ] && pass "~/.m2/settings.xml present (mirror/proxy)" || wrn "no ~/.m2/settings.xml: Maven will try Maven Central directly"
 else bad "maven not found"; fi
 if docker info >/dev/null 2>&1; then pass "docker"; elif podman info >/dev/null 2>&1; then pass "podman"
-else printf '  [INFO] no Docker/Podman: not needed (functional tests use mocks; Artemis tests run later on the Dev environment)\n'; fi
+else printf '  [INFO] no Docker/Podman: not needed (tests use mocks; the local Artemis runs as a plain Java process)\n'; fi
 
-echo "Kit layout (run from the migration repository root)"
-for p in AGENTS.md agents/analyst.md tools/verify_flow.sh pi/run_flow.sh; do [ -e "$p" ] && pass "$p" || bad "$p missing"; done
-sk=0; for d in .pi/skills "$HOME/.pi/agent/skills" .agents/skills skills; do [ -f "$d/osb-to-camel/SKILL.md" ] && sk=1; done
-[ $sk = 1 ] && pass "skill osb-to-camel discoverable" || bad "skill osb-to-camel not in .pi/skills, ~/.pi/agent/skills or .agents/skills"
-sr=0; for d in .pi/skills "$HOME/.pi/agent/skills" .agents/skills skills; do [ -f "$d/osb-research/SKILL.md" ] && sr=1; done
-[ $sr = 1 ] && pass "skill osb-research discoverable" || bad "skill osb-research not found (needed for research packs: pi/run_research.sh)"
+echo "Kit and workspace"
+KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+for p in pi/run_domain.sh pi/vdi_session.sh skills/osb-research/SKILL.md skills/osb-camelk-route/SKILL.md broker/artemis_setup.sh; do
+  [ -f "$KIT/$p" ] && pass "kit: $p" || bad "kit: $p missing in KIT=$KIT (unzip the whole repository, set KIT in .osb-kit.env)"
+done
+kv=$(cd "$KIT/../.." 2>/dev/null && git log --oneline -1 2>/dev/null); printf '  [INFO] kit version: %s\n' "${kv:-ZIP download, $(ls -l "$KIT/pi/run_domain.sh" 2>/dev/null | awk '{print $6, $7}')}"
 # Maven build of Camel K modules: Maven 3.6.3+ on Java 17+ (VDI default is Maven 3.5.3 on JDK 1.7)
 if command -v mvn >/dev/null; then
   mv=$(mvn -v 2>/dev/null | tr -d '\033' | sed -n 's/.*Apache Maven \([0-9.]*\).*/\1/p' | head -1)
   jv=$(mvn -v 2>/dev/null | sed -n 's/^Java version: \([0-9]*\).*/\1/p' | head -1); [ "$jv" = 1 ] && jv=$(mvn -v | sed -n 's/^Java version: 1\.\([0-9]*\).*/\1/p')
-  printf '%s\n3.6.3\n' "$mv" | sort -V -C 2>/dev/null && bad "Maven $mv too old for the test plugins (need 3.6.3+: Maven 3.9.9 from Nexus, see DOMAIN_RUN.md)" || pass "Maven $mv"
+  printf '%s\n3.6.3\n' "$mv" | sort -V -C 2>/dev/null && bad "Maven $mv too old for the test plugins (need 3.6.3+: Maven 3.9.9 from Nexus)" || pass "Maven $mv"
   [ "${jv:-0}" -ge 17 ] 2>/dev/null && pass "Maven runs on Java $jv" || bad "Maven runs on Java ${jv:-?} (need 17+: export JAVA_HOME to the JDK 21 folder)"
 fi
-sc=0; for d in .pi/skills "$HOME/.pi/agent/skills" .agents/skills skills; do [ -f "$d/osb-camelk-route/SKILL.md" ] && sc=1; done
-[ $sc = 1 ] && pass "skill osb-camelk-route discoverable" || bad "skill osb-camelk-route not found (needed for pi/run_camelk.sh, pi/run_domain.sh)"
 # pi skips a SKILL.md whose front matter is not valid YAML, without an error: check the usual traps
-for f in .pi/skills/*/SKILL.md "$HOME/.pi/agent/skills"/*/SKILL.md .agents/skills/*/SKILL.md; do
+for f in "$KIT"/skills/*/SKILL.md; do
   [ -f "$f" ] || continue
   issue=$(awk 'NR==1 && $0!="---"{print "no front matter"; exit} NR>1 && $0=="---"{exit}
                NR>1 && /^[A-Za-z_-]+: /{v=$0; sub(/^[A-Za-z_-]+: /,"",v);
@@ -71,17 +69,17 @@ for f in .pi/skills/*/SKILL.md "$HOME/.pi/agent/skills"/*/SKILL.md .agents/skill
                  if (index(v,": ")) {print "unquoted \": \" in " $1; exit}
                  if (index(v," #")) {print "unquoted \" #\" in " $1; exit}
                  if (length(v)>1024 && $1=="description:") {print "description over 1024 characters"; exit}}' "$f")
-  [ -z "$issue" ] && pass "front matter valid: $f" || bad "pi will skip $f: $issue"
+  [ -z "$issue" ] && pass "front matter valid: ${f#$KIT/}" || bad "pi will skip $f: $issue"
 done
-# /osb-* commands: pi reads prompt templates from .pi/prompts (project, after trust) or ~/.pi/agent/prompts
-pd=""; for d in .pi/prompts "$HOME/.pi/agent/prompts"; do
-  m=0; for n in osb-analyse osb-implement osb-test osb-verify osb-review; do [ -f "$d/$n.md" ] || m=$((m+1)); done
-  [ $m -eq 0 ] && { pd=$d; break; }
-done
-if [ -n "$pd" ]; then pass "/osb-* commands found in $pd"
-  [ "$pd" = .pi/prompts ] && printf '  [INFO] .pi/ loads only for a trusted project: trust it at the first pi start, or run pi --approve\n'
-else bad "/osb-* commands missing: run  mkdir -p .pi/prompts && cp pi/prompts/*.md .pi/prompts/  (pi/prompts is the kit copy, pi does not read it)"; fi
-[ -d osb-src ] && [ -n "$(ls -A osb-src 2>/dev/null)" ] && pass "osb-src/ has content" || wrn "osb-src/ empty: put the OSB export there"
+if [ -n "${APP:-}" ] && [ -d "$APP" ]; then
+  n=$(ls -d "$APP"/*-prj 2>/dev/null | wc -l | tr -d ' '); [ "$n" -gt 0 ] && pass "APP=$APP ($n *-prj projects)" || wrn "APP=$APP has no *-prj folder"
+else bad "APP not set or not a folder: the OSB application folder (vdi_session.sh setup <folder>)"; fi
+
+echo "Local tests (JBang + local Artemis)"
+command -v jbang >/dev/null && pass "jbang installed" || printf '  [INFO] jbang not installed: the delivery fetches the JBang jar through Maven (tools/jbang.sh)\n'
+if [ -f "${ARTEMIS_HOME:-}/lib/artemis-boot.jar" ]; then pass "Artemis: $ARTEMIS_HOME"
+else printf '  [INFO] no Artemis yet: bash $KIT/broker/artemis_setup.sh install  (fetches apache-artemis via Maven/Nexus), then setup\n'; fi
+[ -n "${MVN_ARGS:-}" ] && pass "MVN_ARGS=$MVN_ARGS (mvn, JBang jar, camel run use it)" || wrn "MVN_ARGS empty: Maven uses ~/.m2/settings.xml"
 
 echo; echo "Result: $ok ok, $warn warnings, $fail failures"
 [ $fail -eq 0 ]

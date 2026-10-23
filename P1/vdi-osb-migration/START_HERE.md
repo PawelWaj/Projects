@@ -1,4 +1,4 @@
-# Start here: Splunk CSV + OSB project -> tests + Camel K route -> integration.yaml on Dev
+# Start here: Splunk CSV + OSB project -> tests + Camel K route, tested locally (JBang + Artemis) -> integration.yaml
 
 One page for a fresh (or reset) VDI. Everything runs in Git Bash on the VDI; nothing unmasked leaves it.
 The older guides (RUNBOOK.md, DOMAIN_RUN.md, REVIEW_RUNBOOK.md, pi/VDI_RUNBOOK.md) describe the pieces in detail.
@@ -9,7 +9,7 @@ Splunk CSV ──► 2 task1: mask + test cases per scenario
            ──► 3 route + tests      scripts path (no model, JMS flows)      -> delivery/<app>/<project>/
                                     skills path  (pi writes it, HTTP flows)  -> modules/<project>/<proxy>/
            ──► 4 local tests: JBang/Maven tests, gates, mutation check, local Artemis run
-           ──► 5 camel-k/integration.yaml (one file) ──► oc apply to the Dev namespace
+           ──► 5 camel-k/integration.yaml (one file) ──► handed over for Argo CD (Dev)
 ```
 
 Which path for which flow: a JMS/topic flow -> scripts path first (`GEN=scripts`, minutes, no model). An HTTP
@@ -17,8 +17,9 @@ request/reply flow -> skills path (`GEN=skills`). Not sure -> `GEN=both` and com
 
 ## 1. Fresh VDI setup (once after every reset)
 
-Needed on the machine: Git Bash, JDK 21, Maven 3.9 with the client `settings.xml` (Nexus), Python 3.10+, Node.js 22
-with pi, the Artemis distribution zip (local broker test), `oc` (deploy), the OSB application folder.
+Needed on the machine: Git Bash, JDK 21, Maven 3.9 with the client `settings.xml` (Nexus), Python 3.10+, the OSB
+application folder. For research and the skills path also Node.js 22 with pi. Nothing else: Artemis, the JBang jar and
+Camel JBang come through Maven (Nexus), no internet and no manual download.
 
 ```
 # 1. kit: download the ZIP of the repository (P1/), unzip, e.g. to /e/Pawel/Projects-main
@@ -35,10 +36,20 @@ npm install -g --ignore-scripts @earendil-works/pi-coding-agent && pi --version
 export OSB_PI_MODEL=<model id>  PACER=0  PI_OFFLINE=1  PI_TELEMETRY=0
 echo 'Reply OK' | pi --print --no-session --model "$OSB_PI_MODEL" < /dev/null      # must answer OK
 
-# 4. check + local broker
-bash $KIT/pi/preflight.sh                       # fix every FAIL
-bash $KIT/pi/vdi_session.sh start               # asks the Artemis password (not stored), starts the local broker
+# 4. check (0 failures; pi warnings are fine when you only run task1 + scripts path + local tests)
+bash $KIT/pi/preflight.sh
+
+# 5. local Artemis, once after a reset (~20 s): Maven fetches org.apache.activemq:apache-artemis:2.44.0:zip:bin,
+#    unpacks it next to the workspace, remembers ARTEMIS_HOME in .osb-kit.env, creates the instance, starts it
+export ARTEMIS_PASSWORD='<choose one>'          # per session, never in a file
+bash $KIT/broker/artemis_setup.sh install && . ./.osb-kit.env
+bash $KIT/broker/artemis_setup.sh create && bash $KIT/broker/artemis_setup.sh start
+#    expected: "broker up after 3s: console http://localhost:8161 ..., AMQP :5672, core tcp://localhost:61616"
 ```
+
+Every later session (VDI not reset): `cd /e/Pawel/work && . ./.osb-kit.env && export ARTEMIS_PASSWORD=...` then
+`bash $KIT/pi/vdi_session.sh start` (starts the broker if it is down). Windows opens the broker in its own window:
+closing that window stops it.
 
 `PACER=0` = pi talks to the model directly. Long model calls are stopped after `PI_TIMEOUT` seconds (default 1800);
 for a slow model use `export PI_TIMEOUT=3600`. `PI_THINKING=low` makes the model write less (faster); go back to
@@ -80,22 +91,26 @@ What to check (counts only when you send screenshots):
 | last line of GEN=both | `scripts: N tests, 0 failed   skills: tests green, gates failed: K1` |
 | mutation check | `mutations caught x/x` (run by `vdi_session.sh flows` for green modules, or `mutate_route.py`) |
 
-## 4. Deploy to Dev with integration.yaml
+## 4. integration.yaml for Argo CD (handed to the colleague who deploys)
 
-Each flow gets `camel-k/integration.yaml` (Kamelets, ConfigMaps with route/Java/properties/OSB files, the
-Integration; one file), `DEPLOY.md` and `CHECK.json` (ready, open values). Values per environment never go in the
-repository:
+Deploy only after the local tests are green. Each flow gets `camel-k/integration.yaml` (Kamelets, ConfigMaps with
+route/Java/properties/OSB files, the Integration; one file), `DEPLOY.md` (the Secrets it needs) and `CHECK.json`
+(ready, open values). Dev gets it through Argo CD: hand over `integration.yaml` + `DEPLOY.md`; the colleague puts the
+file into the GitOps repository and creates the Secrets. Values per environment never go in this repository; write
+them in when generating:
 
 ```
 export CAMELK_NAMESPACE=<dev namespace>
 export CAMELK_BROKER_URL=<broker of the namespace>     # scripts path: tcp://<artemis-service>:61616 (core protocol);
                                                        # skills path:  amqp://<artemis-service>:5672 or failover:(...)
 export CAMELK_ENV_FILE=/e/Pawel/work/dev.env           # KEY=VALUE for {{env:X}} of HTTP routes (hosts, ids), local file
-oc login <dev cluster>
-bash $KIT/pi/vdi_session.sh deploy '<a-prj>'           # regenerates, checks open values + Secrets, oc dry run
-#   create the Secrets DEPLOY.md lists (broker user/password, API keys), typed in the window
-APPLY=1 bash $KIT/pi/vdi_session.sh deploy '<a-prj>'   # apply; then: oc get integration -n $CAMELK_NAMESPACE -w
+bash $KIT/pi/vdi_session.sh deploy '<a-prj>'           # regenerates; "ready": true = no CHANGE-ME left
+#   without oc on the VDI it only writes the files; with oc login it also runs a server dry run and checks the Secrets
+#   hand over: <folder>/camel-k/integration.yaml + DEPLOY.md (scripts path: delivery/<app>/<project>/camel-k/)
 ```
+
+`APPLY=1` applies directly with `oc` (only where the platform allows it; with Argo CD the GitOps repository is the
+way in, and a direct apply would be reverted by Argo CD).
 
 `DEPLOY_FROM=skills` deploys the pi-written module even when a scripts delivery exists. Remove a flow:
 `oc delete -n $CAMELK_NAMESPACE -f <folder>/camel-k/integration.yaml`.
@@ -113,6 +128,8 @@ the Artemis core protocol on 61616, the Artemis LLD names AMQP 5672); Secrets by
 | `ROUTE DID NOT START`, `No endpoint ... TODO(flow-card)` | the proxy's entry (queue/topic) is unknown in research.json: fix `entry` and rerun `review` |
 | `pi did not finish within ...s` | slow model or a hanging call: `PI_TIMEOUT=3600`, check the model platform |
 | skills path stays red after 3 rounds | `python $KIT/skills/osb-camelk-route/scripts/verify_module.py modules/<p>/<x>` shows the first errors; tests are frozen, only route/beans/stubs change |
+| `ROUTE DID NOT START`, `TODO(flow-card) destination of <bs>` | research.json has no queue for that business service (UNKNOWN): fix `outputs[].destination`, rerun `flows` (`review` reuses the old module) |
+| `broker did not answer within 60s` | port 61616/5672/8161 taken (another broker), or wrong JAVA_HOME: `artemis_setup.sh status`, log in `$ARTEMIS_BROKER/log/` |
 | `NOT READY` on deploy | `CHANGE-ME` values listed in `camel-k/DEPLOY.md`: set `CAMELK_BROKER_URL` / `CAMELK_ENV_FILE` and rerun deploy |
 
 Data rules: masked data, OSB source and review packs stay on the VDI; only research packs that pass the check may

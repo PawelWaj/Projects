@@ -53,6 +53,8 @@ counts > test/counts-before.txt
 } > "$OUT"
 bash run-local.sh stop > /dev/null 2>&1; sleep 3; kill "$pid" 2> /dev/null
 for x in $(ls docs 2> /dev/null); do cp "$OUT" "docs/$x/BROKER_RUN.txt"; done
-echo "$P: $(grep -c ' message$' "$OUT") case(s) sent"
+sent=$(grep -cE ': [1-9][0-9]* message$' "$OUT")
+echo "$P: $sent of $(grep -c ' message$' "$OUT") case(s) sent"
+[ "$sent" -gt 0 ] || { echo "   NOTHING SENT: try one by hand to see why: (cd $P && bash run-local.sh send <proxy> <case folder>)"; exit 1; }
 sed -n '/## arrived/,$p' "$OUT" | grep -vE "^## " | sed 's/^/   /'
 if grep -q "^WARNING" "$OUT"; then exit 1; fi

@@ -21,7 +21,9 @@ bash $KIT/broker/artemis_setup.sh setup /e/<path>/apache-artemis-<version>
 `setup` remembers the folder (`ARTEMIS_HOME`) and the instance folder (`ARTEMIS_BROKER`, default next to the
 workspace) in `.osb-kit.env`, creates the instance (user `ARTEMIS_USER`, login required, ports 61616 / 5672 / 8161)
 and starts it. The folder is also found by itself when it sits next to the workspace (`apache-artemis-*`).
-Alternative without unzipping by hand: `ARTEMIS_ZIP=<download> bash $KIT/broker/artemis_setup.sh install`, then `create`.
+No download at hand (fresh VDI): `bash $KIT/broker/artemis_setup.sh install` fetches
+`org.apache.activemq:apache-artemis:${ARTEMIS_VERSION:-2.44.0}:zip:bin` through Maven (`MVN_ARGS`, Nexus), unpacks it next
+to the workspace and remembers `ARTEMIS_HOME`; then `create` and `start`. With a zip: `ARTEMIS_ZIP=<zip> ... install`.
 `JAVA_HOME` must be the JDK the routes use (JDK 21): the broker and the clients on the same Java.
 
 ## 2 Every session

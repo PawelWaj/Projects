@@ -10,7 +10,8 @@ export JAVA_HOME="${JAVA_HOME:-}"
 export MVN_ARGS="${MVN_ARGS:-}"
 
 # Apache Artemis: the unzipped distribution, and the local broker instance (bash run.sh setup-broker creates it).
-export ARTEMIS_HOME="${ARTEMIS_HOME:-$(ls -d /c/tools/apache-artemis-* "$HOME"/apache-artemis-* ../apache-artemis-* 2>/dev/null | head -1)}"
+_D=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)       # this folder, whichever folder the script is called from
+export ARTEMIS_HOME="${ARTEMIS_HOME:-$(ls -d "$_D"/../apache-artemis-* /c/tools/apache-artemis-* "$HOME"/apache-artemis-* 2>/dev/null | head -1)}"
 export ARTEMIS_BROKER="${ARTEMIS_BROKER:-$HOME/artemis-broker}"
 
 # Broker connection of the routes and of the test scripts (core protocol).
