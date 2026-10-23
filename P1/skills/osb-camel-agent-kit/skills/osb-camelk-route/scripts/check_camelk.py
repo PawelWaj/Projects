@@ -8,7 +8,7 @@ K1 card approved       FLOW_CARD.md has `Status: approved` and an approver name,
 K2 no gaps left        no TODO(flow-card) in src/main (route, properties, beans)
 K3 route ids           every branch-*, out-*, backend-* id from .scaffold.json is in the YAML route
 K4 no infrastructure   no host names, IP addresses, host:port URIs or credentials in src/main
-K5 tests untouched     FlowParityTest.java and flow-test.json equal their scaffold hash; no @Disabled anywhere
+K5 tests untouched     FlowParityTest.java, FlowErrorTest.java and flow-test.json equal their scaffold hash; no @Disabled anywhere
 K6 backend stubs       a stub file per backend whose response is used
 K7 error tests         FlowErrorTest has at least one test per error scope in research.json
 K8 tests green         surefire reports: tests > 0, failures 0, errors 0 (skipped = golden pending, reported)

@@ -78,8 +78,8 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    inline in the pipeline (no .xqy file) or a JSON nXSD without its schema in the module is implemented from
    research.json `transforms[].mappings`, row by row (helper bean or jsonpath); never a pass-through when research
    lists a transform. Gate K12 requires an expected reply per case, so a pass-through fails.
-4. **Error tests:** `src/test/java/<pkg>/FlowErrorTest.java` is generated as a compiling start (invalid payload,
-   every backend failing): extend it, keep its helpers. At least one test per error scope on the card: invalid
+4. **Error tests:** `src/test/java/<pkg>/FlowErrorTest.java` is generated (invalid payload, every backend failing)
+   and frozen like FlowParityTest (gate K5): the implementer never edits it. At least one test per error scope on the card: invalid
    payload, each output/backend failing (mock `whenAnyExchangeReceived` throwing), retries counted
    (`getReceivedCounter()`), error headers and original body on the error output, generated traceId. Set retry delays
    to 0 through properties in the test, never by changing production defaults.
@@ -95,7 +95,7 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    K12 request/reply: every case that ends in the reply has `expected-output.json|xml`.
 7. **Prove the tests bite:** `python <skill>/scripts/mutate_route.py modules/<project>/<proxy> --mvn "mvn -B -q -s ~/.m2/settings.xml"`
    breaks the route on purpose (conditions negated, outputs swapped or dropped, retries removed); every mutation must
-   make a test fail. A survivor means a missing test: add it to FlowErrorTest, never weaken the route to pass.
+   make a test fail. A survivor means a missing test: a person adds it to the template (assets/templates), never weaken the route to pass.
 8. **Matrix:** `python <skill>/scripts/test_matrix.py modules/<project>/<proxy>` → `TEST_MATRIX.md` (P scenarios with
    real messages, E error tests, K gates, M mutations).
 8b. **Against a broker (L2):** a LOCAL Artemis on the client machine (never the client's E2E broker): delivery
@@ -1545,7 +1545,7 @@ K1 card approved       FLOW_CARD.md has `Status: approved` and an approver name,
 K2 no gaps left        no TODO(flow-card) in src/main (route, properties, beans)
 K3 route ids           every branch-*, out-*, backend-* id from .scaffold.json is in the YAML route
 K4 no infrastructure   no host names, IP addresses, host:port URIs or credentials in src/main
-K5 tests untouched     FlowParityTest.java and flow-test.json equal their scaffold hash; no @Disabled anywhere
+K5 tests untouched     FlowParityTest.java, FlowErrorTest.java and flow-test.json equal their scaffold hash; no @Disabled anywhere
 K6 backend stubs       a stub file per backend whose response is used
 K7 error tests         FlowErrorTest has at least one test per error scope in research.json
 K8 tests green         surefire reports: tests > 0, failures 0, errors 0 (skipped = golden pending, reported)
@@ -3243,12 +3243,13 @@ def main() -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         written.append(path.relative_to(o).as_posix())
-    # FlowErrorTest: a compiling start with one test per error scope; the implementer extends it (not frozen, gate K7)
+    # FlowErrorTest: one test per error scope (invalid payload, every backend failing), frozen like FlowParityTest (K5):
+    # a model "extending" it invented Camel APIs and looped on its own compile errors for an hour
     etp = o / f"src/test/java/{jdir}/FlowErrorTest.java"
     err_tpl = (TPL / "FlowErrorTest.java.tpl").read_text(encoding="utf-8").replace("@@PACKAGE@@", pkg).replace(
         "@@PROJECT@@", a.project).replace("@@PROXY@@", proxy).replace("@@TEST_PROPERTIES@@", ", ".join(q(p) for p in test_props(m)))
-    if write_once(etp, err_tpl, False):
-        written.append(etp.relative_to(o).as_posix())
+    write_once(etp, err_tpl, True)
+    written.append(etp.relative_to(o).as_posix())
     stubs = ["# Backend stubs for the L1 tests", "","One file per backend, named <backend>.json / .xml / .txt: the response shape from",
              "research Q8 (WSDL/XSD), with FAKE values only. FlowErrorTest makes the same mocks throw for the error tests.", ""]
     stubs += [f"- `{k}.*`: {b.get('type', '')} {b.get('operation', '')}; response use: {b.get('response_use', '') or '-'}" for k, b in m["backends"].items()] or ["- no backends"]
@@ -3268,7 +3269,8 @@ def main() -> int:
            + [f"out-{k}" for k in m["outputs"] if k != "reply"] + [f"backend-{k}" for k in m["backends"]])
     meta = {"proxy": proxy, "project": a.project, "package": pkg, "research_sha256": sha(rp),
             "generated": {**{k: v for k, v in (old_meta.get("generated") or {}).items() if "-synthetic/" in k or "/stubs/" in k},
-                          tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp)},
+                          tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp),
+                          etp.relative_to(o).as_posix(): sha(etp)},
             "route_ids": sorted(ids), "errors": len(r.get("errors") or []),
             "task1": str(a.parity.parent.parent.resolve()) if a.parity and a.parity.is_dir() else (old_meta.get("task1") or ""),
             "backends_with_response": [k for k, b in m["backends"].items()
@@ -4952,8 +4954,8 @@ through unchanged is wrong when research lists a transform: gate K12 and the bod
 Request/reply (HTTP) flows: the body at the end of the route is the answer to the caller; the HTTP call is the
 `backend-*` step the scaffold placed (method, query, headers from the card; secrets and DVM values from properties
 or env, never literals); on an error set CamelHttpResponseCode as the scaffold did and answer, never throw.
-FlowErrorTest.java is generated as a compiling start: extend it, keep its helper methods, never rewrite it from
-scratch. YAML: `steps:` of a route belong under `from:`; in `doCatch` each item is `- exception: [..]` with its
+Never edit a test (FlowParityTest, FlowErrorTest, flow-test.json, the cases): they are frozen (gate K5) and are the
+oracle. A test that seems wrong or an error scope no test covers goes into the card's open points, not into a test. YAML: `steps:` of a route belong under `from:`; in `doCatch` each item is `- exception: [..]` with its
 `steps:` at the same level as `exception`.
 Run tests only through scripts/verify_module.py (short summary), never raw mvn. Finish when it prints PASS, or stop and report which gate fails and why it cannot pass.
 KIT_EOF_AGENTS_IMPLEMENTER_CAMELK_MD
@@ -5039,14 +5041,14 @@ PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --to
 VERIFY="$PY $SK/scripts/verify_module.py $MOD"
 RULES="Never run mvn directly: '$VERIFY' runs the tests and the gates and prints a short summary. Never edit FlowParityTest.java, flow-test.json, FLOW_CARD.md or any test case folder. Write nothing outside $MOD. Do not read target/ or the parity cases."
 export VERIFY_MVN="mvn -B -q ${MVN_ARGS:-}"
-pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route (request/reply: step 3b, the reply built from research.json transforms row by row), extend the generated FlowErrorTest (keep its helpers; one test per error scope at least), and write a backend stub only where src/test/resources/stubs has none. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
+pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route (request/reply: step 3b, the reply built from research.json transforms row by row), never edit a test (FlowParityTest, FlowErrorTest, flow-test.json are frozen), and write a backend stub only where src/test/resources/stubs has none. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
 for round in $(seq 1 "${PI_FIX_ROUNDS:-3}"); do
   SUMMARY=$($VERIFY 2>&1) && { echo "   verify: PASS after $round call(s)"; break; }
   echo "   verify round $round: $(echo "$SUMMARY" | head -1)"
   sleep "${PI_PAUSE:-30}"
   pi_call "$LOG/fix-$round.out" "$LOG/fix-$round.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD (card $MOD/FLOW_CARD.md). The last verify printed:
 $SUMMARY
-Fix exactly these failures in the route, the helper beans, FlowErrorTest or the stubs: read only the files you change and the card. Then run '$VERIFY' once and stop. $RULES" || true
+Fix exactly these failures in the route, the helper beans or the stubs (tests are frozen, never edit them): read only the files you change and the card. Then run '$VERIFY' once and stop. $RULES" || true
 done
 
 echo "== 4 verify"

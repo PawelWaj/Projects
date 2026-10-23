@@ -72,8 +72,8 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    inline in the pipeline (no .xqy file) or a JSON nXSD without its schema in the module is implemented from
    research.json `transforms[].mappings`, row by row (helper bean or jsonpath); never a pass-through when research
    lists a transform. Gate K12 requires an expected reply per case, so a pass-through fails.
-4. **Error tests:** `src/test/java/<pkg>/FlowErrorTest.java` is generated as a compiling start (invalid payload,
-   every backend failing): extend it, keep its helpers. At least one test per error scope on the card: invalid
+4. **Error tests:** `src/test/java/<pkg>/FlowErrorTest.java` is generated (invalid payload, every backend failing)
+   and frozen like FlowParityTest (gate K5): the implementer never edits it. At least one test per error scope on the card: invalid
    payload, each output/backend failing (mock `whenAnyExchangeReceived` throwing), retries counted
    (`getReceivedCounter()`), error headers and original body on the error output, generated traceId. Set retry delays
    to 0 through properties in the test, never by changing production defaults.
@@ -89,7 +89,7 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    K12 request/reply: every case that ends in the reply has `expected-output.json|xml`.
 7. **Prove the tests bite:** `python <skill>/scripts/mutate_route.py modules/<project>/<proxy> --mvn "mvn -B -q -s ~/.m2/settings.xml"`
    breaks the route on purpose (conditions negated, outputs swapped or dropped, retries removed); every mutation must
-   make a test fail. A survivor means a missing test: add it to FlowErrorTest, never weaken the route to pass.
+   make a test fail. A survivor means a missing test: a person adds it to the template (assets/templates), never weaken the route to pass.
 8. **Matrix:** `python <skill>/scripts/test_matrix.py modules/<project>/<proxy>` → `TEST_MATRIX.md` (P scenarios with
    real messages, E error tests, K gates, M mutations).
 8b. **Against a broker (L2):** a LOCAL Artemis on the client machine (never the client's E2E broker): delivery

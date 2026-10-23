@@ -444,8 +444,8 @@ through unchanged is wrong when research lists a transform: gate K12 and the bod
 Request/reply (HTTP) flows: the body at the end of the route is the answer to the caller; the HTTP call is the
 `backend-*` step the scaffold placed (method, query, headers from the card; secrets and DVM values from properties
 or env, never literals); on an error set CamelHttpResponseCode as the scaffold did and answer, never throw.
-FlowErrorTest.java is generated as a compiling start: extend it, keep its helper methods, never rewrite it from
-scratch. YAML: `steps:` of a route belong under `from:`; in `doCatch` each item is `- exception: [..]` with its
+Never edit a test (FlowParityTest, FlowErrorTest, flow-test.json, the cases): they are frozen (gate K5) and are the
+oracle. A test that seems wrong or an error scope no test covers goes into the card's open points, not into a test. YAML: `steps:` of a route belong under `from:`; in `doCatch` each item is `- exception: [..]` with its
 `steps:` at the same level as `exception`.
 Run tests only through scripts/verify_module.py (short summary), never raw mvn. Finish when it prints PASS, or stop and report which gate fails and why it cannot pass.
 KIT_EOF_AGENTS_IMPLEMENTER_CAMELK_MD
@@ -944,14 +944,14 @@ PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --to
 VERIFY="$PY $SK/scripts/verify_module.py $MOD"
 RULES="Never run mvn directly: '$VERIFY' runs the tests and the gates and prints a short summary. Never edit FlowParityTest.java, flow-test.json, FLOW_CARD.md or any test case folder. Write nothing outside $MOD. Do not read target/ or the parity cases."
 export VERIFY_MVN="mvn -B -q ${MVN_ARGS:-}"
-pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route (request/reply: step 3b, the reply built from research.json transforms row by row), extend the generated FlowErrorTest (keep its helpers; one test per error scope at least), and write a backend stub only where src/test/resources/stubs has none. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
+pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route (request/reply: step 3b, the reply built from research.json transforms row by row), never edit a test (FlowParityTest, FlowErrorTest, flow-test.json are frozen), and write a backend stub only where src/test/resources/stubs has none. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
 for round in $(seq 1 "${PI_FIX_ROUNDS:-3}"); do
   SUMMARY=$($VERIFY 2>&1) && { echo "   verify: PASS after $round call(s)"; break; }
   echo "   verify round $round: $(echo "$SUMMARY" | head -1)"
   sleep "${PI_PAUSE:-30}"
   pi_call "$LOG/fix-$round.out" "$LOG/fix-$round.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD (card $MOD/FLOW_CARD.md). The last verify printed:
 $SUMMARY
-Fix exactly these failures in the route, the helper beans, FlowErrorTest or the stubs: read only the files you change and the card. Then run '$VERIFY' once and stop. $RULES" || true
+Fix exactly these failures in the route, the helper beans or the stubs (tests are frozen, never edit them): read only the files you change and the card. Then run '$VERIFY' once and stop. $RULES" || true
 done
 
 echo "== 4 verify"

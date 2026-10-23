@@ -661,12 +661,13 @@ def main() -> int:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
         written.append(path.relative_to(o).as_posix())
-    # FlowErrorTest: a compiling start with one test per error scope; the implementer extends it (not frozen, gate K7)
+    # FlowErrorTest: one test per error scope (invalid payload, every backend failing), frozen like FlowParityTest (K5):
+    # a model "extending" it invented Camel APIs and looped on its own compile errors for an hour
     etp = o / f"src/test/java/{jdir}/FlowErrorTest.java"
     err_tpl = (TPL / "FlowErrorTest.java.tpl").read_text(encoding="utf-8").replace("@@PACKAGE@@", pkg).replace(
         "@@PROJECT@@", a.project).replace("@@PROXY@@", proxy).replace("@@TEST_PROPERTIES@@", ", ".join(q(p) for p in test_props(m)))
-    if write_once(etp, err_tpl, False):
-        written.append(etp.relative_to(o).as_posix())
+    write_once(etp, err_tpl, True)
+    written.append(etp.relative_to(o).as_posix())
     stubs = ["# Backend stubs for the L1 tests", "","One file per backend, named <backend>.json / .xml / .txt: the response shape from",
              "research Q8 (WSDL/XSD), with FAKE values only. FlowErrorTest makes the same mocks throw for the error tests.", ""]
     stubs += [f"- `{k}.*`: {b.get('type', '')} {b.get('operation', '')}; response use: {b.get('response_use', '') or '-'}" for k, b in m["backends"].items()] or ["- no backends"]
@@ -686,7 +687,8 @@ def main() -> int:
            + [f"out-{k}" for k in m["outputs"] if k != "reply"] + [f"backend-{k}" for k in m["backends"]])
     meta = {"proxy": proxy, "project": a.project, "package": pkg, "research_sha256": sha(rp),
             "generated": {**{k: v for k, v in (old_meta.get("generated") or {}).items() if "-synthetic/" in k or "/stubs/" in k},
-                          tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp)},
+                          tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp),
+                          etp.relative_to(o).as_posix(): sha(etp)},
             "route_ids": sorted(ids), "errors": len(r.get("errors") or []),
             "task1": str(a.parity.parent.parent.resolve()) if a.parity and a.parity.is_dir() else (old_meta.get("task1") or ""),
             "backends_with_response": [k for k, b in m["backends"].items()

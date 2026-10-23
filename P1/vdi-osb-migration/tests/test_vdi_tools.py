@@ -386,6 +386,12 @@ class CamelkRouteTests(unittest.TestCase):
             gates = json.loads((mod / "GATES.json").read_text())["gates"]
             self.assertFalse(gates["K5_tests_untouched"]["ok"])
             self.assertFalse(gates["K4_no_infrastructure"]["ok"])
+            t.write_text(t.read_text().replace("\n// weakened\n", ""))      # FlowErrorTest is frozen too
+            e = next(mod.rglob("FlowErrorTest.java"))
+            e.write_text(e.read_text() + "\n// extended by a model\n")
+            subprocess.run([sys.executable, str(self.SK / "check_camelk.py"), str(mod), "--no-surefire"], capture_output=True)
+            k5 = json.loads((mod / "GATES.json").read_text())["gates"]["K5_tests_untouched"]
+            self.assertEqual([c.rsplit("/", 1)[-1] for c in k5["changed"]], ["FlowErrorTest.java"])
 
     def test_annotated_business_service_is_one_output_and_props_are_clean(self):
         """research names a JMS business service 'svc-a (BS)' next to the output keyed 'svc-a': one destination, not two;

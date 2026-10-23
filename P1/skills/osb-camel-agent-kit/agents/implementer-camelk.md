@@ -23,7 +23,7 @@ through unchanged is wrong when research lists a transform: gate K12 and the bod
 Request/reply (HTTP) flows: the body at the end of the route is the answer to the caller; the HTTP call is the
 `backend-*` step the scaffold placed (method, query, headers from the card; secrets and DVM values from properties
 or env, never literals); on an error set CamelHttpResponseCode as the scaffold did and answer, never throw.
-FlowErrorTest.java is generated as a compiling start: extend it, keep its helper methods, never rewrite it from
-scratch. YAML: `steps:` of a route belong under `from:`; in `doCatch` each item is `- exception: [..]` with its
+Never edit a test (FlowParityTest, FlowErrorTest, flow-test.json, the cases): they are frozen (gate K5) and are the
+oracle. A test that seems wrong or an error scope no test covers goes into the card's open points, not into a test. YAML: `steps:` of a route belong under `from:`; in `doCatch` each item is `- exception: [..]` with its
 `steps:` at the same level as `exception`.
 Run tests only through scripts/verify_module.py (short summary), never raw mvn. Finish when it prints PASS, or stop and report which gate fails and why it cannot pass.
