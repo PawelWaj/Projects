@@ -48,10 +48,20 @@ def q(s) -> str:
 HEADER_DIM = re.compile(r"^\$?(?:headers?|hdr|inbound)[._:]+(?:headers?[._:]+)?([\w-]+)$", re.I)
 
 
+def plain_dim(path: str) -> str:
+    """A dim a model wrote with words ("resource (transport user-header, not a body field)") -> its key
+    ("header.resource"); a header named only in the explanation still counts as a header."""
+    m = re.match(r"^\s*([$\w./:-]+)\s*\((.*)\)\s*$", path or "")
+    if not m:
+        return (path or "").strip()
+    return ("header." if re.search(r"(?i)header|jms property|transport", m.group(2)) and not HEADER_DIM.match(m.group(1))
+            else "") + m.group(1)
+
+
 def dim_name(path: str) -> str:
     """The name Splunk labels a scenario field with (SCENARIO.txt): a message header (header.x, $header.x, hdr_x)
     -> hdr_x, a payload path (data.a.b, body:data.b, //b) -> its last segment."""
-    p = path.strip()
+    p = plain_dim(path)
     if p.startswith("hdr_"):
         return p
     m = HEADER_DIM.match(p)
@@ -190,7 +200,7 @@ def model(r: dict, facts: dict, corr: str) -> dict:
             paths.append({"branch": slug(b.get("name")), "id": f"branch-{slug(b.get('name'))}-{slug(p.get('label'))}",
                           "label": p.get("label", ""), "plain": p.get("condition_plain", ""), "expr": p.get("condition_expr", ""),
                           "outputs": [resolve(x) for x in p.get("outputs") or [] if resolve(x) in outputs]})
-    alias = {re.split(r"[./:]", d.strip().lstrip("/"))[-1]: dim_name(d) for d in r.get("scenario_dims") or [] if d}
+    alias = {re.split(r"[./:]", plain_dim(d).lstrip("/"))[-1]: dim_name(d) for d in r.get("scenario_dims") or [] if d}
     mapping = []
     for x in r.get("scenario_mapping") or []:
         outs = x.get("outputs") if isinstance(x.get("outputs"), list) else [x.get("output")]

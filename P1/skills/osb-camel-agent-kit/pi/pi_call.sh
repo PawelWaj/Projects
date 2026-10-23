@@ -30,7 +30,7 @@ _pi_call_inner() {
       local rc=$?
       [ $rc = 0 ] && return 0
       if [ $rc = 124 ] || [ $rc = 137 ]; then
-        echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
+        echo "   pi did not finish within ${PI_TIMEOUT:-1800}s , stopped it (a hanging call, or a slow model: check the model server log; raise PI_TIMEOUT for a slow local model)"; return 124
       fi
     else   # no `timeout` (macOS): a watchdog kills the run after PI_TIMEOUT
       "$@" > "$out" 2> "$err" & local pid=$!
@@ -42,7 +42,7 @@ _pi_call_inner() {
       kill "$dog" 2>/dev/null; wait "$dog" 2>/dev/null
       [ $rc = 0 ] && return 0
       if [ -f "$err.timeout" ]; then
-        rm -f "$err.timeout"; echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
+        rm -f "$err.timeout"; echo "   pi did not finish within ${PI_TIMEOUT:-1800}s , stopped it (a hanging call, or a slow model: check the model server log; raise PI_TIMEOUT for a slow local model)"; return 124
       fi
     fi
     if grep -qiE '(^|[^0-9])429([^0-9]|$)|too many requests|rate.?limit|overloaded|503 service unavailable' "$err" 2>/dev/null \

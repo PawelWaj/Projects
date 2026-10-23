@@ -978,6 +978,49 @@ class SynthFromSchemaTests(unittest.TestCase):
             run(self.SK / "check_camelk.py", d / "mod", "--no-surefire")
             self.assertTrue(json.loads((d / "mod/GATES.json").read_text())["gates"]["K9_scenarios_covered"]["ok"])
 
+    def _pack(self, d, dims, rows):
+        (d / "prj").mkdir()
+        (d / "prj/x-nxsd.xsd").write_text(self.XSD)
+        (d / "res").mkdir()
+        (d / "res/research.json").write_text(json.dumps({
+            "proxy": "x", "entry": {"payload_format": "json", "nxsd": "x-nxsd"}, "scenario_dims": dims, "branches": [],
+            "outputs": [{"name": "q", "destination": "jndi.q"}, {"name": "t", "destination": "jndi.t"},
+                        {"name": "err", "destination": "jndi.e", "on": "error"}],
+            "scenario_mapping": rows, "backends": [], "errors": [], "logs": [], "open_questions": []}))
+        run = lambda *a: subprocess.run([sys.executable, *map(str, a)], capture_output=True, text=True)  # noqa: E731
+        run(self.SK / "scaffold_camelk.py", d / "res", "-o", d / "mod", "--project", "p")
+        return run(self.SK / "synth_from_schema.py", d / "mod", d / "prj", "--research", d / "res/research.json")
+
+    def test_header_dim_written_with_words_sets_the_header(self):
+        """a model wrote 'resource (transport user-header, ...)': the case must carry the header, not a body value"""
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            r = self._pack(d, ["resource (transport user-header, not a body field)"],
+                           [{"scenario": "resource=R", "outputs": ["q"]}, {"scenario": "resource!=R", "outputs": ["t"]}])
+            self.assertIn('"written": 2', r.stdout, r.stderr)
+            hdrs = sorted(json.loads(p.read_text())["resource"] for p in (d / "mod").rglob("headers.json"))
+            self.assertEqual(hdrs, ["R", "other"])
+            cfg = json.loads((d / "mod/src/test/resources/flow-test.json").read_text())
+            self.assertEqual(sorted(m["scenario"] for m in cfg["scenario_mapping"]), ["hdr_resource!=R", "hdr_resource=R"])
+
+    def test_field_it_cannot_set_is_left_for_pi_not_written(self):
+        with tempfile.TemporaryDirectory() as d:
+            d = Path(d)
+            r = self._pack(d, ["data.unknownField"], [{"scenario": "unknownField=true", "outputs": ["q"]},
+                                                      {"scenario": "unknownField!=true", "outputs": ["t"]}])
+            out = json.loads(r.stdout.strip().splitlines()[-1])
+            self.assertEqual(out["written"], 0, r.stdout)
+            self.assertEqual(len(out["left_for_pi"]), 2)
+            self.assertEqual(list((d / "mod").rglob("input.payload")), [])
+
+    def test_research_check_rejects_a_dim_with_words(self):
+        rc = ROOT / "skills/osb-camel-agent-kit/skills/osb-research/scripts/research_check.py"
+        with tempfile.TemporaryDirectory() as d:
+            for dims, ok in ((["header.resource", "//hasA", "data.b"], True), (["resource (user-header)"], False)):
+                Path(d, "research.json").write_text(json.dumps({"scenario_dims": dims}, indent=1))
+                r = subprocess.run([sys.executable, str(rc), d], capture_output=True, text=True)
+                self.assertEqual(r.returncode == 0, ok, r.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

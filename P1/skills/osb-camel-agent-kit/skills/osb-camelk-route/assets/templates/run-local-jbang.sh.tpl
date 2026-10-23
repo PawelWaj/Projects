@@ -31,6 +31,7 @@ for name in dict.fromkeys(re.findall(r"(\w+)\s*=\s*'", sel)):
 print(f"{kind}://{dest}", json.dumps([{"type": "string", "key": k, "value": str(x)} for k, x in h.items()], separators=(",", ":")))
 PYEOF
 )
+MSET=$(printf '%s\n' ${MVN_ARGS:-} | awk 'p {print; exit} $0 == "-s" || $0 == "--settings" {p=1}')   # camel run: same Maven settings as mvn
 wp() { if command -v cygpath > /dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 art() { : "${ARTEMIS_HOME:?export ARTEMIS_HOME=<unzipped apache-artemis folder>}"; : "${BROKER_PASSWORD:?export BROKER_PASSWORD=<broker password>}"
   "${JAVA_HOME:+$JAVA_HOME/bin/}java" -cp "$(wp "$ARTEMIS_HOME/lib/artemis-boot.jar")" -Dartemis.home="$(wp "$ARTEMIS_HOME")" \
@@ -42,7 +43,7 @@ case "${1:-}" in
     : "${BROKER_PASSWORD:?export BROKER_PASSWORD=<broker password>}"
     export BROKER_USER="${BROKER_USER:-artemis}" BROKER_URL="${BROKER_URL:-tcp://localhost:61616}" OSB_FILES_DIR="$(wp "$(pwd)")"
     camelcli run @@ROUTE@@ application.properties local.properties ../Common-setup/OsbNxsd.java ../Common-setup/OsbXQuery.java \
-      --local-kamelet-dir=../Common-setup --camel-version="$CAMEL_VERSION" ;;
+      --local-kamelet-dir=../Common-setup --camel-version="$CAMEL_VERSION" ${MSET:+--maven-settings="$(wp "$MSET")"} ;;
   send)
     x=${2:?proxy}; c=${3:?case folder with input.payload and headers.json}
     line=$(grep -E "^$x\.flow\.input=" local.properties | tr -d '\r'); [ -n "$line" ] || { echo "unknown proxy $x"; exit 2; }

@@ -70,6 +70,7 @@ Scans every .md/.json/.txt/.csv in the folder. Fails (exit 1) on:
   secret  password/secret/token/api key assignments, private keys
   pii     numbers with 9+ digits, e-mail addresses, Arabic script
   code    verbatim OSB source: XQuery/XSLT/XSD/WSDL/OSB XML markers, or a fenced code block longer than 12 lines
+  dims    research.json scenario_dims entry that is not a bare key (header.<name>, //<name>, a.b): later steps read it
 Prints findings as file:line + rule + a 3-character preview (never the full value) and writes SHARE_CHECK.json
 (pass/fail, counts per rule, sha256 per file) into the folder. Share the folder only when it passes. Stdlib only."""
 import argparse
@@ -92,6 +93,7 @@ RULES = [
     ("code", re.compile(r"(?i)xquery\s+version|declare\s+(?:function|variable|namespace)\s|<xsl:|<xsd?:(?:schema|element|complexType)"
                         r"|<(?:con|ser|tran|jms|http|wsdl|soapenv|env):[A-Za-z]")),
 ]
+DIM = re.compile(r"^(?:header\.[\w-]+|hdr_[\w-]+|body:[\w./-]+|(?://)?[\w-]+(?:[./][\w-]+)*)$")
 URL = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://([^/\s\"'<>)|]+)")
 
 
@@ -114,6 +116,21 @@ def namespace_hosts(folder: Path) -> set[str]:
             elif isinstance(o, list):
                 stack.extend(o)
     return hosts
+
+
+def dims_findings(f: Path) -> list[tuple[str, str, int, str]]:
+    """scenario_dims must be keys task1, the scaffold and the case generator can read: words in brackets made a
+    header field look like a payload field and the synthetic case tested the wrong branch."""
+    if not f.is_file():
+        return []
+    try:
+        dims = json.loads(f.read_text(encoding="utf-8")).get("scenario_dims") or []
+    except (ValueError, AttributeError):
+        return []
+    lines = f.read_text(encoding="utf-8").splitlines()
+    return [(f.name, "dims", next((n for n, ln in enumerate(lines, 1) if json.dumps(d) in ln), 0),
+             "not a bare key, write header.<name> or //<name> (explanations go in RESEARCH.md)")
+            for d in dims if not isinstance(d, str) or not DIM.match(d.strip())]
 
 
 def scan(f: Path, allowed: set[str]) -> list[tuple[str, int, str]]:
@@ -144,6 +161,7 @@ def main() -> int:
     findings = []
     for f in files:
         findings += [(f.relative_to(a.folder).as_posix(), *x) for x in scan(f, allowed)]
+    findings += dims_findings(a.folder / "research.json")
     counts = {}
     for _, rule, _, _ in findings:
         counts[rule] = counts.get(rule, 0) + 1
@@ -298,7 +316,7 @@ source does not say. No code, no hosts, no data (see SKILL.md rules).
 | Q2 | **Message format.** What arrives (JSON or XML; root element or top-level keys), is there an nXSD/JSON-to-XML translation (which one, is the file in the export), what `$body` contains after it | short text + field list |
 | Q3 | **Flow overview.** The pipeline in order: stage → action type → what it does in one sentence. Include route nodes, branches, publish, service callouts, Java callouts, reply/resume | numbered list |
 | Q4 | **Branches.** For each branch/if-then: condition in plain words, the condition expression (one line), which values lead to which path, what happens on each path, default path | table per branch |
-| Q5 | **Scenario mapping.** Branches decide on payload fields: list those fields in `scenario_dims` exactly as the condition finds them: a condition with `//*:name` (any depth, the usual OSB form) becomes `//name`; only a condition that spells a full path (`$body/*:a/*:b`) becomes the path `a.b` (check it against the nXSD/XSD element nesting). Never invent a path the source does not show. Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). A flow without branches has one row with scenario `*` (every message). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
+| Q5 | **Scenario mapping.** Branches decide on payload fields or headers: list those fields in `scenario_dims` exactly as the condition finds them: a condition with `//*:name` (any depth, the usual OSB form) becomes `//name`; only a condition that spells a full path (`$body/*:a/*:b`) becomes the path `a.b` (check it against the nXSD/XSD element nesting); a condition on a transport or user header (`$inbound/ctx:transport/ctx:request/tp:headers/tp:user-header[@name='x']`, JMS property, HTTP header) becomes `header.x`. Each entry is ONLY that key: no words, no brackets, no explanation (that goes in RESEARCH.md); research_check.py fails on anything else. Never invent a path the source does not show. Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). A flow without branches has one row with scenario `*` (every message). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
 | Q6 | **Outputs.** Request-response proxies (HTTP, local, SOAP): the answer to the caller is an output named `reply` (use it in branches and scenario_mapping). Name each other output after the business service that writes it (the same name in branches, scenario_mapping and backends). Every destination the flow writes to (business service → queue/topic/HTTP path/operation): on which path, which body (built by which transform), which JMS properties / transport headers / HTTP headers are set and from where | table |
 | Q7 | **Transforms.** For each XQuery/XSLT/assign/replace that builds a message: purpose, inputs (external params), output root, field mapping `source path → target path → rule` (copy, constant, format, lookup, condition), fn-bea functions used, constants | table per transform |
 | Q8 | **Backends.** Each business service / service callout: type, operation, when it is called, request built from, how the response is used, retry count/interval, timeout, load balancing, result caching, what happens on fault | table |
@@ -812,7 +830,7 @@ _pi_call_inner() {
       local rc=$?
       [ $rc = 0 ] && return 0
       if [ $rc = 124 ] || [ $rc = 137 ]; then
-        echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
+        echo "   pi did not finish within ${PI_TIMEOUT:-1800}s , stopped it (a hanging call, or a slow model: check the model server log; raise PI_TIMEOUT for a slow local model)"; return 124
       fi
     else   # no `timeout` (macOS): a watchdog kills the run after PI_TIMEOUT
       "$@" > "$out" 2> "$err" & local pid=$!
@@ -824,7 +842,7 @@ _pi_call_inner() {
       kill "$dog" 2>/dev/null; wait "$dog" 2>/dev/null
       [ $rc = 0 ] && return 0
       if [ -f "$err.timeout" ]; then
-        rm -f "$err.timeout"; echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
+        rm -f "$err.timeout"; echo "   pi did not finish within ${PI_TIMEOUT:-1800}s , stopped it (a hanging call, or a slow model: check the model server log; raise PI_TIMEOUT for a slow local model)"; return 124
       fi
     fi
     if grep -qiE '(^|[^0-9])429([^0-9]|$)|too many requests|rate.?limit|overloaded|503 service unavailable' "$err" 2>/dev/null \

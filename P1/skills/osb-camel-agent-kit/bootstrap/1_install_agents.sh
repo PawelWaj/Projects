@@ -768,7 +768,7 @@ _pi_call_inner() {
       local rc=$?
       [ $rc = 0 ] && return 0
       if [ $rc = 124 ] || [ $rc = 137 ]; then
-        echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
+        echo "   pi did not finish within ${PI_TIMEOUT:-1800}s , stopped it (a hanging call, or a slow model: check the model server log; raise PI_TIMEOUT for a slow local model)"; return 124
       fi
     else   # no `timeout` (macOS): a watchdog kills the run after PI_TIMEOUT
       "$@" > "$out" 2> "$err" & local pid=$!
@@ -780,7 +780,7 @@ _pi_call_inner() {
       kill "$dog" 2>/dev/null; wait "$dog" 2>/dev/null
       [ $rc = 0 ] && return 0
       if [ -f "$err.timeout" ]; then
-        rm -f "$err.timeout"; echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
+        rm -f "$err.timeout"; echo "   pi did not finish within ${PI_TIMEOUT:-1800}s , stopped it (a hanging call, or a slow model: check the model server log; raise PI_TIMEOUT for a slow local model)"; return 124
       fi
     fi
     if grep -qiE '(^|[^0-9])429([^0-9]|$)|too many requests|rate.?limit|overloaded|503 service unavailable' "$err" 2>/dev/null \
@@ -1107,12 +1107,12 @@ do_task1() {   # one batch over the whole export; scenario fields per flow = wha
   { echo "flow,domain,dims"
     flows | while read -r p x; do
       r="$WS/research/$p/$x/research.json"
-      d=$([ -s "$r" ] && "$PY" -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')).get('scenario_dims') or []; import re; h=re.compile(r'^[$]?(?:headers?|hdr|inbound)[._:]+(?:headers?[._:]+)?([\w-]+)$', re.I); k=lambda x: x if x.startswith('hdr_') else ('hdr_' + h.match(x).group(1) if h.match(x) else 'body:' + (x if x.startswith('//') else x.lstrip('/'))); print(';'.join(dict.fromkeys(['hdr_resource'] + [k(x.strip()) for x in d])) if d else '')" "$r")
+      d=$([ -s "$r" ] && "$PY" -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')).get('scenario_dims') or []; import re; h=re.compile(r'^[$]?(?:headers?|hdr|inbound)[._:]+(?:headers?[._:]+)?([\w-]+)$', re.I); k=lambda x: x if x.startswith('hdr_') else ('hdr_' + h.match(x).group(1) if h.match(x) else 'body:' + (x if x.startswith('//') else x.lstrip('/'))); n=lambda x: (lambda m: (('header.' if re.search('(?i)header|jms property|transport', m.group(2)) else '') + m.group(1)) if m else x.strip())(re.match(r'^\\s*([$\\w./:-]+)\\s*[(](.*)[)]\\s*$', x)); print(';'.join(dict.fromkeys(['hdr_resource'] + [k(n(x)) for x in d])) if d else '')" "$r")
       echo "$p/$x,$(basename "$APP"),$d"
     done; } > "$WS/task1/flows.csv"
   case "$EXPORT" in *.masked.csv) am=--already-masked;; *) am=;; esac
   mk=(); for k in ${MASK_JSON_KEYS:-}; do mk+=(--mask-json-key "$k"); done      # extra fields to mask, space separated
-  "$PY" "$BATCH" "$EXPORT" -o "$WS/task1" --flows "$WS/task1/flows.csv" $am "${mk[@]}" || {
+  "$PY" "$BATCH" "$EXPORT" -o "$WS/task1" --flows "$WS/task1/flows.csv" $am ${mk[@]+"${mk[@]}"} || {
     echo "some flows need a look: $WS/task1/SUMMARY.md"
     [ -f "$WS/task1/events.masked.csv.report.json" ] && "$PY" -c "import json,sys; r=json.load(open(sys.argv[1], encoding='utf-8'))['residue_check']; [print('   residue:', w) for w in r['where']]" "$WS/task1/events.masked.csv.report.json"
     echo "   fix: MASK_JSON_KEYS='<field> <field>' on the same line, then rerun task1 (arabic-script = Arabic text in a field not masked by name)"; }

@@ -2630,10 +2630,20 @@ def q(s) -> str:
 HEADER_DIM = re.compile(r"^\$?(?:headers?|hdr|inbound)[._:]+(?:headers?[._:]+)?([\w-]+)$", re.I)
 
 
+def plain_dim(path: str) -> str:
+    """A dim a model wrote with words ("resource (transport user-header, not a body field)") -> its key
+    ("header.resource"); a header named only in the explanation still counts as a header."""
+    m = re.match(r"^\s*([$\w./:-]+)\s*\((.*)\)\s*$", path or "")
+    if not m:
+        return (path or "").strip()
+    return ("header." if re.search(r"(?i)header|jms property|transport", m.group(2)) and not HEADER_DIM.match(m.group(1))
+            else "") + m.group(1)
+
+
 def dim_name(path: str) -> str:
     """The name Splunk labels a scenario field with (SCENARIO.txt): a message header (header.x, $header.x, hdr_x)
     -> hdr_x, a payload path (data.a.b, body:data.b, //b) -> its last segment."""
-    p = path.strip()
+    p = plain_dim(path)
     if p.startswith("hdr_"):
         return p
     m = HEADER_DIM.match(p)
@@ -2772,7 +2782,7 @@ def model(r: dict, facts: dict, corr: str) -> dict:
             paths.append({"branch": slug(b.get("name")), "id": f"branch-{slug(b.get('name'))}-{slug(p.get('label'))}",
                           "label": p.get("label", ""), "plain": p.get("condition_plain", ""), "expr": p.get("condition_expr", ""),
                           "outputs": [resolve(x) for x in p.get("outputs") or [] if resolve(x) in outputs]})
-    alias = {re.split(r"[./:]", d.strip().lstrip("/"))[-1]: dim_name(d) for d in r.get("scenario_dims") or [] if d}
+    alias = {re.split(r"[./:]", plain_dim(d).lstrip("/"))[-1]: dim_name(d) for d in r.get("scenario_dims") or [] if d}
     mapping = []
     for x in r.get("scenario_mapping") or []:
         outs = x.get("outputs") if isinstance(x.get("outputs"), list) else [x.get("output")]
@@ -3418,7 +3428,13 @@ def main() -> int:
     cfg = json.loads((a.module / "src/test/resources/flow-test.json").read_text(encoding="utf-8"))
     meta = json.loads((a.module / ".scaffold.json").read_text(encoding="utf-8"))
     res = json.loads(a.research.read_text(encoding="utf-8")) if a.research and a.research.is_file() else {}
-    dims = {d.lstrip("/").split(".")[-1]: d.lstrip("/").split(".") for d in res.get("scenario_dims") or []}
+    dims = {}
+    for d in res.get("scenario_dims") or []:
+        m = re.match(r"^\s*([$\w./:-]+)\s*\((.*)\)\s*$", d or "")   # "name (explanation)" -> name
+        d = m.group(1) if m else (d or "").strip()
+        if not re.match(r"(?i)^\$?(?:headers?|hdr|inbound)[._:]", d):
+            p = re.sub(r"^body:", "", d).lstrip("/").split(".")
+            dims[p[-1]] = p
     flow_dir = a.module / "src/test/resources/parity" / f"{meta['project']}-{meta['proxy']}-synthetic"
     rows = [m["scenario"] for m in cfg.get("scenario_mapping", [])]
     for sc in sorted(flow_dir.glob("*/SCENARIO.txt")) if flow_dir.is_dir() else []:
@@ -3458,9 +3474,12 @@ def main() -> int:
             msg = sch.instance(root)
             ok, shown = True, {}
             for k, op, v in parts(key):
-                path = dims.get(k)
-                if not path:
+                if k.startswith("hdr_"):
                     continue                                   # header dims (hdr_*) go to headers.json
+                path = dims.get(k)
+                if not path:                                   # neither header nor a known body path: a case without
+                    ok = False                                 # the scenario value would test the wrong branch
+                    break
                 val = {"true": True, "false": False}.get(v, v) if op == "=" else (False if v == "true" else "other")
                 shown[k] = str(val).lower() if isinstance(val, bool) else str(val)
                 ok &= set_path(msg, path, val) or set_path(msg, path[1:], val) or set_any(msg, path[-1], val)
@@ -3471,9 +3490,9 @@ def main() -> int:
         slug = re.sub(r"[^a-z0-9]+", "-", key.lower().replace("!=", "-not-")).strip("-")[:70] or f"row{i}"
         case = flow_dir / slug / "case1"
         case.mkdir(parents=True, exist_ok=True)
-        hdr = {k[4:]: v for k, op, v in parts(key) if k.startswith("hdr_") and op == "="}
+        hdr = {k[4:]: v if op == "=" else ("false" if v == "true" else "other") for k, op, v in parts(key) if k.startswith("hdr_")}
         hdr["traceId"] = f"synthetic-{i:04d}"
-        keys = "|".join(f"{k}={shown.get(k, v if op == '=' else 'other')}" for k, op, v in parts(key))
+        keys = "|".join(f"{k}={shown.get(k, hdr.get(k[4:], v if op == '=' else 'other'))}" for k, op, v in parts(key))
         (case.parent / "SCENARIO.txt").write_text(f"{meta['project']}/{meta['proxy']}|success" + (f"|{keys}" if keys else "") + "\n",
                                                   encoding="utf-8")
         (case / "input.payload").write_text(body + "\n", encoding="utf-8")
@@ -4878,6 +4897,7 @@ for name in dict.fromkeys(re.findall(r"(\w+)\s*=\s*'", sel)):
 print(f"{kind}://{dest}", json.dumps([{"type": "string", "key": k, "value": str(x)} for k, x in h.items()], separators=(",", ":")))
 PYEOF
 )
+MSET=$(printf '%s\n' ${MVN_ARGS:-} | awk 'p {print; exit} $0 == "-s" || $0 == "--settings" {p=1}')   # camel run: same Maven settings as mvn
 wp() { if command -v cygpath > /dev/null; then cygpath -w "$1"; else printf '%s' "$1"; fi; }
 art() { : "${ARTEMIS_HOME:?export ARTEMIS_HOME=<unzipped apache-artemis folder>}"; : "${BROKER_PASSWORD:?export BROKER_PASSWORD=<broker password>}"
   "${JAVA_HOME:+$JAVA_HOME/bin/}java" -cp "$(wp "$ARTEMIS_HOME/lib/artemis-boot.jar")" -Dartemis.home="$(wp "$ARTEMIS_HOME")" \
@@ -4889,7 +4909,7 @@ case "${1:-}" in
     : "${BROKER_PASSWORD:?export BROKER_PASSWORD=<broker password>}"
     export BROKER_USER="${BROKER_USER:-artemis}" BROKER_URL="${BROKER_URL:-tcp://localhost:61616}" OSB_FILES_DIR="$(wp "$(pwd)")"
     camelcli run @@ROUTE@@ application.properties local.properties ../Common-setup/OsbNxsd.java ../Common-setup/OsbXQuery.java \
-      --local-kamelet-dir=../Common-setup --camel-version="$CAMEL_VERSION" ;;
+      --local-kamelet-dir=../Common-setup --camel-version="$CAMEL_VERSION" ${MSET:+--maven-settings="$(wp "$MSET")"} ;;
   send)
     x=${2:?proxy}; c=${3:?case folder with input.payload and headers.json}
     line=$(grep -E "^$x\.flow\.input=" local.properties | tr -d '\r'); [ -n "$line" ] || { echo "unknown proxy $x"; exit 2; }
@@ -5182,12 +5202,12 @@ do_task1() {   # one batch over the whole export; scenario fields per flow = wha
   { echo "flow,domain,dims"
     flows | while read -r p x; do
       r="$WS/research/$p/$x/research.json"
-      d=$([ -s "$r" ] && "$PY" -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')).get('scenario_dims') or []; import re; h=re.compile(r'^[$]?(?:headers?|hdr|inbound)[._:]+(?:headers?[._:]+)?([\w-]+)$', re.I); k=lambda x: x if x.startswith('hdr_') else ('hdr_' + h.match(x).group(1) if h.match(x) else 'body:' + (x if x.startswith('//') else x.lstrip('/'))); print(';'.join(dict.fromkeys(['hdr_resource'] + [k(x.strip()) for x in d])) if d else '')" "$r")
+      d=$([ -s "$r" ] && "$PY" -c "import json,sys; d=json.load(open(sys.argv[1], encoding='utf-8')).get('scenario_dims') or []; import re; h=re.compile(r'^[$]?(?:headers?|hdr|inbound)[._:]+(?:headers?[._:]+)?([\w-]+)$', re.I); k=lambda x: x if x.startswith('hdr_') else ('hdr_' + h.match(x).group(1) if h.match(x) else 'body:' + (x if x.startswith('//') else x.lstrip('/'))); n=lambda x: (lambda m: (('header.' if re.search('(?i)header|jms property|transport', m.group(2)) else '') + m.group(1)) if m else x.strip())(re.match(r'^\\s*([$\\w./:-]+)\\s*[(](.*)[)]\\s*$', x)); print(';'.join(dict.fromkeys(['hdr_resource'] + [k(n(x)) for x in d])) if d else '')" "$r")
       echo "$p/$x,$(basename "$APP"),$d"
     done; } > "$WS/task1/flows.csv"
   case "$EXPORT" in *.masked.csv) am=--already-masked;; *) am=;; esac
   mk=(); for k in ${MASK_JSON_KEYS:-}; do mk+=(--mask-json-key "$k"); done      # extra fields to mask, space separated
-  "$PY" "$BATCH" "$EXPORT" -o "$WS/task1" --flows "$WS/task1/flows.csv" $am "${mk[@]}" || {
+  "$PY" "$BATCH" "$EXPORT" -o "$WS/task1" --flows "$WS/task1/flows.csv" $am ${mk[@]+"${mk[@]}"} || {
     echo "some flows need a look: $WS/task1/SUMMARY.md"
     [ -f "$WS/task1/events.masked.csv.report.json" ] && "$PY" -c "import json,sys; r=json.load(open(sys.argv[1], encoding='utf-8'))['residue_check']; [print('   residue:', w) for w in r['where']]" "$WS/task1/events.masked.csv.report.json"
     echo "   fix: MASK_JSON_KEYS='<field> <field>' on the same line, then rerun task1 (arabic-script = Arabic text in a field not masked by name)"; }
@@ -5433,7 +5453,7 @@ _pi_call_inner() {
       local rc=$?
       [ $rc = 0 ] && return 0
       if [ $rc = 124 ] || [ $rc = 137 ]; then
-        echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
+        echo "   pi did not finish within ${PI_TIMEOUT:-1800}s , stopped it (a hanging call, or a slow model: check the model server log; raise PI_TIMEOUT for a slow local model)"; return 124
       fi
     else   # no `timeout` (macOS): a watchdog kills the run after PI_TIMEOUT
       "$@" > "$out" 2> "$err" & local pid=$!
@@ -5445,7 +5465,7 @@ _pi_call_inner() {
       kill "$dog" 2>/dev/null; wait "$dog" 2>/dev/null
       [ $rc = 0 ] && return 0
       if [ -f "$err.timeout" ]; then
-        rm -f "$err.timeout"; echo "   pi did not finish within ${PI_TIMEOUT:-1800}s (hanging call), stopped it"; return 124
+        rm -f "$err.timeout"; echo "   pi did not finish within ${PI_TIMEOUT:-1800}s , stopped it (a hanging call, or a slow model: check the model server log; raise PI_TIMEOUT for a slow local model)"; return 124
       fi
     fi
     if grep -qiE '(^|[^0-9])429([^0-9]|$)|too many requests|rate.?limit|overloaded|503 service unavailable' "$err" 2>/dev/null \
@@ -5706,7 +5726,7 @@ source does not say. No code, no hosts, no data (see SKILL.md rules).
 | Q2 | **Message format.** What arrives (JSON or XML; root element or top-level keys), is there an nXSD/JSON-to-XML translation (which one, is the file in the export), what `$body` contains after it | short text + field list |
 | Q3 | **Flow overview.** The pipeline in order: stage → action type → what it does in one sentence. Include route nodes, branches, publish, service callouts, Java callouts, reply/resume | numbered list |
 | Q4 | **Branches.** For each branch/if-then: condition in plain words, the condition expression (one line), which values lead to which path, what happens on each path, default path | table per branch |
-| Q5 | **Scenario mapping.** Branches decide on payload fields: list those fields in `scenario_dims` exactly as the condition finds them: a condition with `//*:name` (any depth, the usual OSB form) becomes `//name`; only a condition that spells a full path (`$body/*:a/*:b`) becomes the path `a.b` (check it against the nXSD/XSD element nesting). Never invent a path the source does not show. Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). A flow without branches has one row with scenario `*` (every message). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
+| Q5 | **Scenario mapping.** Branches decide on payload fields or headers: list those fields in `scenario_dims` exactly as the condition finds them: a condition with `//*:name` (any depth, the usual OSB form) becomes `//name`; only a condition that spells a full path (`$body/*:a/*:b`) becomes the path `a.b` (check it against the nXSD/XSD element nesting); a condition on a transport or user header (`$inbound/ctx:transport/ctx:request/tp:headers/tp:user-header[@name='x']`, JMS property, HTTP header) becomes `header.x`. Each entry is ONLY that key: no words, no brackets, no explanation (that goes in RESEARCH.md); research_check.py fails on anything else. Never invent a path the source does not show. Then give one `scenario_mapping` row per combination of their values with the outputs reached, as `k=v|k!=v` (k = last path segment; `k!=true` also covers a missing field; first matching row wins; outputs = business service names, `[]` = consumed, nothing sent). A flow without branches has one row with scenario `*` (every message). Never answer "depends on the message": that is what the row must spell out. Then say which `log_scenarios` in `facts.json` show those fields; if none do, write `rerun task 1 with SCENARIO_DIMS=...,body:<path>` in open questions | table |
 | Q6 | **Outputs.** Request-response proxies (HTTP, local, SOAP): the answer to the caller is an output named `reply` (use it in branches and scenario_mapping). Name each other output after the business service that writes it (the same name in branches, scenario_mapping and backends). Every destination the flow writes to (business service → queue/topic/HTTP path/operation): on which path, which body (built by which transform), which JMS properties / transport headers / HTTP headers are set and from where | table |
 | Q7 | **Transforms.** For each XQuery/XSLT/assign/replace that builds a message: purpose, inputs (external params), output root, field mapping `source path → target path → rule` (copy, constant, format, lookup, condition), fn-bea functions used, constants | table per transform |
 | Q8 | **Backends.** Each business service / service callout: type, operation, when it is called, request built from, how the response is used, retry count/interval, timeout, load balancing, result caching, what happens on fault | table |

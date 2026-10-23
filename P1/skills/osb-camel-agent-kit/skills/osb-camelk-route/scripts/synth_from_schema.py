@@ -138,7 +138,13 @@ def main() -> int:
     cfg = json.loads((a.module / "src/test/resources/flow-test.json").read_text(encoding="utf-8"))
     meta = json.loads((a.module / ".scaffold.json").read_text(encoding="utf-8"))
     res = json.loads(a.research.read_text(encoding="utf-8")) if a.research and a.research.is_file() else {}
-    dims = {d.lstrip("/").split(".")[-1]: d.lstrip("/").split(".") for d in res.get("scenario_dims") or []}
+    dims = {}
+    for d in res.get("scenario_dims") or []:
+        m = re.match(r"^\s*([$\w./:-]+)\s*\((.*)\)\s*$", d or "")   # "name (explanation)" -> name
+        d = m.group(1) if m else (d or "").strip()
+        if not re.match(r"(?i)^\$?(?:headers?|hdr|inbound)[._:]", d):
+            p = re.sub(r"^body:", "", d).lstrip("/").split(".")
+            dims[p[-1]] = p
     flow_dir = a.module / "src/test/resources/parity" / f"{meta['project']}-{meta['proxy']}-synthetic"
     rows = [m["scenario"] for m in cfg.get("scenario_mapping", [])]
     for sc in sorted(flow_dir.glob("*/SCENARIO.txt")) if flow_dir.is_dir() else []:
@@ -178,9 +184,12 @@ def main() -> int:
             msg = sch.instance(root)
             ok, shown = True, {}
             for k, op, v in parts(key):
-                path = dims.get(k)
-                if not path:
+                if k.startswith("hdr_"):
                     continue                                   # header dims (hdr_*) go to headers.json
+                path = dims.get(k)
+                if not path:                                   # neither header nor a known body path: a case without
+                    ok = False                                 # the scenario value would test the wrong branch
+                    break
                 val = {"true": True, "false": False}.get(v, v) if op == "=" else (False if v == "true" else "other")
                 shown[k] = str(val).lower() if isinstance(val, bool) else str(val)
                 ok &= set_path(msg, path, val) or set_path(msg, path[1:], val) or set_any(msg, path[-1], val)
@@ -191,9 +200,9 @@ def main() -> int:
         slug = re.sub(r"[^a-z0-9]+", "-", key.lower().replace("!=", "-not-")).strip("-")[:70] or f"row{i}"
         case = flow_dir / slug / "case1"
         case.mkdir(parents=True, exist_ok=True)
-        hdr = {k[4:]: v for k, op, v in parts(key) if k.startswith("hdr_") and op == "="}
+        hdr = {k[4:]: v if op == "=" else ("false" if v == "true" else "other") for k, op, v in parts(key) if k.startswith("hdr_")}
         hdr["traceId"] = f"synthetic-{i:04d}"
-        keys = "|".join(f"{k}={shown.get(k, v if op == '=' else 'other')}" for k, op, v in parts(key))
+        keys = "|".join(f"{k}={shown.get(k, hdr.get(k[4:], v if op == '=' else 'other'))}" for k, op, v in parts(key))
         (case.parent / "SCENARIO.txt").write_text(f"{meta['project']}/{meta['proxy']}|success" + (f"|{keys}" if keys else "") + "\n",
                                                   encoding="utf-8")
         (case / "input.payload").write_text(body + "\n", encoding="utf-8")

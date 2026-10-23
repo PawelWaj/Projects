@@ -8,6 +8,7 @@ Scans every .md/.json/.txt/.csv in the folder. Fails (exit 1) on:
   secret  password/secret/token/api key assignments, private keys
   pii     numbers with 9+ digits, e-mail addresses, Arabic script
   code    verbatim OSB source: XQuery/XSLT/XSD/WSDL/OSB XML markers, or a fenced code block longer than 12 lines
+  dims    research.json scenario_dims entry that is not a bare key (header.<name>, //<name>, a.b): later steps read it
 Prints findings as file:line + rule + a 3-character preview (never the full value) and writes SHARE_CHECK.json
 (pass/fail, counts per rule, sha256 per file) into the folder. Share the folder only when it passes. Stdlib only."""
 import argparse
@@ -30,6 +31,7 @@ RULES = [
     ("code", re.compile(r"(?i)xquery\s+version|declare\s+(?:function|variable|namespace)\s|<xsl:|<xsd?:(?:schema|element|complexType)"
                         r"|<(?:con|ser|tran|jms|http|wsdl|soapenv|env):[A-Za-z]")),
 ]
+DIM = re.compile(r"^(?:header\.[\w-]+|hdr_[\w-]+|body:[\w./-]+|(?://)?[\w-]+(?:[./][\w-]+)*)$")
 URL = re.compile(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://([^/\s\"'<>)|]+)")
 
 
@@ -52,6 +54,21 @@ def namespace_hosts(folder: Path) -> set[str]:
             elif isinstance(o, list):
                 stack.extend(o)
     return hosts
+
+
+def dims_findings(f: Path) -> list[tuple[str, str, int, str]]:
+    """scenario_dims must be keys task1, the scaffold and the case generator can read: words in brackets made a
+    header field look like a payload field and the synthetic case tested the wrong branch."""
+    if not f.is_file():
+        return []
+    try:
+        dims = json.loads(f.read_text(encoding="utf-8")).get("scenario_dims") or []
+    except (ValueError, AttributeError):
+        return []
+    lines = f.read_text(encoding="utf-8").splitlines()
+    return [(f.name, "dims", next((n for n, ln in enumerate(lines, 1) if json.dumps(d) in ln), 0),
+             "not a bare key, write header.<name> or //<name> (explanations go in RESEARCH.md)")
+            for d in dims if not isinstance(d, str) or not DIM.match(d.strip())]
 
 
 def scan(f: Path, allowed: set[str]) -> list[tuple[str, int, str]]:
@@ -82,6 +99,7 @@ def main() -> int:
     findings = []
     for f in files:
         findings += [(f.relative_to(a.folder).as_posix(), *x) for x in scan(f, allowed)]
+    findings += dims_findings(a.folder / "research.json")
     counts = {}
     for _, rule, _, _ in findings:
         counts[rule] = counts.get(rule, 0) + 1
