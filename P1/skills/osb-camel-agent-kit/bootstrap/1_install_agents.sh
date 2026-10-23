@@ -1140,8 +1140,9 @@ do_tests() {
 
 do_build() {
   flows | while read -r p x; do
-    m="$WS/modules/$p/$x"; [ -f "$m/FLOW_CARD.md" ] || continue
-    grep -qiE '^Status:[[:space:]]*(approved|poc-run)' "$m/FLOW_CARD.md" || [ "${POC:-0}" = 1 ] || { echo "skip $p/$x (card not approved; POC=1 for a proof-of-concept build)"; continue; }
+    m="$WS/modules/$p/$x"; [ -s "$WS/research/$p/$x/research.json" ] || { echo "skip $p/$x (no research.json yet)"; continue; }
+    # no module yet is fine: run_camelk.sh scaffolds it (GEN=skills alone has no earlier step that does)
+    grep -qiE '^Status:[[:space:]]*(approved|poc-run)' "$m/FLOW_CARD.md" 2> /dev/null || [ "${POC:-0}" = 1 ] || { echo "skip $p/$x (card not approved; POC=1 for a proof-of-concept build)"; continue; }
     if [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json"; then echo "skip $p/$x (tests green)"; continue; fi
     echo "=== build $p/$x"
     t1=$(task1_of "$p" "$x")
