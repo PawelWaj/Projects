@@ -35,9 +35,15 @@ def env_file(ws: Path) -> dict:
     return out
 
 
+def win_path(arg: str) -> str:
+    """Git Bash path (/c/Users/x) -> Windows path (c:/Users/x) when running natively on Windows; else unchanged.
+    .osb-kit.env and the exports of a Git Bash session carry /c/... and /e/... paths, which a Windows Python cannot open."""
+    return re.sub(r"^/([a-zA-Z])/", r"\1:/", arg) if os.name == "nt" else arg
+
+
 def setting(name: str, env: dict, default: str = "") -> str:
     v = os.environ.get(name) or env.get(name) or default
-    return v.replace("~", str(Path.home())) if v else v
+    return win_path(v.replace("~", str(Path.home()))) if v else v
 
 
 def console_up(url: str) -> bool:
@@ -113,7 +119,7 @@ class State:
                                   "(the folder above the *-prj folders)", "setup")
         mvn_args = setting("MVN_ARGS", self.env)
         m = re.search(r"(?:^|\s)(?:-s|--settings)\s+(\S+)", mvn_args)
-        sfile = Path(m.group(1).replace("~", str(Path.home()))) if m else Path.home() / ".m2" / "settings.xml"
+        sfile = Path(win_path(m.group(1).replace("~", str(Path.home())))) if m else Path.home() / ".m2" / "settings.xml"
         home_settings = (Path.home() / ".m2" / "settings.xml").is_file()
         ok = sfile.is_file() and home_settings
         self.add("env", "maven-settings", "done" if ok else "BLOCKED",
@@ -148,7 +154,7 @@ class State:
         model = os.environ.get("OSB_PI_MODEL", "")
         self.add("env", "pi", "done" if self.pi and model else "todo",
                  f"{'on PATH' if self.pi else 'NOT on PATH'}, OSB_PI_MODEL {model or 'unset'}")
-        exp = os.environ.get("EXPORT", "")
+        exp = win_path(os.environ.get("EXPORT", ""))
         self.export = bool(exp) and Path(exp).is_file()
         self.mask = bool(os.environ.get("MASK_KEY"))
         self.add("env", "splunk-export", "done" if self.export else "none",
@@ -247,7 +253,7 @@ class State:
         ck = jload(m / "camel-k" / "CHECK.json") or {}
         ready = bool(ck.get("ready")) and mtime(m / "camel-k" / "CHECK.json") >= src_t
         ns = os.environ.get("CAMELK_NAMESPACE", "")
-        envf = os.environ.get("CAMELK_ENV_FILE", "")
+        envf = win_path(os.environ.get("CAMELK_ENV_FILE", ""))
         open_vals = [o.split(":")[0] for o in ck.get("open", [])]
         self.add(sc, "deploy-file", "done" if ready else "todo",
                  "integration.yaml ready" if ready else f"open values: {', '.join(open_vals) or 'none listed'}; CAMELK_NAMESPACE {'set' if ns else 'unset'}, CAMELK_ENV_FILE {'set' if envf and Path(envf).is_file() else 'unset'}")
@@ -296,7 +302,7 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--ws", default=".", help="workspace (default: current folder)")
     a = ap.parse_args()
-    st = State(Path(a.ws).resolve(), a.projects).run()
+    st = State(Path(win_path(a.ws)).resolve(), a.projects).run()
     if a.json:
         print(json.dumps({"items": [{"scope": s, "name": n, "status": t, "detail": d} for s, n, t, d in st.items],
                           "next": st.next, "fingerprint": st.fingerprint()}, indent=1))

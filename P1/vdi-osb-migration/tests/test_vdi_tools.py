@@ -159,6 +159,33 @@ class KitGateScriptTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
 
+class PipelineStateWindowsPathTests(unittest.TestCase):
+    """Git Bash exports /c/Users/x paths (MVN_ARGS -s, EXPORT, ARTEMIS_HOME); a Windows Python must map them to c:/Users/x
+    or every file looks missing (seen on the VDI: ~/.m2/settings.xml reported MISSING although present)."""
+
+    STATE = ROOT / "skills/osb-camel-agent-kit/skills/osb-migration-run/scripts/pipeline_state.py"
+
+    def _mod(self):
+        import importlib.util
+        s = importlib.util.spec_from_file_location("ps", self.STATE)
+        m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+        return m
+
+    def test_git_bash_paths_become_windows_paths_only_on_windows(self):
+        m = self._mod()
+        real = m.os.name
+        try:
+            m.os.name = "nt"
+            self.assertEqual(m.win_path("/c/Users/u/.m2/settings.xml"), "c:/Users/u/.m2/settings.xml")
+            self.assertEqual(m.win_path("/e/Pawel/work/x.csv"), "e:/Pawel/work/x.csv")
+            self.assertEqual(m.win_path("C:/already/native"), "C:/already/native")
+            self.assertEqual(m.setting("ARTEMIS_HOME", {"ARTEMIS_HOME": "/e/tools/apache-artemis-2.44.0"}), "e:/tools/apache-artemis-2.44.0")
+            m.os.name = "posix"
+            self.assertEqual(m.win_path("/c/Users/u/.m2/settings.xml"), "/c/Users/u/.m2/settings.xml")
+        finally:
+            m.os.name = real
+
+
 class PipelineStateTests(unittest.TestCase):
     """osb-migration-run: pipeline_state.py reads what the scripts left behind and proposes ONE next step; human gates
     stop it; secrets never appear in its output."""
