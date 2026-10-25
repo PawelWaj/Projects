@@ -1,140 +1,302 @@
-# Start here: Splunk CSV + OSB project -> tests + Camel K route, tested locally (JBang + Artemis) -> integration.yaml
+# Start here: a reset VDI to one OSB flow on Camel K with tests, a review package and integration.yaml
 
-One page for a fresh (or reset) VDI. Everything runs in Git Bash on the VDI; nothing unmasked leaves it.
-The older guides (RUNBOOK.md, DOMAIN_RUN.md, REVIEW_RUNBOOK.md, pi/VDI_RUNBOOK.md) describe the pieces in detail.
-
-```
-OSB project ──► 1 research (pi) ──► research pack (shareable after the check)
-Splunk CSV ──► 2 task1: mask + test cases per scenario
-           ──► 3 route + tests      scripts path (no model, JMS flows)      -> delivery/<app>/<project>/
-                                    skills path  (pi writes it, HTTP flows)  -> modules/<project>/<proxy>/
-           ──► 4 local tests: JBang/Maven tests, gates, mutation check, local Artemis run
-           ──► 5 camel-k/integration.yaml (one file) ──► handed over for Argo CD (Dev)
-```
-
-The approach (decided 2026-10-25): the skills path, `GEN=skills` (the default). The agent scans the OSB source and the
-Splunk cases and writes the route into a work module; tests, gates and the mutation check stay script-generated and
-frozen. The scripts path (`GEN=scripts`, no model, JMS flows only) remains a fallback and a comparison (`GEN=both`).
-
-## 1. Fresh VDI setup (once after every reset)
-
-Needed on the machine: Git Bash, JDK 21, Maven 3.9 with the client `settings.xml` (Nexus), Python 3.10+, the OSB
-application folder. For research and the skills path also Node.js 22 with pi. Nothing else: Artemis, the JBang jar and
-Camel JBang come through Maven (Nexus), no internet and no manual download.
+Runbook for the client VDI (Git Bash on Windows; macOS/Linux work the same). Approach: the agentic (skills) path — the
+pi agent on the VDI scans the OSB source and the masked Splunk cases and writes the route; tests, gates and the
+mutation check are script-generated and frozen. Values in `<angle brackets>` are client values: they live in
+`.osb-kit.env` on the VDI and in the client's own notes, never in this repository. Detail guides: `pi/VDI_RUNBOOK.md`
+(pi setup), `broker/LOCAL_BROKER_TEST.md`, `REVIEW_RUNBOOK.md`.
 
 ```
-# 1. kit: download the ZIP of the repository (P1/), unzip, e.g. to /e/Pawel/Projects-main
+OSB source ──► 1 research (pi) ───────────► research pack
+Splunk CSV ──► 2 task1: mask, cases per scenario
+           ──► 3 pi writes the route ──► 4 frozen tests, 12 gates, mutation check  (Maven on the VDI only)
+           ──► 5 card approved by a person ──► review package (stays on the VDI)
+           ──► 6 camel-k/integration.yaml + DEPLOY.md ──► colleague ──► GitOps repo ──► Argo CD ──► Dev
+```
+
+## 0. What a green flow proves, and what it does not
+
+Proves: the route behaves like OSB on every logged scenario (parity tests from real Splunk cases), the error path
+answers with OSB's status and headers, the backend is called as OSB calls it (mutations: a dropped backend call, a
+changed error status and a changed HTTP method are each caught), the route is complete (no `TODO(flow-card)` left),
+no infrastructure values in code, the tests were not touched by the agent.
+Does not prove, until 6.6 has run: a live HTTP request through the running route (the smoke run; it found a defect
+the mocked tests cannot see, see 6.6). Never proves: byte-for-byte equality with OSB's real reply where Splunk did
+not log it, behaviour on the cluster. Say "on a local run on the VDI
+with mocked backends", never "validated on Dev".
+
+## 1. Machine prerequisites (ask IT if missing; nothing else is downloaded from the internet)
+
+| Item | Check | Seen on a VDI |
+|---|---|---|
+| Git Bash | `bash --version` | yes |
+| JDK 21 | `java -version` (ignore the `Picked up JAVA_TOOL_OPTIONS` line) | 21 |
+| Maven 3.9 | `mvn -v` | 3.9.9 |
+| Python 3.10+ | `python --version` | under `C:\Program Files` (a path with a space: fixed in kit `601cd79`) |
+| Node 22 + pi | `pi --version` | pi present, not on the Git Bash PATH (step 4) |
+| Model endpoint | pi `models.json` provider | `<model id>` on the model platform; no rate limit → `PACER=0`, else the pacer (`PACER=1`) |
+| Nexus | `curl` test in step 3 | `http://<nexus-host>:<port>/repository/maven-public/` **client** |
+| OSB application source | folder with `*-prj` subfolders | path per project, e.g. `/e/Pawel/osb/<application>` |
+| Splunk access | E2E index, request lines | index and sourcetype in `.osb-kit.env` (`SPLUNK_INDEX`, `SPLUNK_SOURCETYPE`) |
+
+## 2. Kit (2 min)
+
+Download the ZIP of `PawelWaj/Projects` (branch main, commit `4371011` or later), unzip next to the workspace. Kit and
+workspace are separate folders: the kit is replaced as a whole on every update, the workspace keeps the client data.
+
+```
+cd /e/Pawel && unzip -q ~/Downloads/Projects-main.zip          # or: tar -xf
 export KIT=/e/Pawel/Projects-main/P1/skills/osb-camel-agent-kit
-cd "$KIT/../../" && git log --oneline -1 2>/dev/null || ls -l --time-style=+%F "$KIT/pi/run_domain.sh"   # which kit
+ls $KIT/pi/env_setup.sh $KIT/pi/vdi_session.sh                  # both exist
+ls $KIT/skills/osb-camelk-route/scripts/smoke_http.py             # exists = kit >= 4371011
+```
 
-# 2. workspace + settings (writes .osb-kit.env with the paths it finds; check JAVA_HOME, Maven, ARTEMIS_HOME in it)
+## 3. Maven settings with the client Nexus (2 min)
+
+Maven, JBang and `camel run` all resolve through `~/.m2/settings.xml`; JBang reads only that file. Mirror without
+credentials, no `<localRepository>` line (the default `~/.m2/repository` is fine):
+
+```
+mkdir -p ~/.m2 && cat > ~/.m2/settings.xml <<'XML'
+<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0"
+          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+          xsi:schemaLocation="http://maven.apache.org/SETTINGS/1.0.0 https://maven.apache.org/xsd/settings-1.0.0.xsd">
+    <interactiveMode>false</interactiveMode>
+    <mirrors>
+        <mirror><id>nexus</id><mirrorOf>*,!<extra-releases-repo></mirrorOf>
+            <url>http://<nexus-host>:<port>/repository/maven-public/</url></mirror>
+    </mirrors>
+    <profiles>
+        <profile><id>nexus</id>
+            <repositories>
+                <repository><id>nexus</id><url>http://<nexus-host>:<port>/repository/maven-public/</url>
+                    <releases><enabled>true</enabled></releases><snapshots><enabled>true</enabled></snapshots></repository>
+                <repository><id><extra-releases-repo></id><url>http://<nexus-host>:<port>/repository/<extra-releases-repo>/</url>
+                    <releases><enabled>true</enabled></releases><snapshots><enabled>false</enabled></snapshots></repository>
+            </repositories>
+            <pluginRepositories>
+                <pluginRepository><id>nexus</id><url>http://<nexus-host>:<port>/repository/maven-public/</url>
+                    <releases><enabled>true</enabled></releases><snapshots><enabled>true</enabled></snapshots></pluginRepository>
+            </pluginRepositories>
+        </profile>
+    </profiles>
+    <activeProfiles><activeProfile>nexus</activeProfile></activeProfiles>
+</settings>
+XML
+curl -s -o /dev/null -w '%{http_code}\n' http://<nexus-host>:<port>/repository/maven-public/junit/junit/4.13.2/junit-4.13.2.pom   # 200
+```
+
+`000` = no route to the host (name or proxy), `401` = Nexus wants a login (add `<servers>`), `404` = wrong repository path.
+
+## 4. Workspace, settings file, pi on the PATH (5 min)
+
+```
 mkdir -p /e/Pawel/work && cd /e/Pawel/work
-bash $KIT/pi/vdi_session.sh setup <osb-application-folder>
-
-# 3. pi: install from the internal npm mirror if it is gone, then point it at the model platform
-npm install -g --ignore-scripts @earendil-works/pi-coding-agent && pi --version
-#    ~/.pi/agent/models.json: provider baseUrl + model id (see pi/VDI_RUNBOOK.md section 3); then
-export OSB_PI_MODEL=<model id>  PACER=0  PI_OFFLINE=1  PI_TELEMETRY=0
-echo 'Reply OK' | pi --print --no-session --model "$OSB_PI_MODEL" < /dev/null      # must answer OK
-
-# 4. check (0 failures; pi warnings are fine when you only run task1 + scripts path + local tests)
-bash $KIT/pi/preflight.sh
-
-# 5. local test environment, once after a reset (~1 min, everything through Maven/Nexus): Artemis distribution,
-#    broker instance + start, the JBang jar + a `jbang` launcher in ~/bin, Camel/JUnit fetched by a smoke test
-export ARTEMIS_PASSWORD='<choose one>'          # per session, never in a file
-bash $KIT/pi/env_setup.sh install && . ./.osb-kit.env
-#    expected at the end: "Result: N ok, 0 failed". Any time later, read-only: bash $KIT/pi/env_setup.sh check
-#    (PI_PING=1 also asks the model for OK through pi)
+bash $KIT/pi/vdi_session.sh setup /e/Pawel/osb/<application>    # the folder ABOVE the *-prj folders; writes .osb-kit.env + preflight
+#   find it: find /e /c/Users/$USERNAME -maxdepth 5 -type d -name '*-prj' 2>/dev/null | head -3
+ls "$APPDATA/npm" | grep -i '^pi'                                 # pi, pi.cmd
+echo 'export PATH="$(cygpath -u "$APPDATA")/npm:$PATH"' >> .osb-kit.env
+. ./.osb-kit.env
+export OSB_PI_MODEL=<model id> PACER=0 PI_TIMEOUT=3600 PI_OFFLINE=1 PI_TELEMETRY=0     # client: model id
+echo 'Reply OK' | pi --print --no-session --model "$OSB_PI_MODEL" < /dev/null                      # OK
 ```
 
-Every later session (VDI not reset): `cd /e/Pawel/work && . ./.osb-kit.env && export ARTEMIS_PASSWORD=...` then
-`bash $KIT/pi/vdi_session.sh start` (starts the broker if it is down). Windows opens the broker in its own window:
-closing that window stops it.
+`.osb-kit.env` is local (never in Git) and holds KIT, APP, WS, JAVA_HOME, PATH, MVN_ARGS, ARTEMIS_*. Passwords and
+MASK_KEY are never written there: exported per session. If pi is not installed at all: `pi/VDI_RUNBOOK.md` section 3
+(npm from the internal mirror, `models.json` with the provider baseUrl and model id).
 
-`PACER=0` = pi talks to the model directly. Long model calls are stopped after `PI_TIMEOUT` seconds (default 1800);
-for a slow model use `export PI_TIMEOUT=3600`. `PI_THINKING=low` makes the model write less (faster); go back to
-`medium` if the routes come out weak.
-
-## 2. Splunk export (per project, stays on the VDI)
-
-Counts first (no values), then the export of the request lines with a body. Index and sourcetype are the client's
-values (never in the repository; keep them in `.osb-kit.env` as `SPLUNK_INDEX`, `SPLUNK_SOURCETYPE`):
-
-```
-index=<index> sourcetype="<sourcetype>" earliest=-90d@d ("<a-prj>" OR "<b-prj>") ("::{" OR "::<")
-| dedup _raw | sort 0 _time | head 20000 | table _time _raw
-```
-
-Save as CSV to `/e/Pawel/work/<name>.csv`. The raw CSV is deleted after task1 (step 3 masks it).
-
-## 3. One project, from CSV to tested route
+## 5. Local test environment: Artemis, JBang, Camel (5–10 min, everything through Nexus)
 
 ```
 cd /e/Pawel/work && . ./.osb-kit.env
-export EXPORT=/e/Pawel/work/<name>.csv
-export MASK_KEY=<from the data owner, typed now, never in a file>
-bash $KIT/pi/vdi_session.sh flows '<a-prj>'           # GEN=skills by default; GEN=both adds the no-model comparison
-rm "$EXPORT"                                     # raw export gone once task1 wrote task1/events.masked.csv
+bash $KIT/pi/env_setup.sh check                       # read-only: what is there, what is missing, one line each
+export ARTEMIS_PASSWORD='<choose one>'                # per session; the instance is created with it
+bash $KIT/pi/env_setup.sh install && . ./.osb-kit.env
+PI_PING=1 bash $KIT/pi/env_setup.sh check             # Result: N ok, 0 failed  (incl. "model answers")
 ```
 
-`flows` runs: research (pi, skips flows already PASS) -> task1 -> route + tests -> local tests -> Artemis run ->
-review archive -> Camel K files. Rerun after a fix (research unchanged): `bash $KIT/pi/vdi_session.sh review '<a-prj>'`.
-HTTP flows, after the gates are green: `bash $KIT/pi/vdi_session.sh smoke '<a-prj>'` starts the route on Camel Main, sends every
-case over HTTP against a stub backend and compares the replies (`smoke_http.py`). JMS flows: `broker/run_local.sh <module>`.
+`install` fetches the Artemis distribution through Maven (or reuses an unzipped `apache-artemis-*` next to the
+workspace), creates the broker instance and starts it (Windows: its own window, closing it stops the broker), copies the
+JBang jar and a `jbang` launcher into `~/bin`, runs a one-test Camel smoke through JBang (fetches Camel 4.18, Saxon,
+JUnit once) and warms up Camel JBang for `camel run`. Seen on a VDI: first `check` 8 ok / 7 failed (no settings.xml),
+after step 3 and `install` all green.
 
-What to check (counts only when you send screenshots):
+## 6. One flow, from Splunk to integration.yaml
 
-| Where | Good result |
+### 6.1 Splunk (counts first, then the export; stays on the VDI)
+
+R2, counts and structure only (safe to screenshot):
+
+```
+index=<index> sourcetype="<sourcetype>" earliest=-90d@d "oracle.osb.logging.pipeline" "<project-prj>"
+| rex "Project (?<project>\S+) :: for (?<kind>PS|BS) (?<svc>\S+)"
+| eval fmt=case(match(_raw,"::\s*\{"),"json",match(_raw,"::\s*<"),"xml",true(),"-")
+| eval day=strftime(_time,"%F")
+| rex "(?s)TraceID\s*[-:]\s*\S+\s*::(?<body>.*)$"
+| eval h=if(fmt!="-", md5(body), null())
+| stats count dc(day) as days dc(h) as distinct by kind, svc, fmt
+```
+
+A `PS <proxy> json|xml` row with `distinct` ≥ 30 on ≥ 5 days = READY; ≥ 5 = THIN (synthetic fill for the rest);
+everything `-` = no replayable payload, synthetic cases only. Export E1 when there is a payload:
+
+```
+index=<index> sourcetype="<sourcetype>" earliest=-90d@d "<project-prj>" ("::{" OR "::<")
+| dedup _raw | sort 0 _time | head 20000 | table _time _raw
+```
+
+Save as CSV to `/e/Pawel/work/<name>.csv`. If `count` in R2 exceeds 20000, shorten the window instead of cutting.
+
+### 6.2 Research → task1 → route → tests → gates → mutations → manifest (one command)
+
+```
+cd /e/Pawel/work && . ./.osb-kit.env
+export OSB_PI_MODEL=<model id> PACER=0 PI_TIMEOUT=3600 ARTEMIS_PASSWORD='<password>'
+export EXPORT=/e/Pawel/work/<name>.csv MASK_KEY='<from the data owner, typed>'
+GEN=skills bash $KIT/pi/vdi_session.sh flows '<project-prj>' 2>&1 | tee run-$(date +%H%M).log
+rm "$EXPORT"                                          # raw export gone; task1/events.masked.csv stays
+```
+
+What runs: research (pi; skipped when already PASS) → task1 (mask + one case per scenario) → tests and mocks generated
+from research and the cases, frozen → pi fills the route in small calls, each followed by `verify_module.py` → Maven
+tests + gates K1–K12 → Camel K manifest → mutation check on a green module. No Splunk payload for the project:
+`unset EXPORT` and run the same line; missing scenarios get synthetic cases from the message schema.
+
+What to check (counts only when you send it on):
+
+| Where | Good |
 |---|---|
-| `task1/SUMMARY.md` | `OK` per flow, no `CHECK` lines (CHECK = wrong scenario field in research.json) |
-| scripts path, log step 5 | `N tests, 0 failed` |
-| scripts path, log step 6 | `Sending to <queue>` and `+N` per queue (local Artemis, not the E2E broker) |
-| skills path | `ok K2..K12`, `K8_tests_green` ok (K1 stays FAIL in POC mode: approval is a person's step) |
-| last line of GEN=both | `scripts: N tests, 0 failed   skills: tests green, gates failed: K1` |
-| mutation check | `mutations caught x/x` (run by `vdi_session.sh flows` for green modules, or `mutate_route.py`) |
-| HTTP smoke (`vdi_session.sh smoke '<a-prj>'`) | `PASS <case>` per case and `PASS error case`, last line `smoke: N cases, 0 failed, error case ok` (the route really running, called over HTTP, backend played by a stub; `SMOKE.txt` in the module) |
+| task1 line | `OK: n scenarios, m test cases`, `residue findings 0`, no `CHECK` |
+| `== 1 generated tests` | `parity_cases` = real cases, `unmapped_log_scenarios: 0` |
+| `== 3 implement` | `verify round N: tests …` then `verify: PASS after N call(s)` (seen: 2 calls) |
+| `== 4 verify` | `ok K2 … ok K12`; `K1 FAIL` until the card is approved (6.3) |
+| `K8_tests_green` | `failures 0, errors 0` (skipped = cases without a logged reply) |
+| `=== mutations` | `mutations caught x/x` |
+| `== 5 Camel K deployment` | `"open": [...]` lists the per-environment values still needed (6.5) |
+| `task1/events.masked.csv.report.json` | JSON key NAMES not masked by rule: add personal-data fields to `MASK_JSON_KEYS` in `.osb-kit.env`, rerun task1 |
 
-## 4. integration.yaml for Argo CD (handed to the colleague who deploys)
+Seen on a VDI, an HTTP request/reply flow: 797 events exported, 178 for the flow, 6 parity cases, 1
+scenario; 18 tests 0 failures 2 skipped; K2–K12 ok; mutations 3/3; pi 2 calls.
 
-Deploy only after the local tests are green. Each flow gets `camel-k/integration.yaml` (Kamelets, ConfigMaps with
-route/Java/properties/OSB files, the Integration; one file), `DEPLOY.md` (the Secrets it needs) and `CHECK.json`
-(ready, open values). Dev gets it through Argo CD: hand over `integration.yaml` + `DEPLOY.md`; the colleague puts the
-file into the GitOps repository and creates the Secrets. Values per environment never go in this repository; write
-them in when generating:
+### 6.3 Card approval (a person, 15 min) and the K1 rerun
+
+`FLOW_CARD.md` is the one-page contract between research and code: entry, branches, scenario mapping, outputs,
+backends, transforms, errors, log lines, open questions, `Status/Approver/Date`. Read it against `RESEARCH.md`, tick
+every open question (answered, or accepted with a reason), then:
 
 ```
-export CAMELK_NAMESPACE=<dev namespace>
-export CAMELK_BROKER_URL=<broker of the namespace>     # scripts path: tcp://<artemis-service>:61616 (core protocol);
-                                                       # skills path:  amqp://<artemis-service>:5672 or failover:(...)
-export CAMELK_ENV_FILE=/e/Pawel/work/dev.env           # KEY=VALUE for {{env:X}} of HTTP routes (hosts, ids), local file
-bash $KIT/pi/vdi_session.sh deploy '<a-prj>'           # regenerates; "ready": true = no CHANGE-ME left
-#   without oc on the VDI it only writes the files; with oc login it also runs a server dry run and checks the Secrets
-#   hand over: <folder>/camel-k/integration.yaml + DEPLOY.md (scripts path: delivery/<app>/<project>/camel-k/)
+M=modules/<project-prj>/<Proxy>
+sed -n '/^## 9 Open questions/,$p' $M/FLOW_CARD.md
+notepad "$(cygpath -w $M/FLOW_CARD.md)"               # - [ ] -> - [x] … — answered/accepted: <reason>
+sed -i 's/^Status:.*/Status: approved/; s/^Approver:.*/Approver: <name> (POC)/; s/^Date:.*/Date: <YYYY-MM-DD>/' $M/FLOW_CARD.md
+grep -E '^(Status|Approver|Date):' $M/FLOW_CARD.md; grep -c '^- \[ \]' $M/FLOW_CARD.md     # 0
+GEN=skills bash $KIT/pi/vdi_session.sh review '<project-prj>'                              # refreezes the card: ok K1, PASS after 1 call
 ```
 
-`APPLY=1` applies directly with `oc` (only where the platform allows it; with Argo CD the GitOps repository is the
-way in, and a direct apply would be reverted by Argo CD).
+POC approver: the author. Production mode: the OSB flow owner on the client side approves before implementation
+(a prerequisite to put into the change request).
 
-`DEPLOY_FROM=skills` deploys the pi-written module even when a scripts delivery exists. Remove a flow:
-`oc delete -n $CAMELK_NAMESPACE -f <folder>/camel-k/integration.yaml`.
+### 6.4 Review package (stays on the VDI)
 
-Open points to confirm with the platform team before the first apply: Camel K is an operator (the program rule says
-no application operators: confirm it is allowed for Dev); the broker port per path (the scripts-path kamelets speak
-the Artemis core protocol on 61616, the Artemis LLD names AMQP 5672); Secrets by hand today vs Vault later.
+```
+bash $KIT/pi/make_review_pack.sh <project-prj> <Proxy>
+ls -la review/<project-prj>-<Proxy>.tgz
+```
 
-## 5. When something is red
+Contents: research pack, card, the runnable module (`mvn test` works in it), TEST_MATRIX, GATES.json, MUTATION.json,
+MIGRATION_NOTES.md. Reviewers: OSB owner → card, TEST_MATRIX, MIGRATION_NOTES; Camel developer → route, beans, stubs,
+tests; platform colleague → `camel-k/integration.yaml`, `DEPLOY.md`.
+
+### 6.5 Deployment file for Argo CD
+
+```
+cat > /e/Pawel/work/dev.env <<'EOF'                  # per-environment values, local file only
+<BACKEND>_HOST=<host on Dev>
+<other keys listed under "open" in step 6.2>
+EOF
+export CAMELK_NAMESPACE=<dev namespace> CAMELK_ENV_FILE=/e/Pawel/work/dev.env     # JMS flows: also CAMELK_BROKER_URL=amqp://<artemis-service>:5672
+bash $KIT/pi/vdi_session.sh deploy '<project-prj>'                                 # "ready": true
+```
+
+Hand over `modules/<project-prj>/<Proxy>/camel-k/integration.yaml` and `DEPLOY.md`; the colleague puts the file into
+the GitOps repository and creates the Secret named in `DEPLOY.md`. A direct `oc apply` would be reverted by Argo CD.
+Open with the platform team before the first apply: Camel K is an operator (program rule: no application operators;
+Dev exception), Camel K version ≥ 2.3 for Secret-backed env vars, Secrets by hand today vs Vault.
+
+### 6.6 The route really running: HTTP smoke run (HTTP flows) or local broker run (JMS flows)
+
+HTTP flows, after the gates are green: the route is started locally on Camel Main, a stub plays every backend with the
+module's stub file, every parity case is POSTed over HTTP and the reply compared JSON-aware, then the stub answers 500
+and the route must reply with the OSB error status. Kit ≥ `4371011`.
+
+```
+bash $KIT/pi/vdi_session.sh smoke '<project-prj>'        # or: python $KIT/skills/osb-camelk-route/scripts/smoke_http.py modules/<p>/<Proxy>
+```
+
+Good: `route up after Ns`, `PASS <case>` per case, `PASS error case: backend 500 -> reply status 500`, last line
+`smoke: N cases, 0 failed, error case ok, backend calls: {...}`; `SMOKE.txt` and `SMOKE.json` in the module, route
+log in `target/smoke-route.log`. Exit 1 on any failure.
+
+Why it exists: on the lab module the first smoke run failed with `Invalid url: <path>/<path>` — the route
+forwarded the entry's `CamelHttpPath` into the backend call. The 18 mocked tests cannot see that (mocks ignore the
+URI), gates and mutations were green, and on Dev the route would have failed the same way. Fix: `?bridgeEndpoint=true`
+on the backend endpoint; the scaffold writes it since `4371011`. **A module built before that commit (<Flow>
+on the VDI) needs one line edited** in `src/main/resources/application.properties`:
+
+```
+sed -i -E 's|^(backend\.[a-z0-9]+=https?://[^?]*)$|\1?bridgeEndpoint=true|' modules/<project-prj>/<Proxy>/src/main/resources/application.properties
+grep '^backend\.' modules/<project-prj>/<Proxy>/src/main/resources/application.properties     # ends with ?bridgeEndpoint=true
+```
+
+then rerun `review` (tests unchanged, K1 stays ok) and `deploy` (the manifest carries the properties file).
+
+JMS flows (no HTTP entry): the local Artemis run instead.
+
+```
+bash $KIT/broker/e2e_local.sh modules/<project-prj>/<Proxy>     # queues -> route in the background -> one case per scenario -> queue counts
+```
+
+Exit 0 = every output queue received what the tests expect; route log in `target/e2e-route.log`.
+
+## 7. Every later session (VDI not reset)
+
+```
+cd /e/Pawel/work && . ./.osb-kit.env
+export OSB_PI_MODEL=<model id> PACER=0 PI_TIMEOUT=3600 ARTEMIS_PASSWORD='<password>'
+bash $KIT/pi/vdi_session.sh start            # starts the broker if down, prints kit/java/mvn/pi
+bash $KIT/pi/env_setup.sh check              # 0 failed
+```
+
+## 8. Troubleshooting (all seen on a VDI)
 
 | Symptom | Cause, fix |
 |---|---|
-| research loops on `dims:` | a scenario field written with words; it fixes itself (research_check), else edit `scenario_dims` to `header.<name>` or `//<name>` |
-| `ROUTE DID NOT START`, `Cannot resolve dependencies` | `camel run` cannot reach Nexus: `MVN_ARGS="-s <settings.xml>"` in `.osb-kit.env` |
-| `ROUTE DID NOT START`, `No endpoint ... TODO(flow-card)` | the proxy's entry (queue/topic) is unknown in research.json: fix `entry` and rerun `review` |
-| `pi did not finish within ...s` | slow model or a hanging call: `PI_TIMEOUT=3600`, check the model platform |
-| skills path stays red after 3 rounds | `python $KIT/skills/osb-camelk-route/scripts/verify_module.py modules/<p>/<x>` shows the first errors; tests are frozen, only route/beans/stubs change |
-| `ROUTE DID NOT START`, `TODO(flow-card) destination of <bs>` | research.json has no queue for that business service (UNKNOWN): fix `outputs[].destination`, rerun `flows` (`review` reuses the old module) |
-| `broker did not answer within 60s` | port 61616/5672/8161 taken (another broker), or wrong JAVA_HOME: `artemis_setup.sh status`, log in `$ARTEMIS_BROKER/log/` |
-| `NOT READY` on deploy | `CHANGE-ME` values listed in `camel-k/DEPLOY.md`: set `CAMELK_BROKER_URL` / `CAMELK_ENV_FILE` and rerun deploy |
+| `vdi_session.sh setup` prints `usage: … <osb-application-folder>` | the argument is the folder above the `*-prj` folders |
+| `[FAIL] no Maven settings`, `Maven cannot resolve from Nexus` | step 3 |
+| `verify round N: … line 55: /c/Program: No such file` | Python under a path with a space; kit < `601cd79`, update the kit |
+| `verify round 1..3` identical, 11 `TODO(flow-card)` left, K6 missing stub | pi never ran or failed: `tail modules/<p>/<x>/.agent-logs/implement.err`; test the flags: `echo 'Reply OK' \| pi --print --no-session --thinking low --model "$OSB_PI_MODEL" < /dev/null` |
+| `broker refuses the login` | `ARTEMIS_PASSWORD` differs from the one the instance was created with: stop, `mv /e/Pawel/artemis-broker /e/Pawel/artemis-broker.old`, `artemis_setup.sh create && start` |
+| `jbang on PATH but does not start` | `jbang --version` prints on stderr; kit ≥ `f5370ae` reads it |
+| `[INFO] pi not on PATH` | step 4, `$APPDATA/npm` |
+| `pi did not finish within …s` | slow model: `PI_TIMEOUT=3600`; check the model platform |
+| `ROUTE DID NOT START` / `Cannot resolve dependencies` | Maven cannot reach Nexus: `MVN_ARGS="-s …"` in `.osb-kit.env`, step 3 |
+| `NOT READY` on deploy | values listed in `camel-k/DEPLOY.md`: `dev.env`, rerun deploy |
+| `review` after a research change reuses the old module | run `flows`, not `review` |
+| K1 `card_changed_after_freeze` | the card was edited after the build: rerun `review` once (6.3) |
+| smoke: `FAIL … status 500`, hint `Invalid url … enable the bridgeEndpoint option` | module built before kit `4371011`: the one-line `application.properties` edit in 6.6 |
+| smoke: `route did not come up` | port 8089/8099 taken (`--port`, `--stub-port`), or Maven cannot fetch `exec-maven-plugin` / `camel-platform-http-main`: `target/smoke-route.log` |
 
-Data rules: masked data, OSB source and review packs stay on the VDI; only research packs that pass the check may
-leave it. MASK_KEY and passwords are typed per session. Screenshots show names and counts, never message values.
+## 9. Data rules
+
+Masked data, OSB source, XQuery and review packages stay on the VDI; only research packs that pass the share check
+leave it. MASK_KEY and passwords are typed per session, never in a file. Raw Splunk exports are deleted after task1.
+Screenshots and messages carry names and counts, never values. PROD exports need the client's approval.
+
+## 10. Verified / not verified
+
+Verified 2026-10-25: a reset client VDI through steps 2–6.2 with <model id> (one HTTP flow green, counts above);
+`env_setup.sh` from an empty Maven repository and empty home on macOS (40 s, Maven Central); 6.3–6.5 commands come
+from the kit scripts and were run on the Mac lab, not yet on this VDI; 6.6 smoke run on the Mac lab module
+(1 synthetic case PASS, error case PASS, 2 backend calls; the broken module correctly reported FAIL).
+Not verified: 6.6 on Windows (process stop via `taskkill`, Nexus fetch of `exec-maven-plugin`); any apply on a Camel K
+cluster; Camel K ≥ 2.3 Secret-env syntax on the client cluster.
