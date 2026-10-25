@@ -110,17 +110,22 @@ def is_http(o: dict, b: dict | None) -> bool:
     return bool(http_path(o.get("destination_raw")) or (b and str(b.get("type") or "").lower().startswith("http")))
 
 
+BRIDGE = "?bridgeEndpoint=true"
+
+
 def endpoint(dest: str, kind: str) -> str:
     """Production endpoint for a research destination (scheme:name, never a host)."""
     d = clean(dest)
     if not d or d.upper() == "UNKNOWN":
         return f"{TODO} destination of {kind}"
+    # bridgeEndpoint=true: the call keeps its own URI; the CamelHttpUri/Path headers of the platform-http entry are
+    # not forwarded (without it the backend URL becomes <backend path>/<entry path>: "Invalid url", smoke_http.py)
     m = re.match(r"^(https?):(/.*)$", d)
     if m:
-        return f"{m.group(1)}://{{{{env:{slug(kind).upper().replace('-', '_')}_HOST}}}}{m.group(2)}"
+        return f"{m.group(1)}://{{{{env:{slug(kind).upper().replace('-', '_')}_HOST}}}}{m.group(2)}{BRIDGE}"
     path = http_path(dest)
     if path:                             # 'HTTP POST to /v1/x', 'POST /v1/x': host from env, method set in the route
-        return f"https://{{{{env:{slug(kind).upper().replace('-', '_')}_HOST}}}}{path}"
+        return f"https://{{{{env:{slug(kind).upper().replace('-', '_')}_HOST}}}}{path}{BRIDGE}"
     name = re.sub(r"^(jms|amqp|queue|topic):", "", d)
     kind_ = "topic" if d.startswith("topic:") else "queue"
     return f"amqp:{kind_}:{name}"

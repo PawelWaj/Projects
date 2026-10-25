@@ -8,6 +8,8 @@
 #   bash <kit>/pi/vdi_session.sh status                   what is running, kit version, settings
 #   bash <kit>/pi/vdi_session.sh flows 'a-prj|b-prj'      research (pi) -> task1 (needs EXPORT) -> review archive
 #   bash <kit>/pi/vdi_session.sh review 'a-prj|b-prj'     only the delivery part (no pi): delivery, tests, broker, archive
+#   bash <kit>/pi/vdi_session.sh smoke 'a-prj|b-prj'      HTTP flows: the route really running on Camel Main, every case sent
+#     over HTTP, backends played by a stub server, replies compared (smoke_http.py; JMS flows: broker/run_local.sh)
 #   bash <kit>/pi/vdi_session.sh deploy 'a-prj|b-prj'     camel-k/integration.yaml per flow + oc dry run; APPLY=1 applies
 #     settings: CAMELK_NAMESPACE (required), CAMELK_BROKER_URL, CAMELK_ENV_FILE (KEY=VALUE, local file), DEPLOY_FROM=
 #     scripts|skills (default: scripts when a delivery exists, else the skills module)
@@ -148,6 +150,17 @@ case "${1:-}" in
     broker_up || start_broker || echo "broker not running: the review stage skips the broker test"
     [ "$GEN" = scripts ] || model_link || exit 1
     gen_stage "$P" 0 2>&1 | tee -a "$LOG" ;;
+
+  smoke)
+    P=${2:?usage: vdi_session.sh smoke 'a-prj|b-prj'}
+    PROJECTS="$P" bash "$KIT/pi/run_domain.sh" list 2>/dev/null | awk 'NF==2 && $2 != "proxies"' | while read -r p x; do
+      m="$WS/modules/$p/$x"
+      [ -f "$m/pom.xml" ] || { echo "$p/$x: no module yet (run flows first)"; continue; }
+      grep -q '^flow.input=platform-http:' "$m/src/main/resources/application.properties" 2>/dev/null \
+        || { echo "$p/$x: not an HTTP flow: bash $KIT/broker/run_local.sh $m (local Artemis)"; continue; }
+      echo "=== smoke $p/$x"
+      "$PY" "$KIT/skills/osb-camelk-route/scripts/smoke_http.py" "$m" || echo "NOT GREEN smoke $p/$x (see $m/SMOKE.txt, target/smoke-route.log)"
+    done 2>&1 | tee -a "$LOG" ;;
 
   deploy)
     P=${2:?usage: vdi_session.sh deploy 'a-prj|b-prj'   (CAMELK_NAMESPACE=<dev namespace>, APPLY=1 to apply)}

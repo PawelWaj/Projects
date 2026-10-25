@@ -301,7 +301,7 @@ class CamelkRouteTests(unittest.TestCase):
             self.assertEqual(cfg["backends"]["lookupbs"]["request"], {"query": ["qa"], "headers": ["k"]})   # no method stated
             props = (mod / "src/main/resources/application.properties").read_text()
             self.assertIn("flow.input=platform-http:/a/b/lookup", props)
-            self.assertIn("backend.lookupbs=https://{{env:LOOKUPBS_HOST}}/v1/x/y", props)
+            self.assertIn("backend.lookupbs=https://{{env:LOOKUPBS_HOST}}/v1/x/y?bridgeEndpoint=true", props)
             self.assertNotIn("amqp", props)                                      # HTTP-only: no broker needed to start
             route = next(mod.rglob("*.camel.yaml")).read_text()
             self.assertIn("id: backend-lookupbs", route)
@@ -1068,6 +1068,50 @@ class CamelKModuleManifestTests(unittest.TestCase):
             self.assertNotIn("camel:amqp", allk, "no amqp endpoint in the route")
             self.assertNotIn("routes-include-pattern", allk)
             self.assertIn("--from-literal=LK_APIKEY=", (m / "camel-k/DEPLOY.md").read_text())
+
+
+class SmokeHttpTests(unittest.TestCase):
+    """smoke_http.py helpers: HTTP entry detection, backend keys, the stub rewrite, the JSON-aware compare (key paths only)."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "smoke_http", ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts/smoke_http.py")
+        cls.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.m)
+
+    def test_properties_entry_and_backends(self):
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "application.properties"
+            f.write_text("# c\r\ncamel.main.name=X\r\nflow.input=platform-http:/a/b\r\n"
+                         "backend.lk=https://{{env:LK_HOST}}/v1/x?bridgeEndpoint=true\r\nbackend.other=http://h/y\r\n")
+            props = self.m.read_properties(f)
+            self.assertEqual(self.m.entry_path(props), "/a/b")
+            self.assertEqual(self.m.backends(props), {"lk": "https://{{env:LK_HOST}}/v1/x?bridgeEndpoint=true", "other": "http://h/y"})
+            props["flow.input"] = "amqp:queue:in"
+            self.assertIsNone(self.m.entry_path(props), "a JMS entry is not an HTTP flow")
+
+    def test_stub_rewrite_keeps_path_query_and_options(self):
+        self.assertEqual(self.m.stub_uri("https://{{env:LK_HOST}}/v1/x?bridgeEndpoint=true", 8099),
+                         "http://127.0.0.1:8099/v1/x?bridgeEndpoint=true")
+        self.assertEqual(self.m.stub_uri("http://host:8443/y", 8099), "http://127.0.0.1:8099/y")
+        self.assertEqual(self.m.uri_path("https://{{env:LK_HOST}}/v1/x?bridgeEndpoint=true"), "/v1/x")
+        self.assertEqual(self.m.env_names('a "${env:A_HOST}" b {{env:B_KEY}} {{env:A_HOST}}'), {"A_HOST", "B_KEY"})
+
+    def test_compare_reports_key_path_not_values(self):
+        with tempfile.TemporaryDirectory() as d:
+            g = Path(d) / "expected-output.json"
+            g.write_text(json.dumps({"a": {"b": "secret-1"}, "n": [1, 2], "ts": "t1"}))
+            same = json.dumps({"a": {"b": "secret-1"}, "n": [1, 2], "ts": "t2"}).encode()
+            self.assertIsNone(self.m.compare_reply(g, same, ["ts"]), "generated fields are ignored")
+            diff = self.m.compare_reply(g, json.dumps({"a": {"b": "secret-2"}, "n": [1, 2], "ts": "t1"}).encode(), [])
+            self.assertEqual(diff, "$.a.b: value differs")
+            self.assertNotIn("secret", diff)
+            self.assertEqual(self.m.compare_reply(g, json.dumps({"a": {}, "n": [1, 2], "ts": "t1"}).encode(), []), "$.a.b: missing")
+            self.assertEqual(self.m.compare_reply(g, json.dumps({"a": {"b": "secret-1"}, "n": [1], "ts": "t1"}).encode(), []),
+                             "$.n: length 2 vs 1")
+            self.assertEqual(self.m.compare_reply(g, b"not json", []), "reply is not JSON")
 
 
 class ScenarioKeyNormalisationTests(unittest.TestCase):

@@ -80,6 +80,8 @@ rm "$EXPORT"                                     # raw export gone once task1 wr
 
 `flows` runs: research (pi, skips flows already PASS) -> task1 -> route + tests -> local tests -> Artemis run ->
 review archive -> Camel K files. Rerun after a fix (research unchanged): `bash $KIT/pi/vdi_session.sh review '<a-prj>'`.
+HTTP flows, after the gates are green: `bash $KIT/pi/vdi_session.sh smoke '<a-prj>'` starts the route on Camel Main, sends every
+case over HTTP against a stub backend and compares the replies (`smoke_http.py`). JMS flows: `broker/run_local.sh <module>`.
 
 What to check (counts only when you send screenshots):
 
@@ -91,6 +93,7 @@ What to check (counts only when you send screenshots):
 | skills path | `ok K2..K12`, `K8_tests_green` ok (K1 stays FAIL in POC mode: approval is a person's step) |
 | last line of GEN=both | `scripts: N tests, 0 failed   skills: tests green, gates failed: K1` |
 | mutation check | `mutations caught x/x` (run by `vdi_session.sh flows` for green modules, or `mutate_route.py`) |
+| HTTP smoke (`vdi_session.sh smoke '<a-prj>'`) | `PASS <case>` per case and `PASS error case`, last line `smoke: N cases, 0 failed, error case ok` (the route really running, called over HTTP, backend played by a stub; `SMOKE.txt` in the module) |
 
 ## 4. integration.yaml for Argo CD (handed to the colleague who deploys)
 

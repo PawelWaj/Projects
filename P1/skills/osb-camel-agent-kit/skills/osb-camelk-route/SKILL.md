@@ -72,6 +72,10 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    inline in the pipeline (no .xqy file) or a JSON nXSD without its schema in the module is implemented from
    research.json `transforms[].mappings`, row by row (helper bean or jsonpath); never a pass-through when research
    lists a transform. Gate K12 requires an expected reply per case, so a pass-through fails.
+   Backend endpoints carry `?bridgeEndpoint=true` (the scaffold writes it): the call keeps its own URI instead of the
+   CamelHttpUri/Path headers of the entry. Local proof beyond the mocks: `scripts/smoke_http.py <module>` runs the route on
+   Camel Main (`-Prun-local`), plays every backend with its stub on a local port, POSTs each parity case over HTTP and compares
+   the reply (status, golden body, error status when the backend fails); `vdi_session.sh smoke '<project>'` runs it per flow.
 4. **Error tests:** `src/test/java/<pkg>/FlowErrorTest.java` is generated (invalid payload, every backend failing)
    and frozen like FlowParityTest (gate K5): the implementer never edits it. At least one test per error scope on the card: invalid
    payload, each output/backend failing (mock `whenAnyExchangeReceived` throwing), retries counted
