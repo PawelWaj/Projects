@@ -43,7 +43,9 @@ def win_path(arg: str) -> str:
 
 def setting(name: str, env: dict, default: str = "") -> str:
     v = os.environ.get(name) or env.get(name) or default
-    return win_path(v.replace("~", str(Path.home()))) if v else v
+    if v and "~" in v:
+        v = v.replace("~", str(Path.home()))
+    return win_path(v) if v else v
 
 
 def console_up(url: str) -> bool:
