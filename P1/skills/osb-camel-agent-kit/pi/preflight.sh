@@ -39,7 +39,7 @@ pass "pi calls stop after PI_TIMEOUT (default 1800 s): $(command -v timeout >/de
 
 echo "Build and test"
 if command -v java >/dev/null; then
-  v=$(java -version 2>&1 | head -1 | sed -E 's/.*"([0-9]+).*/\1/'); [ "$v" -ge 21 ] 2>/dev/null && pass "java $v" || bad "java $v < 21"
+  v=$(java -version 2>&1 | grep -v 'Picked up' | head -1 | sed -E 's/.*"([0-9]+).*/\1/'); [ "$v" -ge 21 ] 2>/dev/null && pass "java $v" || bad "java $v < 21"
 else bad "java not found (JDK 21)"; fi
 if command -v mvn >/dev/null; then pass "maven $(mvn -v 2>/dev/null | head -1 | awk '{print $3}')"
   [ -f "$HOME/.m2/settings.xml" ] && pass "~/.m2/settings.xml present (mirror/proxy)" || wrn "no ~/.m2/settings.xml: Maven will try Maven Central directly"

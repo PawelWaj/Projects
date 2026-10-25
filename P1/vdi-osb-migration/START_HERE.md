@@ -39,12 +39,12 @@ echo 'Reply OK' | pi --print --no-session --model "$OSB_PI_MODEL" < /dev/null   
 # 4. check (0 failures; pi warnings are fine when you only run task1 + scripts path + local tests)
 bash $KIT/pi/preflight.sh
 
-# 5. local Artemis, once after a reset (~20 s): Maven fetches org.apache.activemq:apache-artemis:2.44.0:zip:bin,
-#    unpacks it next to the workspace, remembers ARTEMIS_HOME in .osb-kit.env, creates the instance, starts it
+# 5. local test environment, once after a reset (~1 min, everything through Maven/Nexus): Artemis distribution,
+#    broker instance + start, the JBang jar + a `jbang` launcher in ~/bin, Camel/JUnit fetched by a smoke test
 export ARTEMIS_PASSWORD='<choose one>'          # per session, never in a file
-bash $KIT/broker/artemis_setup.sh install && . ./.osb-kit.env
-bash $KIT/broker/artemis_setup.sh create && bash $KIT/broker/artemis_setup.sh start
-#    expected: "broker up after 3s: console http://localhost:8161 ..., AMQP :5672, core tcp://localhost:61616"
+bash $KIT/pi/env_setup.sh install && . ./.osb-kit.env
+#    expected at the end: "Result: N ok, 0 failed". Any time later, read-only: bash $KIT/pi/env_setup.sh check
+#    (PI_PING=1 also asks the model for OK through pi)
 ```
 
 Every later session (VDI not reset): `cd /e/Pawel/work && . ./.osb-kit.env && export ARTEMIS_PASSWORD=...` then
