@@ -13,7 +13,7 @@
 #     scripts|skills (default: scripts when a delivery exists, else the skills module)
 #   bash <kit>/pi/vdi_session.sh stop [--broker]          routes stopped, pi back to the platform, pacer stopped
 #   PACER=0 before start/flows: no pacer, pi talks to the model directly (an endpoint without a rate limit)
-#   GEN=scripts|skills|both before flows/review: who builds route + tests after research (default scripts)
+#   GEN=skills|scripts|both before flows/review: who builds route + tests after research (default skills: the agent)
 #     scripts  route generated from the OSB pipeline, tests from Splunk cases + schema (no model)  -> delivery/ + archive
 #     skills   pi writes the route (osb-camelk-route + implementer-camelk) into modules/, frozen tests, mvn, gates
 #     both     the two side by side + one comparison line per flow
@@ -56,7 +56,7 @@ use_model_directly() {   # PACER=0: pi -> model platform, no pacer in between
 }
 model_link() { if [ "${PACER:-1}" = 0 ]; then use_model_directly; else pacer_up && pi_on_pacer || start_pacer; fi; }
 
-GEN=${GEN:-scripts}
+GEN=${GEN:-skills}   # decided 2026-10-25: the agentic path is the approach; scripts = no-model fallback (JMS only)
 gen_stage() {   # $1 = projects, $2 = REVIEW_TESTS for the scripts path
   case "$GEN" in
     scripts) PI_TESTER=${PI_TESTER:-0} REVIEW_TESTS=${2:-1} PROJECTS="$1" bash "$KIT/pi/run_domain.sh" review ;;

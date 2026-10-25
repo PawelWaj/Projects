@@ -12,8 +12,9 @@ Splunk CSV ──► 2 task1: mask + test cases per scenario
            ──► 5 camel-k/integration.yaml (one file) ──► handed over for Argo CD (Dev)
 ```
 
-Which path for which flow: a JMS/topic flow -> scripts path first (`GEN=scripts`, minutes, no model). An HTTP
-request/reply flow -> skills path (`GEN=skills`). Not sure -> `GEN=both` and compare the last line.
+The approach (decided 2026-10-25): the skills path, `GEN=skills` (the default). The agent scans the OSB source and the
+Splunk cases and writes the route into a work module; tests, gates and the mutation check stay script-generated and
+frozen. The scripts path (`GEN=scripts`, no model, JMS flows only) remains a fallback and a comparison (`GEN=both`).
 
 ## 1. Fresh VDI setup (once after every reset)
 
@@ -73,12 +74,12 @@ Save as CSV to `/e/Pawel/work/<name>.csv`. The raw CSV is deleted after task1 (s
 cd /e/Pawel/work && . ./.osb-kit.env
 export EXPORT=/e/Pawel/work/<name>.csv
 export MASK_KEY=<from the data owner, typed now, never in a file>
-GEN=both bash $KIT/pi/vdi_session.sh flows '<a-prj>'
+bash $KIT/pi/vdi_session.sh flows '<a-prj>'           # GEN=skills by default; GEN=both adds the no-model comparison
 rm "$EXPORT"                                     # raw export gone once task1 wrote task1/events.masked.csv
 ```
 
 `flows` runs: research (pi, skips flows already PASS) -> task1 -> route + tests -> local tests -> Artemis run ->
-review archive -> Camel K files. Rerun after a fix without the model: `GEN=scripts bash $KIT/pi/vdi_session.sh review '<a-prj>'`.
+review archive -> Camel K files. Rerun after a fix (research unchanged): `bash $KIT/pi/vdi_session.sh review '<a-prj>'`.
 
 What to check (counts only when you send screenshots):
 
