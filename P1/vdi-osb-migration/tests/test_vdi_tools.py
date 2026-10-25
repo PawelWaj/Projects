@@ -159,6 +159,157 @@ class KitGateScriptTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
 
+class PipelineStateTests(unittest.TestCase):
+    """osb-migration-run: pipeline_state.py reads what the scripts left behind and proposes ONE next step; human gates
+    stop it; secrets never appear in its output."""
+
+    STATE = ROOT / "skills/osb-camel-agent-kit/skills/osb-migration-run/scripts/pipeline_state.py"
+    GATES_OK = {f"K{i}_x": {"ok": True} for i in range(2, 13)}
+
+    def setUp(self):
+        import http.server
+        import threading
+        self.tmp = tempfile.TemporaryDirectory()
+        d = Path(self.tmp.name)
+        self.ws = d / "work"; self.ws.mkdir()
+        (d / "app/a-prj").mkdir(parents=True); (d / "app/a-prj/x.proxy").write_text("")
+        (d / "home/.m2").mkdir(parents=True); (d / "home/.m2/settings.xml").write_text("<settings/>")
+        (d / "home/bin").mkdir(); (d / "home/bin/jbang").write_text("#!/bin/sh\n"); os.chmod(d / "home/bin/jbang", 0o755)
+        (d / "art/lib").mkdir(parents=True); (d / "art/lib/artemis-boot.jar").write_text("")
+        (d / "broker/etc").mkdir(parents=True); (d / "broker/etc/broker.xml").write_text("")
+        (self.ws / ".env-smoke").mkdir(); (self.ws / ".env-smoke/SMOKE.ts").write_text("t")
+        self.srv = http.server.HTTPServer(("127.0.0.1", 0), http.server.SimpleHTTPRequestHandler)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        (self.ws / ".osb-kit.env").write_text(f'export KIT="{ROOT / "skills/osb-camel-agent-kit"}"\nexport APP="{d / "app"}"\n'
+                                               f'export ARTEMIS_HOME="{d / "art"}"\nexport ARTEMIS_BROKER="{d / "broker"}"\n'
+                                               f'export ARTEMIS_CONSOLE="http://127.0.0.1:{self.srv.server_port}"\n')
+        self.env = {**os.environ, "HOME": str(d / "home"), "PATH": f"{d / 'home/bin'}:{os.environ['PATH']}",
+                    "MVN_ARGS": f"-s {d / 'home/.m2/settings.xml'}", "ARTEMIS_PASSWORD": "sekret-artemis-77", "MASK_KEY": "key-mask-99"}
+        for k in ("EXPORT", "CAMELK_NAMESPACE", "CAMELK_ENV_FILE", "OSB_PI_MODEL"):
+            self.env.pop(k, None)
+
+    def tearDown(self):
+        self.srv.shutdown(); self.tmp.cleanup()
+
+    def state(self, **env):
+        r = subprocess.run([sys.executable, "-I", str(self.STATE), "a-prj", "--json", "--ws", str(self.ws)],
+                           capture_output=True, text=True, env={**self.env, **env})
+        self.assertIn(r.returncode, (0, 3), r.stderr)
+        d = json.loads(r.stdout)
+        txt = subprocess.run([sys.executable, "-I", str(self.STATE), "a-prj", "--ws", str(self.ws)],
+                             capture_output=True, text=True, env={**self.env, **env}).stdout
+        for secret in ("sekret-artemis-77", "key-mask-99"):
+            self.assertNotIn(secret, r.stdout + txt)
+        return d, txt
+
+    def module(self, gates=None, card="Status: poc-run (NOT approved)\nApprover: \nDate: \n\n## 9 Open questions\n- [ ] q1\n", t=1000):
+        m = self.ws / "modules/a-prj/x"
+        (m / "src/main/resources").mkdir(parents=True, exist_ok=True)
+        (self.ws / "research/a-prj/x").mkdir(parents=True, exist_ok=True)
+        (self.ws / "research/a-prj/x/SHARE_CHECK.json").write_text('{"pass": true}')
+        (m / "pom.xml").write_text("<project/>")
+        (m / "src/main/resources/application.properties").write_text("flow.input=platform-http:/a\nbackend.b=http://{{env:B_HOST}}/x?bridgeEndpoint=true\n")
+        (m / "FLOW_CARD.md").write_text(card)
+        g = {"K1_card_approved": {"ok": False}, **self.GATES_OK, "K8_tests_green": {"ok": True, "tests": 8, "failures": 0, "skipped": 2}}
+        (m / "GATES.json").write_text(json.dumps({"result": "FAIL", "gates": gates or g}))
+        for f in m.rglob("*"):
+            if f.is_file():
+                os.utime(f, (t, t))
+        return m
+
+    def test_nothing_built_proposes_flows(self):
+        d, txt = self.state()
+        self.assertEqual(d["next"]["kind"], "command")
+        self.assertIn("vdi_session.sh flows 'a-prj'", d["next"]["text"])
+        self.assertIn("next: ", txt)
+
+    def test_green_module_without_approval_is_a_human_gate_with_the_card_path(self):
+        m = self.module()
+        d, txt = self.state()
+        self.assertEqual(d["next"]["kind"], "human")
+        self.assertEqual(d["next"]["stage"], "card-approval")
+        self.assertIn(str(m / "FLOW_CARD.md"), d["next"]["text"])
+        self.assertIn("HUMAN: ", txt)
+        card = [i for i in d["items"] if i["name"] == "card"][0]
+        self.assertEqual(card["status"], "BLOCKED")
+        self.assertIn("1 open question", card["detail"])
+
+    def test_red_gate_other_than_k1_proposes_review(self):
+        g = {"K1_card_approved": {"ok": False}, **self.GATES_OK, "K2_x": {"ok": False}}
+        self.module(gates=g)
+        d, _ = self.state()
+        self.assertEqual(d["next"]["stage"], "review-fix")
+        self.assertIn("vdi_session.sh review 'a-prj'", d["next"]["text"])
+
+    def approved_module(self):
+        m = self.module(card="Status: approved\nApprover: A Person\nDate: 2026-01-01\n\n## 9 Open questions\n- [x] q1 — accepted\n")
+        g = {"K1_card_approved": {"ok": True}, **self.GATES_OK, "K8_tests_green": {"ok": True, "tests": 8, "failures": 0, "skipped": 2}}
+        (m / "GATES.json").write_text(json.dumps({"result": "PASS", "gates": g})); os.utime(m / "GATES.json", (2000, 2000))
+        (m / "MUTATION.json").write_text(json.dumps({"killed": 3, "total": 3, "mutations": []})); os.utime(m / "MUTATION.json", (2000, 2000))
+        (m / "SMOKE.json").write_text(json.dumps({"ok": True, "cases": [1, 2], "error_case": {"ok": True}})); os.utime(m / "SMOKE.json", (2000, 2000))
+        return m
+
+    def test_approved_green_module_proposes_review_pack_then_dev_values(self):
+        m = self.approved_module()
+        d, _ = self.state()
+        self.assertEqual(d["next"]["stage"], "review-pack")
+        self.assertIn("make_review_pack.sh a-prj x", d["next"]["text"])
+        (self.ws / "review").mkdir(); (self.ws / "review/a-prj-x.tgz").write_text("x"); os.utime(self.ws / "review/a-prj-x.tgz", (3000, 3000))
+        (m / "camel-k").mkdir(); (m / "camel-k/CHECK.json").write_text(json.dumps({"ready": False, "open": ["B_HOST: no value (--env-file)"]}))
+        d, txt = self.state()
+        self.assertEqual(d["next"]["kind"], "human")
+        self.assertEqual(d["next"]["stage"], "dev-values")
+        self.assertIn("B_HOST", d["next"]["text"])
+        self.assertIn("CAMELK_NAMESPACE", d["next"]["text"])
+        # namespace + env file given: the deploy command; ready: handover
+        envf = self.ws / "dev.env"; envf.write_text("B_HOST=h\n")
+        d, _ = self.state(CAMELK_NAMESPACE="dev", CAMELK_ENV_FILE=str(envf))
+        self.assertEqual(d["next"]["stage"], "deploy")
+        (m / "camel-k/CHECK.json").write_text(json.dumps({"ready": True, "open": []})); os.utime(m / "camel-k/CHECK.json", (4000, 4000))
+        d, txt = self.state(CAMELK_NAMESPACE="dev", CAMELK_ENV_FILE=str(envf))
+        self.assertEqual(d["next"]["kind"], "done")
+        self.assertIn("DONE: ", txt)
+
+    def test_stale_smoke_and_surviving_mutation(self):
+        m = self.approved_module()
+        (m / "src/main/resources/routes").mkdir(); (m / "src/main/resources/routes/x.camel.yaml").write_text("- route: {}")
+        os.utime(m / "src/main/resources/routes/x.camel.yaml", (5000, 5000))   # route newer than MUTATION/SMOKE
+        d, _ = self.state()
+        self.assertEqual(d["next"]["stage"], "mutations")
+        (m / "MUTATION.json").write_text(json.dumps({"killed": 2, "total": 3, "mutations": [{"what": "drop the backend call", "killed": False}]}))
+        os.utime(m / "MUTATION.json", (6000, 6000))
+        d, _ = self.state()
+        self.assertEqual(d["next"]["kind"], "human")
+        self.assertEqual(d["next"]["stage"], "mutation-survived")
+        self.assertIn("drop the backend call", d["next"]["text"])
+        (m / "MUTATION_ACCEPTED.md").write_text("accepted: the OSB flow never sees that header\n"); os.utime(m / "MUTATION_ACCEPTED.md", (7000, 7000))
+        d, _ = self.state()
+        self.assertNotEqual(d["next"]["stage"], "mutation-survived", "a written acceptance passes the gate")
+        self.assertIn("survivor accepted", [i for i in d["items"] if i["name"] == "mutations"][0]["detail"])
+
+    def test_export_without_mask_key_is_a_human_gate(self):
+        exp = self.ws / "e.csv"; exp.write_text("_time,_raw\n")
+        env = {**self.env, "EXPORT": str(exp)}; env.pop("MASK_KEY")
+        r = subprocess.run([sys.executable, "-I", str(self.STATE), "a-prj", "--json", "--ws", str(self.ws)], capture_output=True, text=True, env=env)
+        self.assertEqual(json.loads(r.stdout)["next"]["stage"], "mask-key")
+
+    def test_skill_front_matter_is_valid_for_pi(self):
+        for f in (ROOT / "skills/osb-camel-agent-kit/skills").glob("*/SKILL.md"):
+            lines = f.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(lines[0], "---", f)
+            for line in lines[1:]:
+                if line == "---":
+                    break
+                m = re.match(r"^([A-Za-z_-]+): (.*)$", line)
+                if not m or m.group(2)[:1] in ("'", '"'):
+                    continue
+                self.assertNotIn(": ", m.group(2), f"{f}: unquoted ': ' in {m.group(1)}")
+                self.assertNotIn(" #", m.group(2), f"{f}: unquoted ' #' in {m.group(1)}")
+        run_md = ROOT / "skills/osb-camel-agent-kit/skills/osb-migration-run/SKILL.md"
+        desc = re.search(r'^description: "(.*)"$', run_md.read_text(encoding="utf-8"), re.M)
+        self.assertTrue(desc and len(desc.group(1)) < 1024, "osb-migration-run: description missing or over 1024 characters")
+
+
 if __name__ == "__main__":
     unittest.main()
 

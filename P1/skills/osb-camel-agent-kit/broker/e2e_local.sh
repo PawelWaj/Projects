@@ -60,4 +60,6 @@ artemis_client queue stat --maxRows 500 --maxColumnSize -1 > "$A" 2>&1
 rc=$?
 errs=$(grep -cE "ERROR|Exception" "$LOG")
 echo "route log: $LOG ($errs ERROR/Exception lines; the unreadable messages cause some on purpose)"
+# machine-readable result for pipeline_state.py (skill osb-migration-run): ok, case count, when
+printf '{"ok": %s, "cases": %s, "route_errors": %s, "ts": "%s"}\n' "$([ "$rc" = 0 ] && echo true || echo false)" "$n" "$errs" "$(date '+%F %T')" > "$M/target/e2e-result.json"
 exit $rc

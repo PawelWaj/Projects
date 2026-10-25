@@ -180,7 +180,17 @@ do_build() {
     m="$WS/modules/$p/$x"; [ -s "$WS/research/$p/$x/research.json" ] || { echo "skip $p/$x (no research.json yet)"; continue; }
     # no module yet is fine: run_camelk.sh scaffolds it (GEN=skills alone has no earlier step that does)
     grep -qiE '^Status:[[:space:]]*(approved|poc-run)' "$m/FLOW_CARD.md" 2> /dev/null || [ "${POC:-0}" = 1 ] || { echo "skip $p/$x (card not approved; POC=1 for a proof-of-concept build)"; continue; }
-    if [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json"; then echo "skip $p/$x (tests green)"; continue; fi
+    if [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json"; then
+      # green module whose card was approved after the build: refreeze the card hash and re-run the gates (no pi, no mvn)
+      if grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$m/FLOW_CARD.md" 2> /dev/null \
+         && ! "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K1_card_approved',{}).get('ok') else 1)" "$m/GATES.json"; then
+        echo "=== refreeze $p/$x (card approved after the build)"
+        "$PY" -c "import hashlib,json,sys; p=sys.argv[1]; m=json.load(open(p)); m['card_sha256']=hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest(); json.dump(m,open(p,'w'),indent=2)" "$m/.scaffold.json" "$m/FLOW_CARD.md"
+        "$PY" "$SK/check_camelk.py" "$m" | grep -E '^(ok +|FAIL +)K1|^FAIL$|^PASS$' || true
+        "$PY" "$SK/camelk_manifests.py" "$m" > /dev/null 2>&1 || true
+      else echo "skip $p/$x (tests green)"; fi
+      continue
+    fi
     echo "=== build $p/$x"
     t1=$(task1_of "$p" "$x")
     OSB_SRC="$APP/$p" timed "$p" "$x" build bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"

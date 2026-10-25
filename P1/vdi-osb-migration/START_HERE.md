@@ -14,6 +14,29 @@ Splunk CSV ──► 2 task1: mask, cases per scenario
            ──► 6 camel-k/integration.yaml + DEPLOY.md ──► colleague ──► GitOps repo ──► Argo CD ──► Dev
 ```
 
+## One command: the operator agent runs steps 3–10 (kit ≥ `osb_agent`)
+
+Splunk is the input, everything else is driven by `pi/osb_agent.sh`: a pi operator (skill `osb-migration-run`, role
+`agents/operator-osb.md`) reads the state of the run (`pipeline_state.py`: what the scripts left behind), executes the
+one next kit command, reads the state again, and stops where a person must act. Steps 1–2 (kit, Nexus settings) stay
+manual; so does `vdi_session.sh setup` once per machine.
+
+```
+cd /e/Pawel/work && . ./.osb-kit.env
+export OSB_PI_MODEL=<model id> PACER=0 ARTEMIS_PASSWORD='<password>'
+export EXPORT=/e/Pawel/work/<name>.csv MASK_KEY='<from the data owner>'     # only when there is a Splunk export
+bash $KIT/pi/osb_agent.sh '<a-prj>'                                         # --no-pi: same loop without the operator model
+```
+
+It ends with one of: `HUMAN: …` (exit 3: do what it says, run the same line again), `DONE: …` (exit 0: hand over
+`camel-k/integration.yaml` + `DEPLOY.md`), or a stop after two rounds without progress (exit 1: the state table and the
+last log lines say which stage). The three human gates: **card approval** (`FLOW_CARD.md`: tick the open questions,
+`Status: approved`, `Approver`, `Date`), **MASK_KEY** (asked in the shell when `EXPORT` is set), **Dev values**
+(the keys `CHECK.json` lists, into a local file, plus `CAMELK_NAMESPACE`/`CAMELK_ENV_FILE`); a fourth, rare one: a
+**surviving mutation** (fix the missing scenario, or accept it in writing in `MUTATION_ACCEPTED.md`). Logs:
+`domain/agent-run.log` (every command), `domain/agent-<date>.out` (what the operator said). The state alone, any time:
+`python $KIT/skills/osb-migration-run/scripts/pipeline_state.py '<a-prj>'`.
+
 ## 0. What a green flow proves, and what it does not
 
 Proves: the route behaves like OSB on every logged scenario (parity tests from real Splunk cases), the error path
@@ -190,7 +213,7 @@ sed -n '/^## 9 Open questions/,$p' $M/FLOW_CARD.md
 notepad "$(cygpath -w $M/FLOW_CARD.md)"               # - [ ] -> - [x] … — answered/accepted: <reason>
 sed -i 's/^Status:.*/Status: approved/; s/^Approver:.*/Approver: <name> (POC)/; s/^Date:.*/Date: <YYYY-MM-DD>/' $M/FLOW_CARD.md
 grep -E '^(Status|Approver|Date):' $M/FLOW_CARD.md; grep -c '^- \[ \]' $M/FLOW_CARD.md     # 0
-GEN=skills bash $KIT/pi/vdi_session.sh review '<project-prj>'                              # refreezes the card: ok K1, PASS after 1 call
+GEN=skills bash $KIT/pi/vdi_session.sh review '<project-prj>'                              # green module: '=== refreeze', ok K1 (no model call)
 ```
 
 POC approver: the author. Production mode: the OSB flow owner on the client side approves before implementation
