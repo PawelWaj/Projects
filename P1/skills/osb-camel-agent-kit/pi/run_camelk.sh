@@ -47,12 +47,12 @@ echo "== 3 implement (pi), in small calls"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,edit,write"
     --append-system-prompt "$KIT/agents/implementer-camelk.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
-VERIFY="$PY $SK/scripts/verify_module.py $MOD"
+VERIFY="\"$PY\" \"$SK/scripts/verify_module.py\" \"$MOD\""   # quoted: Python may sit under C:/Program Files
 RULES="Never run mvn directly: '$VERIFY' runs the tests and the gates and prints a short summary. Never edit FlowParityTest.java, flow-test.json, FLOW_CARD.md or any test case folder. Write nothing outside $MOD. Do not read target/ or the parity cases."
 export VERIFY_MVN="mvn -B -q ${MVN_ARGS:-}"
 pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route (request/reply: step 3b, the reply built from research.json transforms row by row), never edit a test (FlowParityTest, FlowErrorTest, flow-test.json are frozen), and write a backend stub only where src/test/resources/stubs has none. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
 for round in $(seq 1 "${PI_FIX_ROUNDS:-3}"); do
-  SUMMARY=$($VERIFY 2>&1) && { echo "   verify: PASS after $round call(s)"; break; }
+  SUMMARY=$(eval "$VERIFY" 2>&1) && { echo "   verify: PASS after $round call(s)"; break; }
   echo "   verify round $round: $(echo "$SUMMARY" | head -1)"
   sleep "${PI_PAUSE:-30}"
   pi_call "$LOG/fix-$round.out" "$LOG/fix-$round.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD (card $MOD/FLOW_CARD.md). The last verify printed:
