@@ -72,7 +72,7 @@ def jbang_available() -> bool:
 
 def console_up(url: str) -> bool:
     try:
-        with urllib.request.urlopen(url + "/", timeout=2) as r:   # noqa: S310 (localhost console)
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(url + "/", timeout=2) as r:   # noqa: S310 (localhost, never via a proxy)
             return r.status in (200, 301, 302, 303, 401)
     except Exception as e:  # urllib raises on 401 too: that still proves the console answers
         return "401" in str(e) or "Unauthorized" in str(e)

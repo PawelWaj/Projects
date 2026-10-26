@@ -34,3 +34,4 @@ no values).
 | local acceptance `mutate FAIL` with a survivor | the tests do not catch one change | HUMAN: fix the scenario and rerun `flows`, or one line per survivor in `MUTATION_ACCEPTED.md` (mutation text exactly as printed + reason) |
 | local acceptance `run FAIL`, `ROUTE DID NOT START` with Camel JBang | `camel run` cannot resolve a `--dep` through Nexus, or a Java bean does not compile outside Maven | `domain/acceptance/<p>-<x>/4-run.txt`; Nexus: `~/.m2/settings.xml` (JBang reads only that file) |
 | local acceptance `manifest FAIL written as values` | a credential env name is not secret-looking | HUMAN: `export CAMELK_SECRET_KEYS='<KEY1>,<KEY2>'` and rerun |
+| smoke: every case `status 407`, `backend calls: {...: 0}` | the local HTTP call went to the corporate proxy (HTTP_PROXY set); kit >= this fix calls 127.0.0.1 without a proxy; update the kit, no other fix |

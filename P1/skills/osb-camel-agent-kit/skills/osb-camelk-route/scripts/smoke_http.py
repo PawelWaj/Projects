@@ -205,10 +205,16 @@ def port_open(port: int) -> bool:
 def call(url: str, data: bytes, headers: dict[str, str]) -> tuple[int, bytes]:
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=60) as r:
+        with LOCAL.open(req, timeout=60) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()
+
+
+# Local calls never go through a proxy: a VDI exports HTTP_PROXY/HTTPS_PROXY for the corporate proxy, urllib honours
+# them, and the proxy answers 407 (seen on the VDI: every case "status 407", backend calls 0).
+LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+LOCAL_HOSTS = "127.0.0.1,localhost"
 
 
 def stop(proc: subprocess.Popen) -> None:
@@ -390,6 +396,8 @@ def main() -> int:
 
     route_files = list((res / "routes").glob("*.yaml")) + [res / "application.properties"]
     env = dict(os.environ)
+    for k in ("NO_PROXY", "no_proxy"):   # the route's own calls to the stub stay local too
+        env[k] = ",".join(x for x in (env.get(k, ""), LOCAL_HOSTS) if x)
     fake = sorted(n for n in env_names(*(f.read_text(encoding="utf-8") for f in route_files)) if n not in env)
     for n in fake:
         env[n] = f"smoke-{n}"
