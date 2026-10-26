@@ -226,10 +226,31 @@ def mvn_command(spec: str) -> list[str]:
 def jbang_launcher() -> list[str]:
     """Camel JBang through the kit's JBang wrapper (the JBang jar comes from Nexus), the same on Git Bash and macOS."""
     sh = Path(__file__).resolve().parents[1] / "assets/templates/package/tools/jbang.sh"
-    bash = shutil.which("bash") or shutil.which("bash.exe")
+    bash = git_bash()
     if not bash:
         raise FileNotFoundError("bash not on PATH (Git Bash)")
     return [bash, win_path(str(sh))]
+
+
+def git_bash() -> str | None:
+    """bash for the kit's shell wrappers. On Windows the first bash.exe on PATH is often WSL's launcher
+    (C:\\Windows\\System32\\bash.exe or WindowsApps), which starts Linux and fails at once: take Git Bash instead."""
+    if os.name != "nt":
+        return shutil.which("bash")
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        low = d.lower().replace("/", "\\")
+        if not d or "\\windows\\system32" in low or "windowsapps" in low:
+            continue
+        cand = Path(win_path(d)) / "bash.exe"
+        if cand.is_file():
+            return str(cand)
+    git = shutil.which("git")
+    if git:
+        for rel in ("../bin/bash.exe", "../../bin/bash.exe", "../usr/bin/bash.exe"):
+            cand = (Path(git).parent / rel).resolve()
+            if cand.is_file():
+                return str(cand)
+    return None
 
 
 def camel_version() -> str:
