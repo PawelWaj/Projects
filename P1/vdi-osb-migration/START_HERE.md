@@ -250,6 +250,11 @@ export CAMELK_NAMESPACE=<dev namespace> CAMELK_ENV_FILE=/e/Pawel/work/dev.env   
 bash $KIT/pi/vdi_session.sh deploy '<project-prj>'                                 # "ready": true
 ```
 
+No Dev values yet (review first): `export DEV_VALUES=later` and rerun `osb_agent.sh`. The deploy files are written with
+`CHANGE-ME` for the missing values (listed in `DEPLOY.md`, `CHECK.json` `"ready": false, "for_review": true`), no
+namespace (the Argo CD destination sets it), credentials still only as Secret references; the run ends with
+`DONE: every flow is ready for review`. Regenerate with `dev.env` + `CAMELK_NAMESPACE` before Dev.
+
 Hand over `modules/<project-prj>/<Proxy>/camel-k/integration.yaml` and `DEPLOY.md`; the colleague puts the file into
 the GitOps repository and creates the Secret named in `DEPLOY.md`. A direct `oc apply` would be reverted by Argo CD.
 Open with the platform team before the first apply: Camel K is an operator (program rule: no application operators;

@@ -212,6 +212,22 @@ class CamelKSecretKeysTests(unittest.TestCase):
         self.assertEqual(open_, [])
 
 
+    def test_placeholder_values_stay_open_and_for_review_needs_dev_values_later(self):
+        import importlib.util
+        s = importlib.util.spec_from_file_location("cm", ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts/camelk_manifests.py")
+        cm = importlib.util.module_from_spec(s); s.loader.exec_module(cm)
+        for v in ("CHANGE-ME", "<dev host>"):
+            vars_, _, open_ = cm.env_vars("app", ["X_HOST"], {"X_HOST": v}, "")
+            self.assertEqual(vars_, ["X_HOST=CHANGE-ME"]); self.assertEqual(len(open_), 1, v)
+        self.assertFalse(cm.for_review(open_))
+        os.environ["DEV_VALUES"] = "later"
+        try:
+            self.assertTrue(cm.for_review(open_))
+            self.assertFalse(cm.for_review(["two Java files with the same name (A.java)"]))
+        finally:
+            os.environ.pop("DEV_VALUES")
+
+
 class CardAnswersTests(unittest.TestCase):
     """card_answers.py: a recommended answer per open question from the chain's evidence; Enter accepts; approval only
     when nothing is left; audit trail; never a message value in the output."""
@@ -559,6 +575,25 @@ class PipelineStateTests(unittest.TestCase):
         d, txt = self.state(CAMELK_NAMESPACE="dev", CAMELK_ENV_FILE=str(envf))
         self.assertEqual(d["next"]["kind"], "done")
         self.assertIn("DONE: ", txt)
+
+    def test_dev_values_later_ends_at_review_with_placeholders(self):
+        m = self.approved_module()
+        (self.ws / "review").mkdir(); (self.ws / "review/a-prj-x.tgz").write_text("x"); os.utime(self.ws / "review/a-prj-x.tgz", (3000, 3000))
+        (m / "LOCAL_ACCEPTANCE.json").write_text(json.dumps({"result": "PASS", "steps": []})); os.utime(m / "LOCAL_ACCEPTANCE.json", (3500, 3500))
+        (m / "camel-k").mkdir()
+        (m / "camel-k/CHECK.json").write_text(json.dumps({"ready": False, "open": ["B_HOST: no value (--env-file)", "B_ID: no value (--env-file)"]}))
+        os.utime(m / "camel-k/CHECK.json", (4000, 4000))
+        d, _ = self.state(DEV_VALUES="later")
+        self.assertEqual(d["next"]["stage"], "deploy-review", "no namespace, no env file: still a command, not the human gate")
+        self.assertIn("DEV_VALUES=later CAMELK_SECRET_KEYS='B_ID' bash ", d["next"]["text"])
+        (m / "camel-k/CHECK.json").write_text(json.dumps({"ready": False, "for_review": True, "open": ["B_HOST: no value (--env-file)"]}))
+        os.utime(m / "camel-k/CHECK.json", (4500, 4500))
+        d, txt = self.state(DEV_VALUES="later")
+        self.assertEqual(d["next"]["kind"], "done")
+        self.assertIn("ready for review", d["next"]["text"])
+        self.assertIn("placeholders: B_HOST", txt)
+        d, _ = self.state()
+        self.assertEqual(d["next"]["stage"], "dev-values", "without DEV_VALUES=later the Dev-values gate stays")
 
     def test_stale_smoke_and_surviving_mutation(self):
         m = self.approved_module()

@@ -119,6 +119,7 @@ class State:
         self.kit = Path(setting("KIT", self.env, str(Path(__file__).resolve().parents[3])))
         self.app = Path(setting("APP", self.env, "/nonexistent"))
         self.items: list[tuple[str, str, str, str]] = []   # (scope, name, status, detail)
+        self.review_only = False                           # DEV_VALUES=later: files for review, Dev values open
         self.notes: list[str] = []                         # reminders for the person, never a command for the operator
         self.next: dict | None = None
 
@@ -300,13 +301,26 @@ class State:
         open_vals = [o.split(":")[0] for o in ck.get("open", [])]
         self.add(sc, "deploy-file", "done" if ready else "todo",
                  "integration.yaml ready" if ready else f"open values: {', '.join(open_vals) or 'none listed'}; CAMELK_NAMESPACE {'set' if ns else 'unset'}, CAMELK_ENV_FILE {'set' if envf and Path(envf).is_file() else 'unset'}")
+        later = os.environ.get("DEV_VALUES", "") == "later"
+        if not ready and later:
+            cred = [v for v in open_vals if not re.search(r"HOST|URL|URI|ENDPOINT|PORT|PATH", v)]
+            if ck.get("for_review") and mtime(m / "camel-k" / "CHECK.json") >= src_t and not cred:
+                self.items[-1] = (sc, "deploy-file", "done", f"for review, placeholders: {', '.join(open_vals) or 'none'}"
+                                  f"{'' if ns else '; namespace from Argo CD'}")
+                self.add(sc, "handover", "done", f"{m / 'camel-k'} -> review; Dev values open (DEPLOY.md lists them), Secret by the colleague")
+                self.review_only = True
+                return
+            keys = sorted(set(cred) | {k for k in re.split(r"[\s,]+", os.environ.get("CAMELK_SECRET_KEYS", "")) if k})
+            self.propose("command", f"DEV_VALUES=later{(' CAMELK_SECRET_KEYS=' + chr(39) + ','.join(keys) + chr(39)) if keys else ''} "
+                                    f"bash {kit}/pi/vdi_session.sh deploy '{p}' 2>&1 | tee -a domain/agent-run.log", "deploy-review", sc)
+            return
         if not ready:
             if not ns or not (envf and Path(envf).is_file()):
                 cred = [v for v in open_vals if not re.search(r"HOST|URL|URI|ENDPOINT|PORT|PATH", v)]
                 self.propose("human", f"Dev values for {sc}: write {', '.join(v for v in open_vals if v not in cred) or 'the keys in camel-k/DEPLOY.md'} as KEY=VALUE into a local "
                                       f"file (e.g. dev.env, never in Git), then export CAMELK_NAMESPACE=<dev namespace> CAMELK_ENV_FILE=<that file>"
                                       f"{(' CAMELK_SECRET_KEYS=' + chr(39) + ','.join(cred) + chr(39) + ' (credentials: Secret references, the colleague creates the Secret)') if cred else ''}"
-                                      f"{' CAMELK_BROKER_URL=amqp://<artemis-service>:5672' if not http else ''}; then rerun", "dev-values", sc)
+                                      f"{' CAMELK_BROKER_URL=amqp://<artemis-service>:5672' if not http else ''}; then rerun (no Dev values yet: export DEV_VALUES=later for review files with placeholders)", "dev-values", sc)
             else:
                 self.propose("command", f"bash {kit}/pi/vdi_session.sh deploy '{p}' 2>&1 | tee -a domain/agent-run.log", "deploy", sc)
             return
@@ -321,7 +335,10 @@ class State:
         for p, x in px:
             self.proxy(p, x)
         if self.next is None:
-            self.next = {"kind": "done", "text": "every flow is ready: hand over camel-k/integration.yaml + DEPLOY.md per flow", "stage": "handover", "scope": "all"}
+            text = ("every flow is ready for review: camel-k/integration.yaml + DEPLOY.md per flow with the Dev values as CHANGE-ME "
+                    "(listed in DEPLOY.md); regenerate with dev.env + CAMELK_NAMESPACE or fill them in the GitOps repo"
+                    if self.review_only else "every flow is ready: hand over camel-k/integration.yaml + DEPLOY.md per flow")
+            self.next = {"kind": "done", "text": text, "stage": "handover", "scope": "all"}
         return self
 
     def fingerprint(self) -> str:

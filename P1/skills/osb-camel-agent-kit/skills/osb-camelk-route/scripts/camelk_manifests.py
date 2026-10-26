@@ -18,7 +18,9 @@ Values that differ per environment come from the command line or the environment
   CAMELK_SECRET_KEYS='A,B'           env names that go into the Secret too (names with PASSWORD/TOKEN/API_KEY/... always do)
   Names that look like credentials (PASSWORD, SECRET, TOKEN, KEY, USER) are read from Secret <name>-env instead
   (environment trait NAME=secret:<name>-env/NAME, Camel K 2.3+); DEPLOY.md prints the command that creates it.
-Namespace and domain label: --namespace / --domain, else CAMELK_NAMESPACE / CAMELK_DOMAIN, else none / the folder."""
+Namespace and domain label: --namespace / --domain, else CAMELK_NAMESPACE / CAMELK_DOMAIN, else none / the folder.
+DEV_VALUES=later: files for review before the Dev values exist. Missing values stay CHANGE-ME and are listed as open,
+CHECK.json says ready false + for_review true; a value typed as CHANGE-ME or <...> always counts as open."""
 from __future__ import annotations
 
 import argparse
@@ -81,6 +83,11 @@ def read_env_file(path: str) -> dict:
     return out
 
 
+def for_review(open_: list) -> bool:
+    """DEV_VALUES=later and only missing values open (no structural problem): the files can go to review."""
+    return os.environ.get("DEV_VALUES", "") == "later" and all(": no value" in o for o in open_)
+
+
 def env_refs(texts) -> list:
     names = []
     for t in texts:
@@ -106,7 +113,8 @@ def env_vars(name: str, refs: list, values: dict, broker_url: str) -> tuple:
             continue
         else:
             v = values.get(n, "")
-        if not v:
+        if not v or v == CHANGE or re.fullmatch(r"<[^>]*>", v):
+            v = ""
             open_.append(f"{n}: no value (--env-file / CAMELK_ENV_FILE{', --broker-url / CAMELK_BROKER_URL' if n == 'BROKER_URL' else ''})")
         vars_.append(f"{n}={v or CHANGE}")
     return vars_, secret, open_
@@ -160,8 +168,11 @@ def deploy_md(name: str, ns: str, secret_env: list, broker_secret: list, open_: 
     D += [f"{n + 1}. Remove: `oc delete{nsf} -f integration.yaml` (Secrets stay: delete them by name if needed).", "",
           "Camel version: the Camel K runtime of the cluster decides it; routes and tests are built for Camel 4.18, so use a",
           "Camel 4.18 runtime (Camel K 2.x with camel-k-runtime of that line)."]
-    if open_:
+    if open_ or not ns:
         D += ["", "## Open before applying (CHANGE-ME in integration.yaml)", ""] + [f"- {o}" for o in open_]
+        D += [] if ns else ["- namespace: none in the file; the Argo CD Application destination sets it (or `-n <namespace>`)"]
+        D += ["", "Regenerate with the values on the migration machine (dev.env, CAMELK_NAMESPACE) or fill the CHANGE-ME",
+              "lines in the GitOps repository; credentials only through the Secret above."] if open_ else []
     return D
 
 
@@ -255,7 +266,7 @@ def module_manifests(mod: Path, ns: str = "", domain: str = "", broker_url: str 
     docs.append(integration(name, labels, ns, sources, deps, [f"configmap:{name}-config"], [], env, [], http,
                             f"the migrated module {meta.get('project', '')}/{meta.get('proxy', mod.name)}"))
     kind = "skills path, " + ("HTTP request/reply" if http else "AMQP" if amqp else "messaging")
-    check = {"integration": name, "path": "skills", "ready": not open_, "open": open_,
+    check = {"integration": name, "path": "skills", "ready": not open_, "for_review": for_review(open_), "open": open_,
              "secrets": [f"{name}-env"] if secret_env else [], "sources": len(sources), "dependencies": deps}
     write(mod / "camel-k", docs, deploy_md(name, ns, secret_env, [], open_, http, kind), check)
     return check
