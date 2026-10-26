@@ -159,6 +159,25 @@ class KitGateScriptTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
 
+class SmokeBackendSelectionTests(unittest.TestCase):
+    """backend.<name> values that are header values (API key, ids from the env) are no endpoint and get no stub."""
+
+    def test_only_endpoints_the_route_calls_are_backends(self):
+        import importlib.util
+        sk = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts"
+        sys.path.insert(0, str(sk))
+        s = importlib.util.spec_from_file_location("sh", sk / "smoke_http.py")
+        sh = importlib.util.module_from_spec(s); s.loader.exec_module(sh)
+        props = {"backend.svcbs": "https://{{env:SVC_HOST}}/v1/x?bridgeEndpoint=true",
+                 "backend.apikey": "{{env:SVC_APIKEY}}", "backend.requestid": "{{env:SVC_REQUESTID}}"}
+        with tempfile.TemporaryDirectory() as d:
+            m = Path(d); (m / "src/main/resources/routes").mkdir(parents=True)
+            (m / "src/main/resources/routes/X.camel.yaml").write_text(
+                '- to:\n    uri: "{{backend.svcbs}}"\n- setHeader:\n    simple: "{{backend.apikey}}"\n')
+            self.assertEqual(list(sh.backends(props, m)), ["svcbs"])
+        self.assertEqual(list(sh.backends(props)), ["svcbs"])
+
+
 class CamelKSecretKeysTests(unittest.TestCase):
     """CAMELK_SECRET_KEYS moves non-obvious credentials (ids from a DVM) into the Secret: no value in integration.yaml."""
 

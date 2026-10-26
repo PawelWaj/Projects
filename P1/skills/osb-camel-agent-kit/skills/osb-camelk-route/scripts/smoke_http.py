@@ -64,8 +64,20 @@ def entry_path(props: dict[str, str]) -> str | None:
     return m.group(1) if m else None
 
 
-def backends(props: dict[str, str]) -> dict[str, str]:
-    return {k[len("backend."):]: v for k, v in props.items() if k.startswith("backend.")}
+def backends(props: dict[str, str], mod: Path | None = None) -> dict[str, str]:
+    """The backend endpoints: backend.<name> properties the route calls as an endpoint URI. A module may keep other
+    backend.<name> values (header values such as an API key or a request id taken from the env); those are no endpoint
+    and get no stub. Route known: the names used in a uri. Else: values that look like an endpoint URI."""
+    cand = {k[len("backend."):]: v for k, v in props.items() if k.startswith("backend.")}
+    used: set[str] = set()
+    if mod is not None:
+        for y in (mod / "src/main/resources/routes").glob("*.yaml"):
+            for line in y.read_text(encoding="utf-8").splitlines():
+                if re.search(r"\b(uri|to)\s*:", line):
+                    used |= set(re.findall(r"\{\{backend\.([\w.-]+)\}\}", line))
+    if used:
+        return {n: v for n, v in cand.items() if n in used}
+    return {n: v for n, v in cand.items() if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:(//)?[^{]", v)}
 
 
 def stub_uri(uri: str, stub_port: int) -> str:
@@ -334,7 +346,7 @@ def main() -> int:
     if a.engine == "mvn" and "camel-platform-http-main" not in (mod / "pom.xml").read_text(encoding="utf-8"):
         print("pom.xml has no camel-platform-http-main: the route cannot listen on Camel Main (scaffold a fresh module)")
         return 2
-    be = backends(props)
+    be = backends(props, mod)
     cfg = json.loads((mod / "src/test/resources/flow-test.json").read_text(encoding="utf-8"))
     err_status = int(cfg.get("error_http_status") or 500)
     generated = [str(g) for g in cfg.get("generated_fields") or []]
