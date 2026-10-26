@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import glob
 import json
 import os
 import re
@@ -46,6 +47,27 @@ def setting(name: str, env: dict, default: str = "") -> str:
     if v and "~" in v:
         v = v.replace("~", str(Path.home()))
     return win_path(v) if v else v
+
+
+def artemis_home(value: str, ws: Path) -> Path | None:
+    """The unzipped Artemis distribution: ARTEMIS_HOME when valid, else the same places broker/lib.sh looks at by itself
+    (next to the workspace, in the home folder, /c/tools). A VDI with the zip unpacked by hand has no ARTEMIS_HOME line."""
+    cands = [Path(value)] if value else []
+    for pat in (str(ws.parent / "apache-artemis-*"), str(Path.home() / "apache-artemis-*"), win_path("/c/tools/apache-artemis*")):
+        cands += sorted(Path(x) for x in glob.glob(pat))
+    return next((c for c in cands if (c / "lib" / "artemis-boot.jar").is_file()), None)
+
+
+def jbang_available() -> bool:
+    """`jbang` on the PATH: the launcher env_setup.sh writes is a bash script without extension, which shutil.which on a
+    Windows Python does not count as executable (PATHEXT); so look for the file itself, then for the jar it starts."""
+    if shutil.which("jbang"):
+        return True
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        if d and any((Path(win_path(d)) / n).is_file() for n in ("jbang", "jbang.cmd", "jbang.bat", "jbang.exe")):
+            return True
+    jar_dir = Path(win_path(os.environ.get("JBANG_JAR_DIR", "") or str(Path.home() / ".jbang-jar")))
+    return any(jar_dir.glob("jbang-cli-*-all.jar")) and (Path.home() / "bin" / "jbang").is_file()
 
 
 def console_up(url: str) -> bool:
@@ -97,6 +119,7 @@ class State:
         self.kit = Path(setting("KIT", self.env, str(Path(__file__).resolve().parents[3])))
         self.app = Path(setting("APP", self.env, "/nonexistent"))
         self.items: list[tuple[str, str, str, str]] = []   # (scope, name, status, detail)
+        self.notes: list[str] = []                         # reminders for the person, never a command for the operator
         self.next: dict | None = None
 
     def add(self, scope, name, status, detail=""):
@@ -129,13 +152,13 @@ class State:
         if not ok:
             self.propose("human", "write ~/.m2/settings.xml with the client Nexus mirror (runbook step 2), then: "
                                   "curl -s -o /dev/null -w '%{http_code}' <nexus>/repository/maven-public/junit/junit/4.13.2/junit-4.13.2.pom  -> 200", "nexus")
-        home = Path(setting("ARTEMIS_HOME", self.env, "/nonexistent"))
+        home = artemis_home(setting("ARTEMIS_HOME", self.env), self.ws)
         broker = Path(setting("ARTEMIS_BROKER", self.env, str(self.ws.parent / "artemis-broker")))
         console = setting("ARTEMIS_CONSOLE", self.env, "http://localhost:8161")
-        dist = (home / "lib" / "artemis-boot.jar").is_file()
+        dist = home is not None
         inst = (broker / "etc" / "broker.xml").is_file()
         up = console_up(console) if inst else False
-        jb = shutil.which("jbang") is not None
+        jb = jbang_available()
         smoke_env = (self.ws / ".env-smoke" / "SMOKE.ts").is_file()
         pw = bool(os.environ.get("ARTEMIS_PASSWORD"))
         self.add("env", "artemis", "done" if dist and inst and up else "todo",
@@ -164,6 +187,10 @@ class State:
                   else "no EXPORT: existing task1 cases are used, missing scenarios get synthetic cases"))
         if self.export and not self.mask:
             self.propose("human", "export MASK_KEY='<from the data owner>' (typed, never in a file) so task1 can mask the export", "mask-key")
+        masked = self.ws / "task1" / "events.masked.csv"
+        if self.export and masked.is_file() and masked.stat().st_mtime >= Path(exp).stat().st_mtime:
+            # one export often covers several projects: the person deletes it when the last of them ran task1 (data rule)
+            self.notes.append('raw Splunk export still present: rm "$EXPORT" once every project of this export has run task1')
 
     # --- one proxy ---------------------------------------------------------------------------------------------------
     def proxy(self, p: str, x: str):
@@ -295,6 +322,7 @@ class State:
         k = self.next["kind"]
         out.append("")
         out.append(("next: " if k == "command" else "HUMAN: " if k == "human" else "DONE: ") + self.next["text"])
+        out += [f"note: {n}" for n in self.notes]
         return "\n".join(out)
 
 
@@ -307,7 +335,7 @@ def main() -> int:
     st = State(Path(win_path(a.ws)).resolve(), a.projects).run()
     if a.json:
         print(json.dumps({"items": [{"scope": s, "name": n, "status": t, "detail": d} for s, n, t, d in st.items],
-                          "next": st.next, "fingerprint": st.fingerprint()}, indent=1))
+                          "next": st.next, "notes": st.notes, "fingerprint": st.fingerprint()}, indent=1))
     else:
         print(st.text())
     return {"command": 0, "human": 3, "done": 0}[st.next["kind"]]

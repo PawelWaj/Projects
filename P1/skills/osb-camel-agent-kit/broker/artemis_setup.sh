@@ -22,7 +22,9 @@ case "$CMD" in
     remember ARTEMIS_HOME "$ARTEMIS_HOME"; remember ARTEMIS_BROKER "$ARTEMIS_BROKER"
     "$0" create && "$0" start;;
   install)
-    if [ -n "$ARTEMIS_HOME" ] && [ -f "$ARTEMIS_HOME/lib/artemis-boot.jar" ]; then echo "already installed: $ARTEMIS_HOME"; exit 0; fi
+    if [ -n "$ARTEMIS_HOME" ] && [ -f "$ARTEMIS_HOME/lib/artemis-boot.jar" ]; then
+      echo "already installed: $ARTEMIS_HOME"; remember ARTEMIS_HOME "$ARTEMIS_HOME"; remember ARTEMIS_BROKER "$ARTEMIS_BROKER"; exit 0   # unzipped by hand: write it down
+    fi
     dest=$(cd "$WS/.." && pwd)
     if [ -z "${ARTEMIS_ZIP:-}" ] || [ ! -f "$ARTEMIS_ZIP" ]; then           # no download at hand: the Maven repository has it
       v=${ARTEMIS_VERSION:-2.44.0}

@@ -28,3 +28,4 @@ no values).
 | `no module yet (run flows first)` on smoke/deploy | module not built | the state proposes `flows`; run it |
 | `nothing passed the selector` (broker run) | the case headers do not match the JMS selector | HUMAN: compare `headers.json` keys with the selector in research.json (names only) |
 | `review reuses the old module` after a research change | `review` never re-scaffolds | run `flows` instead of `review` |
+| state says `artemis todo: distribution missing` or `jbang todo: not on PATH` while `env_setup.sh check` is all green | kit < `a423a2f`+: the state did not look next to the workspace for a hand-unzipped Artemis and a Windows Python ignores a `jbang` launcher without extension; update the kit; no edit of `.osb-kit.env` needed |

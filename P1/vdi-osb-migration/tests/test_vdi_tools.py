@@ -171,6 +171,30 @@ class PipelineStateWindowsPathTests(unittest.TestCase):
         m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
         return m
 
+    def test_artemis_found_next_to_the_workspace_without_an_env_line(self):
+        m = self._mod()
+        with tempfile.TemporaryDirectory() as d:
+            ws = Path(d) / "work"; ws.mkdir()
+            (Path(d) / "apache-artemis-9.9.9/lib").mkdir(parents=True)
+            (Path(d) / "apache-artemis-9.9.9/lib/artemis-boot.jar").write_text("")
+            self.assertIsNone(m.artemis_home("", Path(d) / "elsewhere/work"))
+            self.assertEqual(m.artemis_home("", ws), Path(d) / "apache-artemis-9.9.9")
+            self.assertEqual(m.artemis_home(str(Path(d) / "nonexistent"), ws), Path(d) / "apache-artemis-9.9.9")
+
+    def test_jbang_launcher_without_extension_counts_as_on_path(self):
+        m = self._mod()
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "jbang").write_text("#!/bin/sh\n")           # not executable: shutil.which ignores it
+            old = os.environ.get("PATH", "")
+            try:
+                os.environ["PATH"] = d
+                self.assertTrue(m.jbang_available())
+                os.environ["PATH"] = str(Path(d) / "empty")
+                os.environ["JBANG_JAR_DIR"] = str(Path(d) / "nojar")
+                self.assertFalse(m.jbang_available())
+            finally:
+                os.environ["PATH"] = old; os.environ.pop("JBANG_JAR_DIR", None)
+
     def test_git_bash_paths_become_windows_paths_only_on_windows(self):
         m = self._mod()
         real = m.os.name
