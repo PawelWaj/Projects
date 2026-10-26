@@ -2,6 +2,7 @@
 # The whole local broker test in ONE window: queues -> route started in the background -> one case per scenario of
 # every flow + one unreadable message per flow -> output queues compared with what the tests expect -> route stopped.
 #   bash <kit>/broker/e2e_local.sh <module | flat project folder> [--flow <proxy>]
+#   ENGINE=jbang: the route runs with Camel JBang as on Camel K (modules only), default mvn (the module's run-local)
 # Route log: <folder>/target/e2e-route.log (kept for the evidence). Exit 0 = every output queue got what was expected.
 set -u
 . "$(dirname "$0")/lib.sh"
@@ -61,5 +62,5 @@ rc=$?
 errs=$(grep -cE "ERROR|Exception" "$LOG")
 echo "route log: $LOG ($errs ERROR/Exception lines; the unreadable messages cause some on purpose)"
 # machine-readable result for pipeline_state.py (skill osb-migration-run): ok, case count, when
-printf '{"ok": %s, "cases": %s, "route_errors": %s, "ts": "%s"}\n' "$([ "$rc" = 0 ] && echo true || echo false)" "$n" "$errs" "$(date '+%F %T')" > "$M/target/e2e-result.json"
+printf '{"ok": %s, "cases": %s, "route_errors": %s, "engine": "%s", "ts": "%s"}\n' "$([ "$rc" = 0 ] && echo true || echo false)" "$n" "$errs" "${ENGINE:-mvn}" "$(date '+%F %T')" > "$M/target/e2e-result.json"
 exit $rc

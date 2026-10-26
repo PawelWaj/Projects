@@ -678,7 +678,10 @@ def main() -> int:
     stubs += [f"- `{k}.*`: {b.get('type', '')} {b.get('operation', '')}; response use: {b.get('response_use', '') or '-'}" for k, b in m["backends"].items()] or ["- no backends"]
     write_once(o / "src/test/resources/stubs/README.md", "\n".join(stubs) + "\n", True)
     # tests log at WARN: the Camel INFO lines of every test made each mvn run hundreds of KB (full log: target/)
-    write_once(o / "src/test/resources/simplelogger.properties", "org.slf4j.simpleLogger.defaultLogLevel=warn\n", False)
+    # the OSB log lines run in the tests (INFO): at WARN Camel skips a log step, so a broken log expression
+    # (e.g. an operator Simple does not know) would only fail on the cluster, on the error path
+    write_once(o / "src/test/resources/simplelogger.properties",
+               "org.slf4j.simpleLogger.defaultLogLevel=warn\norg.slf4j.simpleLogger.log.oracle.osb.logging.pipeline=info\n", False)
     copied = 0
     if a.parity and a.parity.is_dir():
         dst = o / "src/test/resources/parity"

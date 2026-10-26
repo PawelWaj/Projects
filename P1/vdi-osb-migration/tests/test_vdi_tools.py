@@ -179,6 +179,186 @@ class CamelKSecretKeysTests(unittest.TestCase):
         self.assertEqual(open_, [])
 
 
+class CardAnswersTests(unittest.TestCase):
+    """card_answers.py: a recommended answer per open question from the chain's evidence; Enter accepts; approval only
+    when nothing is left; audit trail; never a message value in the output."""
+
+    SCRIPT = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts/card_answers.py"
+    QS = ["Backend host: header says one host, the business service another. Which is correct?",
+          "HTTP method mismatch: business service defines POST but route-node overrides to GET. Confirm GET.",
+          "DVM credential rotation: the DVM holds API credentials that must not be hardcoded.",
+          "No scenario traces available: test data needs manual effort.",
+          "Should the reply keep the field order of the legacy consumer?"]
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        ws = Path(self.tmp.name)
+        self.m = ws / "modules/a-prj/X"
+        (self.m / "src/main/resources/routes").mkdir(parents=True)
+        (ws / "research/a-prj/X").mkdir(parents=True)
+        (ws / "research/a-prj/X/research.json").write_text(json.dumps({"entry": {"destination": "/a"}, "errors": [], "outputs": [],
+                                                                     "scenario_mapping": [{"scenario": "*", "outputs": ["reply"]}]}))
+        (self.m / ".scaffold.json").write_text(json.dumps({"project": "a-prj", "proxy": "X"}))
+        (self.m / "src/main/resources/routes/X.camel.yaml").write_text(
+            '- route:\n    from:\n      uri: "{{flow.input}}"\n      steps:\n        - setHeader:\n            name: CamelHttpMethod\n'
+            '            constant: "GET"\n        - setHeader:\n            name: k\n            simple: "${env:X_APIKEY}${env:X_REQUESTID}"\n')
+        (self.m / "src/main/resources/application.properties").write_text("flow.input=platform-http:/a\nbackend.x=https://{{env:X_HOST}}/p\n")
+        (self.m / "MUTATION.json").write_text(json.dumps({"killed": 2, "total": 2, "mutations": [{"what": "HTTP method GET -> POST", "killed": True}]}))
+        (self.m / "GATES.json").write_text(json.dumps({"gates": {"K4_no_infrastructure": {"ok": True}, "K9_scenarios_covered": {"ok": True}}}))
+        c = self.m / "src/test/resources/parity/a-prj-X/all/case1"; c.mkdir(parents=True)
+        (c / "input.payload").write_text('{"nationalId": "VALUE-NEVER-SHOWN-4242"}')
+        self.card = self.m / "FLOW_CARD.md"
+        self.card.write_text("# card\nStatus: draft\nApprover: \nDate: \n\n## 9 Open questions\n" + "".join(f"- [ ] {q}\n" for q in self.QS))
+        self.env = {**os.environ, "APP": str(ws / "noapp")}
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_it(self, *args, stdin=""):
+        return subprocess.run([sys.executable, "-I", str(self.SCRIPT), str(self.m), *args], input=stdin,
+                              capture_output=True, text=True, env=self.env)
+
+    def test_defaults_answer_every_question_from_evidence_and_approve(self):
+        r = self.run_it("--defaults", "--approver", "A Person")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn("VALUE-NEVER-SHOWN", r.stdout + r.stderr)
+        card = self.card.read_text()
+        self.assertEqual(card.count("- [ ]"), 0)
+        self.assertIn("Status: approved", card); self.assertIn("Approver: A Person", card)
+        self.assertIn("X_HOST", card)                                       # host -> per-environment value
+        self.assertRegex(card, r"accepted: GET as OSB sends it.*route sends GET.*caught")
+        self.assertIn("CAMELK_SECRET_KEYS='X_REQUESTID'", card)              # an id next to the API key -> Secret
+        self.assertIn("1 real Splunk case(s)", card)
+        self.assertIn("to be confirmed by the flow owner", card)            # fallback
+        trail = json.loads((self.m / "CARD_ANSWERS.json").read_text())["runs"][-1]
+        self.assertTrue(trail["approved"]); self.assertEqual(len(trail["answers"]), 5)
+        self.assertTrue(all(a["accepted_default"] for a in trail["answers"]))
+        self.assertTrue(list(self.m.glob("FLOW_CARD.md.bak-*")))
+
+    def test_enter_accepts_typing_replaces_s_skips(self):
+        r = self.run_it(stdin="\nmy own answer\ns\n\n\n")
+        self.assertEqual(r.returncode, 3, r.stdout)                         # one question left: not approved
+        self.assertIn("Answer [", r.stdout)
+        card = self.card.read_text()
+        self.assertIn("answered: my own answer", card)
+        self.assertEqual(card.count("- [ ]"), 1)
+        self.assertNotIn("Status: approved", card)
+        runs = json.loads((self.m / "CARD_ANSWERS.json").read_text())["runs"][-1]["answers"]
+        self.assertEqual([a["accepted_default"] for a in runs], [True, False, False, True, True])
+
+    def test_prepared_answers_file_overrides_the_recommendation(self):
+        f = Path(self.tmp.name) / "a.json"; f.write_text(json.dumps({"Should the reply keep": "accepted: yes, same order as OSB"}))
+        r = self.run_it("--answers", str(f), "--defaults", "--approver", "B")
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertIn("accepted: yes, same order as OSB", self.card.read_text())
+
+    def test_route_that_differs_from_osb_gets_an_action(self):
+        y = self.m / "src/main/resources/routes/X.camel.yaml"; y.write_text(y.read_text().replace('"GET"', '"POST"'))
+        self.run_it("--defaults", "--approver", "A")
+        self.assertIn("change CamelHttpMethod to GET", self.card.read_text())
+
+
+class CheckManifestTests(unittest.TestCase):
+    """check_manifest.py: the generated integration.yaml carries the module's sources unchanged, credentials only as
+    Secret references, and is ready or waits only for per-environment values."""
+
+    SK = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts"
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.m = Path(self.tmp.name) / "modules/p/Flow"
+        (self.m / "src/main/resources/routes").mkdir(parents=True); (self.m / "src/main/java/a").mkdir(parents=True)
+        (self.m / "src/main/resources/routes/Flow.camel.yaml").write_text('- route:\n    from:\n      uri: "{{flow.input}}"\n      steps:\n        - log: "x ${env:F_TOKEN}"\n')
+        (self.m / "src/main/java/a/B.java").write_text("package a;\npublic class B {}\n")
+        (self.m / "src/main/resources/application.properties").write_text("flow.input=platform-http:/f\nbackend.x=https://{{env:F_HOST}}/p\n")
+        (self.m / "pom.xml").write_text("<project><artifactId>camel-http</artifactId></project>")
+        (self.m / ".scaffold.json").write_text(json.dumps({"project": "p", "proxy": "Flow"}))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def gen_and_check(self, env=None):
+        e = {**os.environ, **(env or {})}
+        subprocess.run([sys.executable, "-I", str(self.SK / "camelk_manifests.py"), str(self.m)], capture_output=True, text=True, env=e)
+        return subprocess.run([sys.executable, "-I", str(self.SK / "check_manifest.py"), str(self.m)], capture_output=True, text=True, env=e)
+
+    def test_generated_file_passes_and_waits_only_for_values(self):
+        r = self.gen_and_check()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("ready for Dev once values are set: F_HOST", r.stdout)
+        self.assertIn("1 credential name(s), all as secret: references", r.stdout)
+
+    def test_hand_edited_source_fails(self):
+        self.gen_and_check()
+        f = self.m / "camel-k/integration.yaml"; f.write_text(f.read_text().replace("public class B", "public class C"))
+        r = subprocess.run([sys.executable, "-I", str(self.SK / "check_manifest.py"), str(self.m)], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("differ: ['B.java']", r.stdout)
+
+    def test_credential_value_from_env_file_never_in_the_file(self):
+        envf = Path(self.tmp.name) / "dev.env"; envf.write_text("F_HOST=h.example\nF_ID=id-value-77\n")
+        y = self.m / "src/main/resources/routes/Flow.camel.yaml"; y.write_text(y.read_text().replace("${env:F_TOKEN}", "${env:F_TOKEN}${env:F_ID}"))
+        r = self.gen_and_check({"CAMELK_ENV_FILE": str(envf), "CAMELK_SECRET_KEYS": "F_ID"})
+        self.assertEqual(r.returncode, 0, r.stdout)
+        self.assertNotIn("id-value-77", (self.m / "camel-k/integration.yaml").read_text())
+
+
+class RouteLintAndJBangTests(unittest.TestCase):
+    SK = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts"
+
+    def _mod(self, name):
+        import importlib.util
+        sys.path.insert(0, str(self.SK))
+        s = importlib.util.spec_from_file_location(name, self.SK / f"{name}.py")
+        m = importlib.util.module_from_spec(s); s.loader.exec_module(m)
+        return m
+
+    def test_lint_flags_operators_simple_does_not_know(self):
+        vm = self._mod("verify_module")
+        out = vm.yaml_lint('        message: "x ${exception.message ?? \'\'} y"\n        simple: "${header.a}"\n')
+        self.assertEqual(len(out), 1); self.assertIn("line 1", out[0]); self.assertIn("??", out[0])
+
+    def test_camel_run_command_is_the_camel_k_shape(self):
+        sm = self._mod("smoke_http")
+        with tempfile.TemporaryDirectory() as d:
+            m = Path(d) / "M"
+            (m / "src/main/resources/routes").mkdir(parents=True); (m / "src/main/java/a").mkdir(parents=True)
+            (m / "src/main/resources/routes/M.camel.yaml").write_text("- route: {}\n")
+            (m / "src/main/java/a/B.java").write_text("package a; public class B {}\n")
+            (m / "src/main/resources/application.properties").write_text(
+                "camel.main.routes-include-pattern=classpath:routes/*.yaml\nbackend.x=https://h/p\n")
+            (m / "pom.xml").write_text("<artifactId>camel-http</artifactId><artifactId>camel-platform-http-main</artifactId>")
+            cmd = sm.jbang_command(m, 8089, 60, {"backend.x": "http://127.0.0.1:1/p"}, "mvn -B -s /tmp/s.xml")
+            j = " ".join(cmd)
+            self.assertIn("camel-jbang-main:", j); self.assertIn(" run ", j)
+            self.assertIn("M.camel.yaml", j); self.assertIn("B.java", j)
+            self.assertIn("--dep=camel:yaml-dsl,camel:http,camel:platform-http", j)
+            self.assertIn("--maven-settings=/tmp/s.xml", j); self.assertIn("--port=8089", j)
+            props = (m / "target/camel-run/application.properties").read_text()
+            self.assertIn("backend.x=http://127.0.0.1:1/p", props)
+            self.assertNotIn("routes-include-pattern", props)
+
+
+class LocalAcceptanceTests(unittest.TestCase):
+    SH = ROOT / "skills/osb-camel-agent-kit/pi/local_acceptance.sh"
+
+    def test_usage_no_module_and_unapproved_card(self):
+        with tempfile.TemporaryDirectory() as d:
+            env = {**os.environ, "WS": d, "OSB_KIT_ENV": "/nonexistent", "PYTHON": sys.executable}
+            r = subprocess.run(["bash", str(self.SH)], capture_output=True, text=True, env=env, cwd=d)
+            self.assertNotEqual(r.returncode, 0); self.assertIn("usage", r.stderr + r.stdout)
+            r = subprocess.run(["bash", str(self.SH), "a-prj"], capture_output=True, text=True, env=env, cwd=d)
+            self.assertEqual(r.returncode, 2); self.assertIn("no work module", r.stdout)
+            m = Path(d) / "modules/a-prj/X"; m.mkdir(parents=True)
+            (m / ".scaffold.json").write_text("{}"); (m / "FLOW_CARD.md").write_text("Status: draft\n- [ ] q\n")
+            r = subprocess.run(["bash", str(self.SH), "a-prj"], capture_output=True, text=True, env=env, cwd=d)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("card_answers.py", r.stdout)
+            self.assertIn("LOCAL ACCEPTANCE: FAIL a-prj/X", r.stdout)
+            res = json.loads((m / "LOCAL_ACCEPTANCE.json").read_text())
+            self.assertEqual((res["result"], res["failed_step"]), ("FAIL", "card"))
+
+
 class PipelineStateWindowsPathTests(unittest.TestCase):
     """Git Bash exports /c/Users/x paths (MVN_ARGS -s, EXPORT, ARTEMIS_HOME); a Windows Python must map them to c:/Users/x
     or every file looks missing (seen on the VDI: ~/.m2/settings.xml reported MISSING although present)."""
@@ -299,7 +479,8 @@ class PipelineStateTests(unittest.TestCase):
         d, txt = self.state()
         self.assertEqual(d["next"]["kind"], "human")
         self.assertEqual(d["next"]["stage"], "card-approval")
-        self.assertIn(str(m / "FLOW_CARD.md"), d["next"]["text"])
+        self.assertIn("card_answers.py", d["next"]["text"])
+        self.assertIn(str(m), d["next"]["text"])
         self.assertIn("HUMAN: ", txt)
         card = [i for i in d["items"] if i["name"] == "card"][0]
         self.assertEqual(card["status"], "BLOCKED")
@@ -326,12 +507,17 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(d["next"]["stage"], "review-pack")
         self.assertIn("make_review_pack.sh a-prj x", d["next"]["text"])
         (self.ws / "review").mkdir(); (self.ws / "review/a-prj-x.tgz").write_text("x"); os.utime(self.ws / "review/a-prj-x.tgz", (3000, 3000))
-        (m / "camel-k").mkdir(); (m / "camel-k/CHECK.json").write_text(json.dumps({"ready": False, "open": ["B_HOST: no value (--env-file)"]}))
+        (m / "camel-k").mkdir(); (m / "camel-k/CHECK.json").write_text(json.dumps({"ready": False, "open": ["B_HOST: no value (--env-file)", "B_ID: no value (--env-file)"]}))
+        d, _ = self.state()
+        self.assertEqual(d["next"]["stage"], "local-acceptance", "the gate before Dev comes before the Dev values")
+        self.assertIn("local_acceptance.sh 'a-prj'", d["next"]["text"])
+        (m / "LOCAL_ACCEPTANCE.json").write_text(json.dumps({"result": "PASS", "steps": []})); os.utime(m / "LOCAL_ACCEPTANCE.json", (3500, 3500))
         d, txt = self.state()
         self.assertEqual(d["next"]["kind"], "human")
         self.assertEqual(d["next"]["stage"], "dev-values")
         self.assertIn("B_HOST", d["next"]["text"])
         self.assertIn("CAMELK_NAMESPACE", d["next"]["text"])
+        self.assertIn("CAMELK_SECRET_KEYS='B_ID'", d["next"]["text"], "an id next to the host goes to the Secret")
         # namespace + env file given: the deploy command; ready: handover
         envf = self.ws / "dev.env"; envf.write_text("B_HOST=h\n")
         d, _ = self.state(CAMELK_NAMESPACE="dev", CAMELK_ENV_FILE=str(envf))
@@ -353,7 +539,10 @@ class PipelineStateTests(unittest.TestCase):
         self.assertEqual(d["next"]["kind"], "human")
         self.assertEqual(d["next"]["stage"], "mutation-survived")
         self.assertIn("drop the backend call", d["next"]["text"])
-        (m / "MUTATION_ACCEPTED.md").write_text("accepted: the OSB flow never sees that header\n"); os.utime(m / "MUTATION_ACCEPTED.md", (7000, 7000))
+        (m / "MUTATION_ACCEPTED.md").write_text("accepted: some other change\n"); os.utime(m / "MUTATION_ACCEPTED.md", (7000, 7000))
+        d, _ = self.state()
+        self.assertEqual(d["next"]["stage"], "mutation-survived", "the survivor must be named in the acceptance")
+        (m / "MUTATION_ACCEPTED.md").write_text("drop the backend call -- reason: the OSB flow never sees that header\n")
         d, _ = self.state()
         self.assertNotEqual(d["next"]["stage"], "mutation-survived", "a written acceptance passes the gate")
         self.assertIn("survivor accepted", [i for i in d["items"] if i["name"] == "mutations"][0]["detail"])

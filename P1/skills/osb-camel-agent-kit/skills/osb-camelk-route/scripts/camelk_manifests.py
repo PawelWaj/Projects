@@ -221,6 +221,15 @@ def manifests(pdir: Path, ns: str = "", domain: str = "", broker_url: str = "", 
     return check
 
 
+def module_deps(mod: Path, used: str) -> list:
+    """The Camel K dependency list of a Maven module: its camel-* artifacts as camel:<name> (test-only and runtime-
+    provided ones skipped). Also what local_acceptance passes to `camel run --dep`, so both run the same classpath."""
+    pom = (mod / "pom.xml").read_text(encoding="utf-8") if (mod / "pom.xml").is_file() else ""
+    arts = list(dict.fromkeys(re.findall(r"<artifactId>(camel-[\w-]+)</artifactId>", pom)))
+    deps = ["camel:yaml-dsl"] + [POM_MAP.get(a, "camel:" + a[len("camel-"):]) for a in arts if a not in POM_SKIP and a != "camel-yaml-dsl"]
+    return [d for d in dict.fromkeys(deps) if d != "camel:amqp" or re.search(r"\bamqp:", used)]   # the scaffold pom always has it
+
+
 def module_manifests(mod: Path, ns: str = "", domain: str = "", broker_url: str = "", env_file: str = "") -> dict:
     """Skills path: a Maven module written by the implementer (routes/*.camel.yaml + beans under src/main/java)."""
     main = mod / "src/main"
@@ -236,11 +245,7 @@ def module_manifests(mod: Path, ns: str = "", domain: str = "", broker_url: str 
     clash = sorted({j.name for j in java if sum(1 for x in java if x.name == j.name) > 1})
     sources.update({j.name: j.read_text(encoding="utf-8") for j in java})
     props = camelk_properties((main / "resources/application.properties").read_text(encoding="utf-8"))
-    pom = (mod / "pom.xml").read_text(encoding="utf-8") if (mod / "pom.xml").is_file() else ""
-    arts = list(dict.fromkeys(re.findall(r"<artifactId>(camel-[\w-]+)</artifactId>", pom)))
-    deps = ["camel:yaml-dsl"] + [POM_MAP.get(a, "camel:" + a[len("camel-"):]) for a in arts if a not in POM_SKIP and a != "camel-yaml-dsl"]
-    used = "\n".join([*sources.values(), props])
-    deps = [d for d in dict.fromkeys(deps) if d != "camel:amqp" or re.search(r"\bamqp:", used)]   # the scaffold pom always has it
+    deps = module_deps(mod, "\n".join([*sources.values(), props]))
     amqp = "camel:amqp" in deps
     env, secret_env, open_ = env_vars(name, env_refs([*sources.values(), props]), values, broker_url)
     if clash:

@@ -2,11 +2,14 @@
 """Local smoke run of an HTTP request/reply module: the route really running, called over HTTP, backends stubbed.
 
     smoke_http.py modules/<project>/<proxy> [--port 8089] [--stub-port 8099] [--timeout 120] [--mvn "mvn -B -q -s ..."]
+                  [--engine mvn|jbang]
 
 What it proves, beyond the L1 tests (which call the route in-process with mock endpoints):
   curl -> platform-http entry of the running route -> http backend call -> stub server -> reply to the caller.
 Steps: 1. a stub HTTP server on 127.0.0.1:<stub-port> answers every backend with src/test/resources/stubs/<name>.*;
-2. the route starts on Camel Main (`mvn -Prun-local compile exec:java`, the module's own profile) with each
+2. the route starts on Camel Main (`mvn -Prun-local compile exec:java`, the module's own profile; or, with
+--engine jbang, as Camel K runs it: `camel run` of the route YAML + the Java sources + the Camel K properties with
+the dependency list of integration.yaml, no Maven build of the module) with each
 backend.<name> property pointed at the stub and camel-platform-http-main listening on <port>; every {{env:X}} /
 ${env:X} name of the route gets a fake value smoke-X; 3. every parity case (input.payload + headers.json) is POSTed
 to the entry path; a reply must have a 2xx status (outcome success) or error_http_status (other outcomes) and, where
@@ -220,6 +223,58 @@ def mvn_command(spec: str) -> list[str]:
     return [exe] + args[1:]
 
 
+def jbang_launcher() -> list[str]:
+    """Camel JBang through the kit's JBang wrapper (the JBang jar comes from Nexus), the same on Git Bash and macOS."""
+    sh = Path(__file__).resolve().parents[1] / "assets/templates/package/tools/jbang.sh"
+    bash = shutil.which("bash") or shutil.which("bash.exe")
+    if not bash:
+        raise FileNotFoundError("bash not on PATH (Git Bash)")
+    return [bash, win_path(str(sh))]
+
+
+def camel_version() -> str:
+    src = (Path(__file__).resolve().parent / "assemble_jbang.py").read_text(encoding="utf-8")
+    return os.environ.get("CAMEL_VERSION") or re.search(r'^CAMEL_VERSION = "([^"]+)"', src, re.M).group(1)
+
+
+def maven_settings(mvn_spec: str) -> str:
+    """The -s file of MVN_ARGS / --mvn (camel run resolves --dep with the same settings as Maven), else ~/.m2."""
+    args = shlex.split(mvn_spec)
+    for i, x in enumerate(args[:-1]):
+        if x in ("-s", "--settings"):
+            return win_path(os.path.expanduser(args[i + 1]))
+    return str(Path.home() / ".m2" / "settings.xml")
+
+
+def jbang_command(mod: Path, port: int, timeout: int, overrides: dict[str, str], mvn_spec: str) -> list[str]:
+    """`camel run` of the module the way Camel K runs it: route YAML + Java sources (compiled by Camel, as on Camel K)
+    + other resources, the Camel K variant of application.properties with the overrides applied, the dependency list
+    camelk_manifests.py writes into integration.yaml. Writes target/camel-run/application.properties."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import camelk_manifests as cm   # noqa: E402  (same folder)
+    res = mod / "src/main/resources"
+    routes = sorted((res / "routes").glob("*.yaml"))
+    java = sorted((mod / "src/main/java").rglob("*.java"))
+    other = sorted(p for p in res.rglob("*") if p.is_file() and p.parent != res / "routes" and p.name != "application.properties")
+    text = (res / "application.properties").read_text(encoding="utf-8")
+    props = cm.camelk_properties(text)
+    lines = []
+    for line in props.splitlines():
+        k = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+        lines.append(f"{k}={overrides[k]}" if k in overrides else line)
+    lines += [f"{k}={v}" for k, v in overrides.items() if not any(l.startswith(k + "=") for l in lines)]
+    out = mod / "target/camel-run"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "application.properties").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    used = "\n".join([text] + [r.read_text(encoding="utf-8") for r in routes + java])
+    deps = cm.module_deps(mod, used)
+    return (jbang_launcher() + ["--main", "main.CamelJBang", f"org.apache.camel:camel-jbang-main:{camel_version()}", "run"]
+            + [win_path(str(p)) for p in routes + java + other]
+            + [f"--properties={win_path(str(out / 'application.properties'))}", f"--dep={','.join(deps)}",
+               f"--maven-settings={maven_settings(mvn_spec)}", f"--max-seconds={timeout + 600}", f"--name={mod.name}"]
+            + ([f"--port={port}"] if port else []))
+
+
 def hint(log: Path, offset: int) -> list[str]:
     """Exception lines the route logged since `offset`, redacted (no query strings, no digit runs): names only."""
     text = log.read_bytes()[offset:].decode("utf-8", errors="replace")
@@ -245,6 +300,8 @@ def main() -> int:
     ap.add_argument("--stub-port", type=int, default=8099, help="port of the stub backend server")
     ap.add_argument("--timeout", type=int, default=120, help="seconds to wait for the route to listen")
     ap.add_argument("--mvn", default=os.environ.get("VERIFY_MVN", "mvn -B -q " + os.environ.get("MVN_ARGS", "")))
+    ap.add_argument("--engine", choices=("mvn", "jbang"), default="mvn",
+                    help="mvn: the module's run-local profile; jbang: camel run as Camel K runs it (local_acceptance.sh)")
     a = ap.parse_args()
     mod = a.module.resolve()
     res = mod / "src/main/resources"
@@ -253,7 +310,7 @@ def main() -> int:
     if not path:
         print(f"not an HTTP flow (flow.input={props.get('flow.input', '<none>')}): use broker/run_local.sh {a.module}")
         return 2
-    if "camel-platform-http-main" not in (mod / "pom.xml").read_text(encoding="utf-8"):
+    if a.engine == "mvn" and "camel-platform-http-main" not in (mod / "pom.xml").read_text(encoding="utf-8"):
         print("pom.xml has no camel-platform-http-main: the route cannot listen on Camel Main (scaffold a fresh module)")
         return 2
     be = backends(props)
@@ -283,14 +340,17 @@ def main() -> int:
     sysprops = [f"-Dbackend.{n}={stub_uri(uri, a.stub_port)}" for n, uri in be.items()]
     sysprops += ["-Dcamel.server.enabled=true", f"-Dcamel.server.port={a.port}", f"-Dcamel.main.durationMaxSeconds={a.timeout + 600}"]
     try:
-        cmd = mvn_command(a.mvn) + ["-f", str(mod / "pom.xml"), "-Prun-local", "compile", "exec:java"] + sysprops
+        if a.engine == "jbang":
+            cmd = jbang_command(mod, a.port, a.timeout, {f"backend.{n}": stub_uri(uri, a.stub_port) for n, uri in be.items()}, a.mvn)
+        else:
+            cmd = mvn_command(a.mvn) + ["-f", str(mod / "pom.xml"), "-Prun-local", "compile", "exec:java"] + sysprops
     except FileNotFoundError as e:
         print(e)
         return 1
     (mod / "target").mkdir(exist_ok=True)
     log = mod / "target/smoke-route.log"
-    print(f"route: {path} on :{a.port}; backends {list(be)} -> stub :{a.stub_port}; fake env {fake}; log target/smoke-route.log")
-    result = {"module": str(mod), "entry": path, "port": a.port, "cases": [], "error_case": None, "backend_calls": {}, "ok": False}
+    print(f"route ({a.engine}): {path} on :{a.port}; backends {list(be)} -> stub :{a.stub_port}; fake env {fake}; log target/smoke-route.log")
+    result = {"module": str(mod), "entry": path, "port": a.port, "engine": a.engine, "cases": [], "error_case": None, "backend_calls": {}, "ok": False}
     with log.open("wb") as lf:
         proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, cwd=str(mod),
                                 **({} if os.name == "nt" else {"start_new_session": True}))
@@ -358,6 +418,7 @@ def main() -> int:
         if result["error_case"]:
             lines.append(f"error case: status {result['error_case']['status']} expected {result['error_case']['expected']} -> {'ok' if result['error_case']['ok'] else 'FAIL'}")
         lines.append(f"backend calls: {result['backend_calls']}")
+        lines.append(f"engine: {result.get('engine')}")
         lines.append("smoke OK" if result["ok"] else "smoke FAILED")
         (mod / "SMOKE.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 

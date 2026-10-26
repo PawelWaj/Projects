@@ -13,6 +13,7 @@
 #   bash <kit>/pi/vdi_session.sh deploy 'a-prj|b-prj'     camel-k/integration.yaml per flow + oc dry run; APPLY=1 applies
 #     settings: CAMELK_NAMESPACE (required), CAMELK_BROKER_URL, CAMELK_ENV_FILE (KEY=VALUE, local file), DEPLOY_FROM=
 #     scripts|skills (default: scripts when a delivery exists, else the skills module)
+#   bash <kit>/pi/vdi_session.sh accept 'a-prj|b-prj'    local acceptance, the gate before Dev (pi/local_acceptance.sh)
 #   bash <kit>/pi/vdi_session.sh stop [--broker]          routes stopped, pi back to the platform, pacer stopped
 #   PACER=0 before start/flows: no pacer, pi talks to the model directly (an endpoint without a rate limit)
 #   GEN=skills|scripts|both before flows/review: who builds route + tests after research (default skills: the agent)
@@ -182,6 +183,12 @@ case "${1:-}" in
       if [ "${APPLY:-0}" = 1 ]; then oc apply -n "$CAMELK_NAMESPACE" -f "$f" && echo "   applied: oc get integration -n $CAMELK_NAMESPACE -w"
       else echo "   dry run OK. Apply with: APPLY=1 bash $KIT/pi/vdi_session.sh deploy '$p'"; fi
     done 2>&1 | tee -a "$LOG" ;;
+
+  accept)
+    P=${2:?usage: vdi_session.sh accept 'a-prj|b-prj'   (local acceptance before Dev: card, tests, mutations, Camel JBang run, manifest, review pack)}
+    ask ARTEMIS_PASSWORD "Artemis password (user ${ARTEMIS_USER:-artemis})"
+    broker_up || start_broker || echo "broker not running: JMS flows fail step 4"
+    bash "$KIT/pi/local_acceptance.sh" "$P" 2>&1 | tee -a "$LOG" ;;
 
   stop)
     D=$(ls -d "$WS"/delivery/*/ 2>/dev/null | head -1)

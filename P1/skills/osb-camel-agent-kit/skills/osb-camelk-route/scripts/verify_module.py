@@ -44,6 +44,10 @@ def yaml_lint(text: str) -> list[str]:
             if ind(nxt) > ind(ln):
                 out.append(f"line {i + 1}: '{m.group(1)}:' must be a plain value on the same line "
                            f"(e.g. {m.group(1)}: \"...${{body}}\"), not a block with '{nxt.strip().split(':')[0]}:' below")
+        for expr in re.findall(r"\$\{([^}]*)\}", s):
+            if re.search(r"\?\?|\?\.|\|\|", expr):   # JS/Kotlin operators the Simple language does not have
+                out.append(f"line {i + 1}: '${{{expr.strip()[:40]}}}' uses an operator Camel Simple does not know "
+                           f"(??, ?., ||): it fails at runtime, often only on the error path; use ${{exception.message}} etc.")
         if s == "steps:":
             prev = next((x for x in reversed(lines[:i]) if x.strip() and not x.strip().startswith("#")), "")
             frm = next((x for x in reversed(lines[:i]) if x.strip() == "from:"), None)

@@ -20,3 +20,4 @@ Stop conditions: `HUMAN:` from the state; `DONE:` from the state; the same `next
 (2) "this session:" one line per command run with the counts the scripts printed, (3) "next for the person:" the
 `HUMAN:` text verbatim, or `DONE: hand over camel-k/integration.yaml + DEPLOY.md`, or the failure lines (names and
 counts, no values). Nothing else: no advice, no alternatives, no summary of the OSB flow.
+- Never run `card_answers.py` (with or without `--defaults`), `MUTATION_ACCEPTED.md` or any other answer on a person's behalf: at a HUMAN gate print the command the state gives and stop.

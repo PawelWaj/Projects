@@ -1,6 +1,6 @@
 ---
 name: osb-migration-run
-description: "Operate the whole OSB -> Camel K run for one project on the VDI from a state file, not from memory: run scripts/pipeline_state.py, execute exactly the one next command it prints (environment install, flows, review, mutations, smoke or broker run, review package, deploy file), rerun the state, repeat; stop at the human gates (card approval, MASK_KEY, Dev values) and report. Use when asked to run, continue, finish or automate the migration of an OSB project or flow end to end, or when the user says osb-migration-run or osb_agent."
+description: "Operate the whole OSB -> Camel K run for one project on the VDI from a state file, not from memory: run scripts/pipeline_state.py, execute exactly the one next command it prints (environment install, flows, review, mutations, smoke or broker run, review package, local acceptance, deploy file), rerun the state, repeat; stop at the human gates (card approval, MASK_KEY, Dev values) and report. Use when asked to run, continue, finish or automate the migration of an OSB project or flow end to end, or when the user says osb-migration-run or osb_agent."
 ---
 
 # Run the OSB -> Camel K pipeline from its state
@@ -45,3 +45,4 @@ before you start: you never print, echo, write or ask for their values.
 - A failing gate is not yours to fix: `flows`/`review` call the implementer; after two identical results you stop.
 - Do not install software, change `~/.m2/settings.xml`, or edit `.osb-kit.env` (the person does, see traps.md).
 - Time: `flows` can take an hour with a slow model. Wait for it; do not start a second one.
+- Never run `card_answers.py` (with or without `--defaults`), `MUTATION_ACCEPTED.md` or any other answer on a person's behalf: at a HUMAN gate print the command the state gives and stop.

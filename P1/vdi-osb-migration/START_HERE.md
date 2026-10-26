@@ -30,10 +30,11 @@ bash $KIT/pi/osb_agent.sh '<a-prj>'                                         # --
 
 It ends with one of: `HUMAN: …` (exit 3: do what it says, run the same line again), `DONE: …` (exit 0: hand over
 `camel-k/integration.yaml` + `DEPLOY.md`), or a stop after two rounds without progress (exit 1: the state table and the
-last log lines say which stage). The three human gates: **card approval** (`FLOW_CARD.md`: tick the open questions,
-`Status: approved`, `Approver`, `Date`), **MASK_KEY** (asked in the shell when `EXPORT` is set), **Dev values**
+last log lines say which stage). The three human gates: **card approval** (`card_answers.py <module>`: a recommended
+answer per open question, Enter accepts; 6.3), **MASK_KEY** (asked in the shell when `EXPORT` is set), **Dev values**
 (the keys `CHECK.json` lists, into a local file, plus `CAMELK_NAMESPACE`/`CAMELK_ENV_FILE`); a fourth, rare one: a
-**surviving mutation** (fix the missing scenario, or accept it in writing in `MUTATION_ACCEPTED.md`). Logs:
+**surviving mutation** (fix the missing scenario, or name it with the reason in `MUTATION_ACCEPTED.md`). Before the
+Dev-values gate the operator runs the local acceptance (6.7): the route on Camel JBang, as Camel K runs it. Logs:
 `domain/agent-run.log` (every command), `domain/agent-<date>.out` (what the operator said). The state alone, any time:
 `python $KIT/skills/osb-migration-run/scripts/pipeline_state.py '<a-prj>'`.
 
@@ -201,20 +202,28 @@ What to check (counts only when you send it on):
 Seen on a VDI, an HTTP request/reply flow: 797 events exported, 178 for the flow, 6 parity cases, 1
 scenario; 18 tests 0 failures 2 skipped; K2–K12 ok; mutations 3/3; pi 2 calls.
 
-### 6.3 Card approval (a person, 15 min) and the K1 rerun
+### 6.3 Card approval (a person, 10–15 min): the answer wizard, then the K1 rerun
 
 `FLOW_CARD.md` is the one-page contract between research and code: entry, branches, scenario mapping, outputs,
-backends, transforms, errors, log lines, open questions, `Status/Approver/Date`. Read it against `RESEARCH.md`, tick
-every open question (answered, or accepted with a reason), then:
+backends, transforms, errors, log lines, open questions, `Status/Approver/Date`. The wizard shows each open question
+with its evidence from the chain (research, route, OSB source, tests, mutations, manifest: names and counts only) and
+a recommended answer in brackets. Enter accepts it, typing replaces it, `s` skips (the question stays open):
 
 ```
 M=modules/<project-prj>/<Proxy>
-sed -n '/^## 9 Open questions/,$p' $M/FLOW_CARD.md
-notepad "$(cygpath -w $M/FLOW_CARD.md)"               # - [ ] -> - [x] … — answered/accepted: <reason>
-sed -i 's/^Status:.*/Status: approved/; s/^Approver:.*/Approver: <name> (POC)/; s/^Date:.*/Date: <YYYY-MM-DD>/' $M/FLOW_CARD.md
-grep -E '^(Status|Approver|Date):' $M/FLOW_CARD.md; grep -c '^- \[ \]' $M/FLOW_CARD.md     # 0
-GEN=skills bash $KIT/pi/vdi_session.sh review '<project-prj>'                              # green module: '=== refreeze', ok K1 (no model call)
+python $KIT/skills/osb-camelk-route/scripts/card_answers.py $M
+#   Q2/5: HTTP method mismatch: ...
+#      evidence: route sends GET (<route>.yaml:46); OSB source: GET at <file>.pipeline:212; mutation 'HTTP method GET -> POST' caught
+#      Answer [accepted: GET as OSB sends it (the route-node setting wins over the business service); confirm with one call on Dev]:
+#   ...  Approver [<your name>]:
+bash $KIT/pi/vdi_session.sh review '<project-prj>'        # green module: '=== refreeze', ok K1 (no model call)
 ```
+
+The card is approved (Status/Approver/Date) only when no question is left; `CARD_ANSWERS.json` keeps every question,
+the recommendation, the answer given and the evidence (the audit trail for the reviewer), `FLOW_CARD.md.bak-<time>` the
+card before. Answers prepared in advance: `--answers answers.json` (`{"<question start>": "<answer>"}`). A
+recommendation that names a change ("the route sends POST: change CamelHttpMethod to GET") is an action for the
+implementer before Dev: the next `review` round picks it up, local acceptance (6.7) proves it.
 
 POC approver: the author. Production mode: the OSB flow owner on the client side approves before implementation
 (a prerequisite to put into the change request).
@@ -281,6 +290,29 @@ bash $KIT/broker/e2e_local.sh modules/<project-prj>/<Proxy>     # queues -> rout
 
 Exit 0 = every output queue received what the tests expect; route log in `target/e2e-route.log`.
 
+### 6.7 Local acceptance before Dev (the gate; no POC exceptions)
+
+The end solution tested on this machine: every proof rerun on the final module, and the route run with Camel JBang
+the way Camel K runs it (route YAML + Java sources compiled by Camel + the Camel K properties + the dependency list of
+`integration.yaml`; no Maven build of the module).
+
+```
+bash $KIT/pi/vdi_session.sh accept '<project-prj>'       # = pi/local_acceptance.sh; asks ARTEMIS_PASSWORD, starts the broker
+```
+
+| Step | Proves | Good |
+|---|---|---|
+| 1 card | approved, no open question; card hash refrozen | `approved by <name>` |
+| 2 tests | Maven tests + gates K1–K12, K1 included | `tests N, failures 0, errors 0`; `gates K1-K12 ok` |
+| 3 mutate | every deliberate break is caught by the tests | `mutations caught x/x` (or each survivor named with its reason in `MUTATION_ACCEPTED.md`) |
+| 4 run | HTTP: stub backend, every case over HTTP, forced 500; JMS: queues on the local Artemis, one case per scenario + an unreadable message, every output queue counted | `smoke: N cases, 0 failed, error case ok` / `every output queue got what the tests expect` |
+| 5 manifest | `integration.yaml` regenerated and checked: structure (and YAML parse), sources byte-identical to the module, every Secret reference in `DEPLOY.md`, no credential written as a value | `ready: true` or `ready for Dev once values are set: <keys>` |
+| 6 review | review package newer than all of the above | `review/<p>-<Proxy>.tgz` |
+
+Output: `<module>/LOCAL_ACCEPTANCE.md` + `.json` (each step, seconds, kit commit, engine), logs in
+`domain/acceptance/<p>-<Proxy>/`, last line `LOCAL ACCEPTANCE: PASS|FAIL <p>/<Proxy>`. Only a PASS goes to Dev; the
+operator (`osb_agent.sh`) runs this stage itself and stops at the Dev-values gate afterwards.
+
 ## 7. Every later session (VDI not reset)
 
 ```
@@ -306,6 +338,8 @@ bash $KIT/pi/env_setup.sh check              # 0 failed
 | `NOT READY` on deploy | values listed in `camel-k/DEPLOY.md`: `dev.env`, rerun deploy |
 | `review` after a research change reuses the old module | run `flows`, not `review` |
 | K1 `card_changed_after_freeze` | the card was edited after the build: rerun `review` once (6.3) |
+| `ROUTE YAML STRUCTURE … operator Camel Simple does not know` | `??`, `?.` or `\|\|` inside `${...}`: worked in no test (log steps skipped at WARN), failed on the broker; `review` lets the implementer fix it |
+| local acceptance FAIL | the step and log are printed; `domain/acceptance/<p>-<Proxy>/<n>-<step>.txt` |
 | smoke: `FAIL … status 500`, hint `Invalid url … enable the bridgeEndpoint option` | module built before kit `4371011`: the one-line `application.properties` edit in 6.6 |
 | smoke: `route did not come up` | port 8089/8099 taken (`--port`, `--stub-port`), or Maven cannot fetch `exec-maven-plugin` / `camel-platform-http-main`: `target/smoke-route.log` |
 

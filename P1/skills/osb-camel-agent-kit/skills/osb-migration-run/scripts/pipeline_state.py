@@ -228,9 +228,9 @@ class State:
             self.propose("command", f"GEN=skills bash {kit}/pi/vdi_session.sh review '{p}' 2>&1 | tee -a domain/agent-run.log{pi_note}", "review-fix", sc)
             return
         if not approved or open_q:
-            self.propose("human", f"approve the flow card {m / 'FLOW_CARD.md'}: read it against {r / 'RESEARCH.md'}, tick every "
-                                  f"'- [ ]' open question (answered or accepted with a reason), set 'Status: approved', 'Approver: <name>', "
-                                  f"'Date: <YYYY-MM-DD>'; then rerun", "card-approval", sc)
+            self.propose("human", f"answer the flow card ({open_q} open question(s)): python {kit}/{SKILLS}/card_answers.py {m}  "
+                                  f"(each question shows its evidence and a recommended answer: Enter accepts it, or type your own; "
+                                  f"the card is approved when none is left); then rerun", "card-approval", sc)
             return
         if "K1" in bad or mtime(m / "FLOW_CARD.md") > mtime(m / "GATES.json"):
             self.propose("command", f"GEN=skills bash {kit}/pi/vdi_session.sh review '{p}' 2>&1 | tee -a domain/agent-run.log{pi_note}", "review-refreeze", sc)
@@ -240,7 +240,9 @@ class State:
         mut_ok = bool(mut) and mut.get("total", 0) > 0 and mut.get("killed") == mut.get("total") and mtime(m / "MUTATION.json") >= src_t
         survived = [z.get("what", "?") for z in (mut or {}).get("mutations", []) if not z.get("killed")] if mut else []
         acc = m / "MUTATION_ACCEPTED.md"   # a person's written decision on a surviving mutation (reason inside), newer than the check
-        accepted = survived and acc.is_file() and mtime(acc) >= mtime(m / "MUTATION.json") and mtime(m / "MUTATION.json") >= src_t
+        acc_text = acc.read_text(encoding="utf-8", errors="replace") if acc.is_file() else ""
+        # accepted = every surviving mutation is named in the person's file (with the reason), whatever the file's age
+        accepted = bool(survived) and all(s in acc_text for s in survived) and mtime(m / "MUTATION.json") >= src_t
         if accepted:
             mut_ok = True
         self.add(sc, "mutations", "done" if mut_ok else ("BLOCKED" if survived and mtime(m / "MUTATION.json") >= src_t else "todo"),
@@ -249,8 +251,8 @@ class State:
         if not mut_ok:
             if survived and mtime(m / "MUTATION.json") >= src_t:
                 self.propose("human", f"mutation(s) survived on {sc}: {', '.join(survived)} — the tests do not catch it; a person decides "
-                                      f"(a missing scenario or case in research/task1 -> fix and rerun flows; or accept it with the reason written "
-                                      f"into {acc}) before the handover", "mutation-survived", sc)
+                                      f"(a missing scenario or case in research/task1 -> fix and rerun flows; or accept it: one line per survivor in {acc}, "
+                                      f"the mutation text exactly as above + ' -- reason: ...') before the handover", "mutation-survived", sc)
                 return
             self.propose("command", f"python {kit}/{SKILLS}/mutate_route.py {m} --mvn \"mvn -B -q $MVN_ARGS\" 2>&1 | tee -a domain/agent-run.log", "mutations", sc)
             return
@@ -279,6 +281,18 @@ class State:
         if not pack_ok:
             self.propose("command", f"bash {kit}/pi/make_review_pack.sh {p} {x} 2>&1 | tee -a domain/agent-run.log", "review-pack", sc)
             return
+        la = jload(m / "LOCAL_ACCEPTANCE.json") or {}
+        la_ok = la.get("result") == "PASS" and mtime(m / "LOCAL_ACCEPTANCE.json") >= max(src_t, mtime(m / "FLOW_CARD.md"))
+        self.add(sc, "local-acceptance", "done" if la_ok else ("BLOCKED" if la.get("result") == "FAIL" and mtime(m / "LOCAL_ACCEPTANCE.json") >= src_t else "todo"),
+                 (f"{la.get('result')} (Camel JBang{', failed at ' + la['failed_step'] if la.get('failed_step') else ''})" if la else "not run")
+                 + (" (stale)" if la and not la_ok and la.get("result") == "PASS" else ""))
+        if not la_ok:
+            if la.get("result") == "FAIL" and mtime(m / "LOCAL_ACCEPTANCE.json") >= src_t and la.get("failed_step") == "card":
+                self.propose("human", f"answer the flow card: python {kit}/{SKILLS}/card_answers.py {m}  (Enter accepts each recommended answer); then rerun",
+                             "card-approval", sc)
+            else:
+                self.propose("command", f"bash {kit}/pi/local_acceptance.sh '{p}' 2>&1 | tee -a domain/agent-run.log", "local-acceptance", sc)
+            return
         ck = jload(m / "camel-k" / "CHECK.json") or {}
         ready = bool(ck.get("ready")) and mtime(m / "camel-k" / "CHECK.json") >= src_t
         ns = os.environ.get("CAMELK_NAMESPACE", "")
@@ -288,8 +302,10 @@ class State:
                  "integration.yaml ready" if ready else f"open values: {', '.join(open_vals) or 'none listed'}; CAMELK_NAMESPACE {'set' if ns else 'unset'}, CAMELK_ENV_FILE {'set' if envf and Path(envf).is_file() else 'unset'}")
         if not ready:
             if not ns or not (envf and Path(envf).is_file()):
-                self.propose("human", f"Dev values for {sc}: write {', '.join(open_vals) or 'the keys in camel-k/DEPLOY.md'} as KEY=VALUE into a local "
+                cred = [v for v in open_vals if not re.search(r"HOST|URL|URI|ENDPOINT|PORT|PATH", v)]
+                self.propose("human", f"Dev values for {sc}: write {', '.join(v for v in open_vals if v not in cred) or 'the keys in camel-k/DEPLOY.md'} as KEY=VALUE into a local "
                                       f"file (e.g. dev.env, never in Git), then export CAMELK_NAMESPACE=<dev namespace> CAMELK_ENV_FILE=<that file>"
+                                      f"{(' CAMELK_SECRET_KEYS=' + chr(39) + ','.join(cred) + chr(39) + ' (credentials: Secret references, the colleague creates the Secret)') if cred else ''}"
                                       f"{' CAMELK_BROKER_URL=amqp://<artemis-service>:5672' if not http else ''}; then rerun", "dev-values", sc)
             else:
                 self.propose("command", f"bash {kit}/pi/vdi_session.sh deploy '{p}' 2>&1 | tee -a domain/agent-run.log", "deploy", sc)

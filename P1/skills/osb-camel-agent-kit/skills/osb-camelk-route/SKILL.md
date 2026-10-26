@@ -56,7 +56,9 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    helper bean, generated tests, `FLOW_CARD.md` (draft). Route, properties and card are written once; tests always
    follow research.json.
 2. **Approval (human):** a person checks the card against `RESEARCH.md`, resolves or accepts each open question, sets
-   `Status: approved`, `Approver:`, `Date:`.
+   `Status: approved`, `Approver:`, `Date:`. `scripts/card_answers.py <module>` shows each question with its evidence
+   and a recommended answer (Enter accepts) and writes `CARD_ANSWERS.json`. Before Dev: `pi/local_acceptance.sh`
+   (tests + gates incl. K1, mutations, the route on Camel JBang as on Camel K, integration.yaml checked, review pack).
 2b. **Test inputs where Splunk has none (pi tester, before the route):** every `scenario_mapping` row needs a case
    (gate K9). Rows without a real Splunk message get a synthetic case written by the tester role
    (`agents/tester-camelk.md`): fake values, built from the message schema in the OSB source, under
