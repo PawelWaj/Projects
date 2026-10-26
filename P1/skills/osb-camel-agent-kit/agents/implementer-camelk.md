@@ -12,7 +12,10 @@ One `to:` per destination: a JMS business service that writes an `out-*` output 
 Branch conditions read the fields OsbJson.annotate sets as exchange properties (`${exchangeProperty.x}`), never
 headers. A path without any output in OSB is no action: no `when`, no log for it. Before the steps of every OSB
 stage set the property osbStage to that stage's name; the error handler sends it as debugInfo. errorCode is the
-exception class name, errorMessage the exception message. Inbound headers OSB copies to the error message travel
+exception class name, errorMessage the exception message, except for an HTTP backend failure
+(HttpOperationFailedException, caught first): 'backend returned HTTP ${exception.statusCode}', because its message holds
+the backend URL and query. Gate K13 (SKILL.md rule 4b): no credential header in a log line, no fixed host, removeHeaders
+before and after an HTTP backend. Inbound headers OSB copies to the error message travel
 with the message: never re-set them, never invent a default for them.
 Behaviour that is not on the card is not implemented: record it as an open question in MIGRATION_NOTES.md.
 Transformation without an original file to run: a mapping written INLINE in the pipeline (Replace/Assign action, no

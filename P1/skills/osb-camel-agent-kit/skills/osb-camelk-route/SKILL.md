@@ -40,6 +40,13 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    same log line text under logName `oracle.osb.logging.pipeline`, same error headers, same retries.
    A difference you cannot avoid goes into `MIGRATION_NOTES.md` (what, why, who must accept it).
 4. **No infrastructure in code.** Endpoints are `{{properties}}`; no hosts, ports, credentials (gate K4).
+4b. **Parity stops at what is unsafe in production (gate K13).** Keep OSB's log text, but never a credential in it
+   (headers set from `{{backend.*}}`/`{{env:*}}`, keys, tokens, ids from the APIDetails DVM): drop those placeholders
+   and note it in `MIGRATION_NOTES.md`. A fixed host OSB writes (Host header, constant) becomes a `{{property}}` from
+   env. HTTP backend: catch `org.apache.camel.http.base.HttpOperationFailedException` before `java.lang.Exception` and
+   report `backend returned HTTP ${exception.statusCode}`, never `${exception.message}` (it holds the URL and query).
+   HTTP in + HTTP backend: `removeHeaders` (pattern `*`, excludePattern = the headers OSB sends) right before the
+   backend `to`, and again after it, before the reply is built (excludePattern keeps what the reply needs).
 5. **Original transforms stay.** XQuery/XSLT/XSD files are copied from the OSB source unchanged (delivery:
    `transformations/`, run by `OsbXQuery`/`OsbNxsd`; work module: `src/main/resources/osb/`, `camel-saxon`); never
    rewritten "because it is cleaner". They stay on the client machine, never in a research pack.
@@ -92,7 +99,8 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    K8 tests green · K9 every scenario_mapping row has a case · K10 every property value a plain endpoint (no notes,
    no spaces) and every `{{key}}` defined · K11 each destination once: a JMS business service that writes an `out-*`
    IS that output, so never add a `backend-<x>-bs` send next to `out-<x>` (production would get every message twice) ·
-   K12 request/reply: every case that ends in the reply has `expected-output.json|xml`.
+   K12 request/reply: every case that ends in the reply has `expected-output.json|xml` ·
+   K13 runtime safe: no credential in a log, no fixed host, no backend URL in an error, headers cleaned around an HTTP backend (rule 4b).
 7. **Prove the tests bite:** `python <skill>/scripts/mutate_route.py modules/<project>/<proxy> --mvn "mvn -B -q -s ~/.m2/settings.xml"`
    breaks the route on purpose (conditions negated, outputs swapped or dropped, retries removed); every mutation must
    make a test fail. A survivor means a missing test: a person adds it to the template (assets/templates), never weaken the route to pass.

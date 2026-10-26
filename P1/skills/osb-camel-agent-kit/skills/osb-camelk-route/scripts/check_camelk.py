@@ -19,6 +19,13 @@ K11 single destination no destination twice: a backend-<x>-bs next to out-<x> (t
                        or two keys with the same endpoint value: production would get every message twice
 K12 reply expected     request/reply flows: every case that ends in the reply has expected-output.json/.xml, so the
                        reply body is compared (a route that passes the request through unchanged must fail)
+K13 runtime safe       what a parity test cannot see but production must not do: (a) a credential header (set from
+                       {{backend.*}}/{{env:*}}, or named like a key/token/password) or a credential property inside a
+                       log message; (b) a fixed host name as a value in the route or the properties (Host header,
+                       constant); (c) ${exception.message} sent back or logged on a flow with an HTTP backend without
+                       its own catch for HttpOperationFailedException (that message carries the full backend URL with
+                       its query); (d) an HTTP-in flow calling an HTTP backend without removeHeaders before the backend
+                       (caller headers forwarded) and after it (backend headers returned to the caller)
 Writes GATES.json next to the module's pom; exit 1 if any gate fails."""
 import argparse
 import hashlib
@@ -32,6 +39,48 @@ HOST = [(re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"), "IP address"),
         (re.compile(r"://(?!\{\{)[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "host name in a URI"),
         (re.compile(r"://[^/\s\"']*:\d{2,5}"), "host:port"),
         (re.compile(r"(?i)\b(password|passwd|secret|token|apikey|api-key)\s*[=:]\s*(?!\{\{|\$\{)[^\s\"',}]+"), "credential")]
+
+
+CRED_NAME = re.compile(r"(?i)(api-?key|token|secret|passw|authorization|credential)")
+BARE_HOST = re.compile(r":\s*[\"']?((?:[a-z0-9-]+\.){2,}[a-z]{2,}(?::\d{2,5})?)[\"']?\s*$")
+
+
+def runtime_safe(route: str, props_text: str) -> list:
+    """K13 findings (see the docstring); names and line numbers only."""
+    out = []
+    code = [(i, l) for i, l in enumerate(route.splitlines(), 1) if not l.lstrip().startswith("#")]
+    cred_headers = set()
+    lines = [l for _, l in code]
+    for j, l in enumerate(lines):
+        m = re.match(r"\s*-?\s*name:\s*[\"']?([\w-]+)", l)
+        if m and j > 0 and "setHeader" in lines[j - 1] + (lines[j - 2] if j > 1 else ""):
+            val = " ".join(lines[j + 1:j + 3])
+            if CRED_NAME.search(m.group(1)) or re.search(r"\{\{(backend\.|env:)", val):
+                cred_headers.add(m.group(1))
+    for i, l in code:
+        if "message:" in l:
+            used = set(re.findall(r"\$\{headers?\.([\w-]+)\}", l))
+            leak = sorted(h for h in used if h in cred_headers or CRED_NAME.search(h))
+            leak += re.findall(r"\{\{(backend\.[\w.-]*(?:key|token|secret|passw|requestid|sourceid)[\w.-]*)\}\}", l, re.I)
+            if leak:
+                out.append(f"route line {i}: credential in a log message ({', '.join(leak)})")
+        if BARE_HOST.search(l) and "beanType" not in l and "logName" not in l:
+            out.append(f"route line {i}: fixed host name as a value (make it a {{{{property}}}} from env)")
+    for i, l in enumerate(props_text.splitlines(), 1):
+        if "=" in l and not l.lstrip().startswith(("#", "!")) and re.fullmatch(r"(?:[a-z0-9-]+\.){2,}[a-z]{2,}(?::\d{2,5})?", l.split("=", 1)[1].strip()):
+            out.append(f"application.properties line {i}: fixed host name as a value")
+    http_backend = bool(re.search(r"^backend\.[\w.-]+=\s*https?:", props_text, re.M))
+    if http_backend and "${exception.message}" in route and "HttpOperationFailedException" not in route:
+        out.append("${exception.message} on a flow with an HTTP backend: catch org.apache.camel.http.base.HttpOperationFailedException "
+                   "first and report 'backend returned HTTP ${exception.statusCode}' (the message holds the backend URL and query)")
+    if http_backend and re.search(r"^flow\.input=platform-http:", props_text, re.M):
+        b = route.find("id: backend-")
+        before, after = route[:b] if b >= 0 else route, route[b:] if b >= 0 else ""
+        if "removeHeaders" not in before:
+            out.append("no removeHeaders before the HTTP backend call: every caller header is forwarded (keep only the ones OSB sends)")
+        if b >= 0 and "removeHeaders" not in after:
+            out.append("no removeHeaders after the HTTP backend call: backend response headers go back to the caller")
+    return out
 
 
 def main() -> int:
@@ -144,6 +193,9 @@ def main() -> int:
             seen.setdefault(norm(v), []).append(k)
     twice += [" = ".join(ks) for ks in seen.values() if len(ks) > 1]
     gates["K11_single_destination"] = {"ok": not twice, "twice": twice}
+
+    k13 = runtime_safe(route, pf.read_text(encoding="utf-8") if pf.is_file() else "")
+    gates["K13_runtime_safe"] = {"ok": not k13, "findings": k13[:20]}
 
     if not a.no_surefire:
         t = f = e = s = 0

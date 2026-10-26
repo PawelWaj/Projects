@@ -211,6 +211,8 @@ class State:
         built = gates is not None and (m / "pom.xml").is_file()
         g = (gates or {}).get("gates", {})
         bad = [k.split("_")[0] for k, v in g.items() if not v.get("ok")]
+        if g and not any(k.startswith("K13") for k in g):
+            bad.append("K13(not checked yet)")     # gates from an older kit: the review stage reruns them
         k8 = g.get("K8_tests_green", {})
         self.add(sc, "module", "done" if built else "todo",
                  (f"gates: {', '.join(bad) + ' FAIL' if bad else 'all ok'}; tests {k8.get('tests', '-')}/{k8.get('failures', '-')}F/{k8.get('skipped', '-')}S"

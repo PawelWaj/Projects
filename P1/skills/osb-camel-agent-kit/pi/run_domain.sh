@@ -188,7 +188,15 @@ do_build() {
         "$PY" -c "import hashlib,json,sys; p=sys.argv[1]; m=json.load(open(p)); m['card_sha256']=hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest(); json.dump(m,open(p,'w'),indent=2)" "$m/.scaffold.json" "$m/FLOW_CARD.md"
         "$PY" "$SK/check_camelk.py" "$m" | grep -E '^(ok +|FAIL +)K1|^FAIL$|^PASS$' || true
         "$PY" "$SK/camelk_manifests.py" "$m" > /dev/null 2>&1 || true
-      else echo "skip $p/$x (tests green)"; fi
+      else
+        "$PY" "$SK/check_camelk.py" "$m" > /dev/null 2>&1 || true     # gates of the current kit (new gates, e.g. K13)
+        bad=$("$PY" -c "import json,sys; g=json.load(open(sys.argv[1]))['gates']; print(','.join(k for k,v in g.items() if not v.get('ok') and k!='K1_card_approved'))" "$m/GATES.json")
+        if [ -n "$bad" ]; then
+          echo "=== fix $p/$x (tests green, gates failed: $bad): pi fixes the route, tests stay frozen"
+          t1=$(task1_of "$p" "$x")
+          FIX_ONLY=1 OSB_SRC="$APP/$p" timed "$p" "$x" build bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
+        else echo "skip $p/$x (tests green, gates ok)"; fi
+      fi
       continue
     fi
     echo "=== build $p/$x"

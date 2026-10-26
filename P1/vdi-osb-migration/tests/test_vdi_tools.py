@@ -228,6 +228,44 @@ class CamelKSecretKeysTests(unittest.TestCase):
             os.environ.pop("DEV_VALUES")
 
 
+class RuntimeSafeGateTests(unittest.TestCase):
+    """K13: what parity tests cannot see: credentials in logs, fixed hosts, backend URL in errors, header hygiene."""
+
+    def cc(self):
+        import importlib.util
+        s = importlib.util.spec_from_file_location("cc", ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts/check_camelk.py")
+        m = importlib.util.module_from_spec(s); s.loader.exec_module(m); return m
+
+    PROPS = "flow.input=platform-http:/a/b\nbackend.bs=https://{{env:BS_HOST}}/v1?bridgeEndpoint=true\n"
+
+    def test_unsafe_route_has_every_finding(self):
+        route = ('- route:\n    from:\n      uri: "{{flow.input}}"\n      steps:\n'
+                 '        - setHeader:\n            name: x-apikey\n            simple: "{{backend.apikey}}"\n'
+                 '        - setHeader:\n            name: Host\n            constant: "api-uat.example.org"\n'
+                 '        - log:\n            message: "to BS ${header.x-apikey} ${header.Host}"\n'
+                 '        - to:\n            id: backend-bs\n            uri: "{{backend.bs}}"\n'
+                 '        - setHeader:\n            name: errorMessage\n            simple: "${exception.message}"\n')
+        f = " | ".join(self.cc().runtime_safe(route, self.PROPS))
+        for s in ("credential in a log message (x-apikey)", "fixed host name", "HttpOperationFailedException",
+                  "no removeHeaders before", "no removeHeaders after"):
+            self.assertIn(s, f)
+
+    def test_safe_route_passes(self):
+        route = ('- route:\n    from:\n      uri: "{{flow.input}}"\n      steps:\n'
+                 '        - setHeader:\n            name: x-apikey\n            simple: "{{backend.apikey}}"\n'
+                 '        - log:\n            message: "to BS ${header.CamelHttpQuery}"\n'
+                 '        - removeHeaders:\n            pattern: "*"\n            excludePattern: "x-apikey|CamelHttpQuery"\n'
+                 '        - to:\n            id: backend-bs\n            uri: "{{backend.bs}}"\n'
+                 '        - removeHeaders:\n            pattern: "*"\n'
+                 '    # catch org.apache.camel.http.base.HttpOperationFailedException: ${exception.statusCode}\n'
+                 '        - setHeader:\n            name: errorMessage\n            simple: "HttpOperationFailedException ${exception.message}"\n')
+        self.assertEqual(self.cc().runtime_safe(route, self.PROPS), [])
+
+    def test_jms_flow_needs_no_header_cleaning(self):
+        route = '- route:\n    from:\n      uri: "{{flow.input}}"\n      steps:\n        - to:\n            id: out-x\n            uri: "{{out.x}}"\n'
+        self.assertEqual(self.cc().runtime_safe(route, "flow.input=amqp:queue:a\nout.x=amqp:queue:b\n"), [])
+
+
 class CardAnswersTests(unittest.TestCase):
     """card_answers.py: a recommended answer per open question from the chain's evidence; Enter accepts; approval only
     when nothing is left; audit trail; never a message value in the output."""
@@ -464,7 +502,7 @@ class PipelineStateTests(unittest.TestCase):
     stop it; secrets never appear in its output."""
 
     STATE = ROOT / "skills/osb-camel-agent-kit/skills/osb-migration-run/scripts/pipeline_state.py"
-    GATES_OK = {f"K{i}_x": {"ok": True} for i in range(2, 13)}
+    GATES_OK = {f"K{i}_x": {"ok": True} for i in range(2, 14)}
 
     def setUp(self):
         import http.server
