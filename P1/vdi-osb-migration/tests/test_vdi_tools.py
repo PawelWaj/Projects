@@ -162,6 +162,20 @@ class KitGateScriptTests(unittest.TestCase):
 class SmokeBackendSelectionTests(unittest.TestCase):
     """backend.<name> values that are header values (API key, ids from the env) are no endpoint and get no stub."""
 
+    def test_camel_run_uses_the_settings_mirror_not_central(self):
+        import importlib.util
+        sk = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts"
+        sys.path.insert(0, str(sk))
+        s = importlib.util.spec_from_file_location("sh2", sk / "smoke_http.py")
+        sh = importlib.util.module_from_spec(s); s.loader.exec_module(sh)
+        with tempfile.TemporaryDirectory() as d:
+            f = Path(d) / "settings.xml"
+            f.write_text("<settings><!-- <mirror><url>http://old</url></mirror> --><mirrors><mirror><id>n</id>"
+                         "<url> http://nexus.example:8081/repository/maven-public/ </url></mirror></mirrors></settings>")
+            self.assertEqual(sh.repo_args(str(f)), ["--repos=http://nexus.example:8081/repository/maven-public/", "--maven-central-enabled=false"])
+            f.write_text("<settings/>")
+            self.assertEqual(sh.repo_args(str(f)), [])
+
     def test_only_endpoints_the_route_calls_are_backends(self):
         import importlib.util
         sk = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts"

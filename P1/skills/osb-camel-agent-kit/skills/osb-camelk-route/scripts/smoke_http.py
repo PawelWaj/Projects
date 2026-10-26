@@ -279,6 +279,22 @@ def maven_settings(mvn_spec: str) -> str:
     return str(Path.home() / ".m2" / "settings.xml")
 
 
+def repo_args(settings: str) -> list[str]:
+    """Camel JBang's runtime downloader goes to Maven Central even with --maven-settings (seen on a VDI without internet:
+    repo1.maven.org connect timeout), so name the mirror of settings.xml as the repository and switch Central off.
+    CAMEL_REPOS='url[,url]' overrides; no mirror found -> nothing added."""
+    urls = [u for u in os.environ.get("CAMEL_REPOS", "").split(",") if u]
+    if not urls:
+        try:
+            xml = Path(settings).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        xml = re.sub(r"<!--.*?-->", "", xml, flags=re.S)
+        mirrors = re.findall(r"<mirror>.*?</mirror>", xml, flags=re.S)
+        urls = [m.group(1).strip() for x in mirrors if (m := re.search(r"<url>\s*([^<]+?)\s*</url>", x))]
+    return [f"--repos={','.join(dict.fromkeys(urls))}", "--maven-central-enabled=false"] if urls else []
+
+
 def rel(p: Path, mod: Path) -> str:
     """A file argument for `camel run`, relative to the module (the process runs with cwd = module): Camel JBang joins
     --properties and source paths to its working directory, and on Windows "E:\\...\\E:\\..." is an illegal path."""
@@ -311,6 +327,7 @@ def jbang_command(mod: Path, port: int, timeout: int, overrides: dict[str, str],
             + [rel(p, mod) for p in routes + java + other]
             + [f"--properties={rel(out / 'application.properties', mod)}", f"--dep={','.join(deps)}",
                f"--maven-settings={maven_settings(mvn_spec)}", f"--max-seconds={timeout + 600}", f"--name={mod.name}"]
+            + repo_args(maven_settings(mvn_spec))
             + ([f"--port={port}"] if port else []))
 
 
