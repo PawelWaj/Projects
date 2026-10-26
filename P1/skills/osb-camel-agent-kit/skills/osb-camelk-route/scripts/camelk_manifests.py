@@ -15,6 +15,7 @@ Values that differ per environment come from the command line or the environment
   --broker-url / CAMELK_BROKER_URL   broker of the namespace (scripts path: core protocol tcp://host:61616, the kamelets
                                      use the Artemis core client; skills path: amqp://host:5672 or failover:(...))
   --env-file / CAMELK_ENV_FILE       KEY=VALUE lines for the {{env:X}} values of the route (hosts, ids), kept on the machine
+  CAMELK_SECRET_KEYS='A,B'           env names that go into the Secret too (names with PASSWORD/TOKEN/API_KEY/... always do)
   Names that look like credentials (PASSWORD, SECRET, TOKEN, KEY, USER) are read from Secret <name>-env instead
   (environment trait NAME=secret:<name>-env/NAME, Camel K 2.3+); DEPLOY.md prints the command that creates it.
 Namespace and domain label: --namespace / --domain, else CAMELK_NAMESPACE / CAMELK_DOMAIN, else none / the folder."""
@@ -87,13 +88,19 @@ def env_refs(texts) -> list:
     return list(dict.fromkeys(n for n in names if n != "OSB_FILES_DIR"))
 
 
+def extra_secret_keys() -> set:
+    """CAMELK_SECRET_KEYS='A,B': further env names that go into the Secret although their name does not look secret
+    (e.g. client ids a DVM holds next to the API key). Their values never appear in integration.yaml or Git."""
+    return {k for k in re.split(r"[\s,]+", os.environ.get("CAMELK_SECRET_KEYS", "")) if k}
+
+
 def env_vars(name: str, refs: list, values: dict, broker_url: str) -> tuple:
     """environment trait vars, the Secret keys to create, and the open points (values still CHANGE-ME)."""
     vars_, secret, open_ = [], [], []
     for n in refs:
         if n == "BROKER_URL":
             v = broker_url or values.get(n, "")
-        elif SECRETISH.search(n):
+        elif SECRETISH.search(n) or n in extra_secret_keys():
             secret.append(n)
             vars_.append(f"{n}=secret:{name}-env/{n}")
             continue

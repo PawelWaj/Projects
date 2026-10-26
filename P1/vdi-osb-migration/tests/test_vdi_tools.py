@@ -159,6 +159,26 @@ class KitGateScriptTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
 
 
+class CamelKSecretKeysTests(unittest.TestCase):
+    """CAMELK_SECRET_KEYS moves non-obvious credentials (ids from a DVM) into the Secret: no value in integration.yaml."""
+
+    def test_listed_keys_become_secret_refs_and_need_no_value(self):
+        import importlib.util
+        s = importlib.util.spec_from_file_location("cm", ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts/camelk_manifests.py")
+        cm = importlib.util.module_from_spec(s); s.loader.exec_module(cm)
+        refs = ["X_APIKEY", "X_REQUESTID", "X_HOST"]
+        os.environ["CAMELK_SECRET_KEYS"] = "X_REQUESTID"
+        try:
+            vars_, secret, open_ = cm.env_vars("app", refs, {"X_HOST": "h.example", "X_REQUESTID": "visible"}, "")
+        finally:
+            os.environ.pop("CAMELK_SECRET_KEYS")
+        self.assertEqual(sorted(secret), ["X_APIKEY", "X_REQUESTID"])
+        self.assertIn("X_REQUESTID=secret:app-env/X_REQUESTID", vars_)
+        self.assertNotIn("visible", " ".join(vars_))
+        self.assertIn("X_HOST=h.example", vars_)
+        self.assertEqual(open_, [])
+
+
 class PipelineStateWindowsPathTests(unittest.TestCase):
     """Git Bash exports /c/Users/x paths (MVN_ARGS -s, EXPORT, ARTEMIS_HOME); a Windows Python must map them to c:/Users/x
     or every file looks missing (seen on the VDI: ~/.m2/settings.xml reported MISSING although present)."""
