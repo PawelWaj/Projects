@@ -279,6 +279,12 @@ def maven_settings(mvn_spec: str) -> str:
     return str(Path.home() / ".m2" / "settings.xml")
 
 
+def rel(p: Path, mod: Path) -> str:
+    """A file argument for `camel run`, relative to the module (the process runs with cwd = module): Camel JBang joins
+    --properties and source paths to its working directory, and on Windows "E:\\...\\E:\\..." is an illegal path."""
+    return os.path.relpath(p, mod).replace(os.sep, "/")
+
+
 def jbang_command(mod: Path, port: int, timeout: int, overrides: dict[str, str], mvn_spec: str) -> list[str]:
     """`camel run` of the module the way Camel K runs it: route YAML + Java sources (compiled by Camel, as on Camel K)
     + other resources, the Camel K variant of application.properties with the overrides applied, the dependency list
@@ -302,8 +308,8 @@ def jbang_command(mod: Path, port: int, timeout: int, overrides: dict[str, str],
     used = "\n".join([text] + [r.read_text(encoding="utf-8") for r in routes + java])
     deps = cm.module_deps(mod, used)
     return (jbang_launcher() + ["--main", "main.CamelJBang", f"org.apache.camel:camel-jbang-main:{camel_version()}", "run"]
-            + [win_path(str(p)) for p in routes + java + other]
-            + [f"--properties={win_path(str(out / 'application.properties'))}", f"--dep={','.join(deps)}",
+            + [rel(p, mod) for p in routes + java + other]
+            + [f"--properties={rel(out / 'application.properties', mod)}", f"--dep={','.join(deps)}",
                f"--maven-settings={maven_settings(mvn_spec)}", f"--max-seconds={timeout + 600}", f"--name={mod.name}"]
             + ([f"--port={port}"] if port else []))
 
