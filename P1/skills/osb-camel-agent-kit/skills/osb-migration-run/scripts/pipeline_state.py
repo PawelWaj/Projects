@@ -95,6 +95,15 @@ def proxies(app: Path, filt: str) -> list[tuple[str, str]]:
     return out
 
 
+def templates_sha(kit: Path) -> str:
+    """Same hash scaffold_camelk.py stores in .scaffold.json (templates_sha256)."""
+    tpl = kit / "skills/osb-camelk-route/assets/templates"
+    try:
+        return hashlib.sha256(b"".join((tpl / n).read_bytes() for n in ("FlowParityTest.java.tpl", "FlowErrorTest.java.tpl"))).hexdigest()
+    except OSError:
+        return ""
+
+
 def task1_dir(ws: Path, p: str, x: str) -> Path | None:
     slug = re.sub(r"[^A-Za-z0-9]+", "-", f"{p}-{x}").strip("-").lower()[:80]
     d = ws / "task1" / "flows" / slug
@@ -243,6 +252,15 @@ class State:
             return
         if "K1" in bad or mtime(m / "FLOW_CARD.md") > mtime(m / "GATES.json"):
             self.propose("command", f"GEN=skills bash {kit}/pi/vdi_session.sh review '{p}' 2>&1 | tee -a domain/agent-run.log{pi_note}", "review-refreeze", sc)
+            return
+        meta = jload(m / ".scaffold.json")
+        cur_tpl = templates_sha(self.kit)
+        if meta is not None and cur_tpl and meta.get("templates_sha256") != cur_tpl:
+            t1 = task1_dir(self.ws, p, x)
+            self.add(sc, "tests", "todo", "frozen tests from older kit templates: regenerate (script only), then mvn + gates")
+            self.propose("command", f"PI_TESTER=0 OSB_SRC=\"$APP/{p}\" bash {kit}/pi/run_tests.sh {sh(r)} {sh(m)} '{p}'{(' ' + sh(t1)) if t1 else ''} "
+                                    f"2>&1 | tee -a domain/agent-run.log && python {kit}/{SKILLS}/verify_module.py {sh(m)} 2>&1 | tee -a domain/agent-run.log",
+                         "tests-refresh", sc)
             return
         src_t = newest(m)
         mut = jload(m / "MUTATION.json")

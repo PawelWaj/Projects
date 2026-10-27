@@ -120,6 +120,34 @@ class FlowErrorTest {
         assertErrorPath(Files.readString(c.resolve("input.payload")), headers);
     }
 
+    /** HTTP backend answering with an error status: camel-http throws HttpOperationFailedException, which the route
+     *  catches on its own (gate K13, without the backend URL in the error text); it must take the same error path. */
+    @ParameterizedTest(name = "backend {0} answers HTTP 500")
+    @MethodSource("backends")
+    void backendHttpErrorTakesTheErrorPath(String backend) throws Exception {
+        Assumptions.assumeFalse(NO_BACKEND.equals(backend), "the flow calls no backend");
+        Assumptions.assumeTrue(cfg().path("backends").path(backend).path("type").asText("").toLowerCase().startsWith("http"),
+            "not an HTTP backend");
+        Class<?> hof;
+        try {
+            hof = Class.forName("org.apache.camel.http.base.HttpOperationFailedException");
+        } catch (ClassNotFoundException e) {
+            Assumptions.abort("no HTTP component on the classpath");
+            return;
+        }
+        Path c = firstCase();
+        Assumptions.assumeTrue(c != null, "no test case to send");
+        Exception fault = (Exception) hof.getConstructor(String.class, int.class, String.class, String.class, Map.class, String.class)
+            .newInstance("http://backend.test/" + backend + "?q=x", 500, "Internal Server Error", null, Map.of(), "");
+        mock(cfg().path("backends").path(backend).path("mock").asText())
+            .whenAnyExchangeReceived(e -> { throw fault; });
+        @SuppressWarnings("unchecked")
+        Map<String, Object> headers = JSON.readValue(c.resolve("headers.json").toFile(), Map.class);
+        String corr = cfg().path("correlation_header").asText("traceId");
+        headers.putIfAbsent(corr, "t-backend-http-error");
+        assertErrorPath(Files.readString(c.resolve("input.payload")), headers);
+    }
+
     static Path firstCase() throws Exception {
         if (!Files.isDirectory(PARITY)) {
             return null;

@@ -633,6 +633,15 @@ class PipelineStateTests(unittest.TestCase):
         d, _ = self.state()
         self.assertEqual(d["next"]["stage"], "dev-values", "without DEV_VALUES=later the Dev-values gate stays")
 
+    def test_tests_from_older_templates_are_regenerated_before_mutations(self):
+        m = self.approved_module()
+        (m / ".scaffold.json").write_text(json.dumps({"proxy": "x", "templates_sha256": "old"}))
+        d, _ = self.state()
+        self.assertEqual(d["next"]["stage"], "tests-refresh")
+        self.assertIn("PI_TESTER=0", d["next"]["text"])
+        self.assertRegex(d["next"]["text"], r"run_tests\.sh '[^'\\]+' '[^'\\]+' 'a-prj'")
+        self.assertIn("verify_module.py", d["next"]["text"])
+
     def test_stale_smoke_and_surviving_mutation(self):
         m = self.approved_module()
         (m / "src/main/resources/routes").mkdir(); (m / "src/main/resources/routes/x.camel.yaml").write_text("- route: {}")

@@ -36,3 +36,4 @@ no values).
 | local acceptance `manifest FAIL written as values` | a credential env name is not secret-looking | HUMAN: `export CAMELK_SECRET_KEYS='<KEY1>,<KEY2>'` and rerun |
 | smoke: every case `status 407`, `backend calls: {...: 0}` | the local HTTP call went to the corporate proxy (HTTP_PROXY set); kit >= this fix calls 127.0.0.1 without a proxy; update the kit, no other fix |
 | `no *.camel.yaml route in the module` (mutations) although the route exists | the state printed the module as `E:\...` without quotes; bash removed the backslashes. Kit >= this fix quotes paths with `/`; update the kit, no other fix |
+| mutation `error reply status 500 -> 200` survives after the K13 fix | the route has its own catch for HttpOperationFailedException, the old error tests only threw a generic exception. Kit >= this fix adds the HTTP-error test; the state regenerates the frozen tests (stage tests-refresh, script only). Do not accept the survivor |

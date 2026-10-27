@@ -568,6 +568,11 @@ def write_once(p: Path, text: str, force: bool) -> bool:
     return True
 
 
+def templates_sha() -> str:
+    """Hash of the test templates: a module built from older templates gets its frozen tests regenerated once."""
+    return hashlib.sha256(b"".join((TPL / n).read_bytes() for n in ("FlowParityTest.java.tpl", "FlowErrorTest.java.tpl"))).hexdigest()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("research", type=Path)
@@ -650,7 +655,8 @@ def main() -> int:
         "@@PATTERN@@", "InOut" if "reply" in m["outputs"] else "InOnly").replace(
         "@@TEST_PROPERTIES@@", ", ".join(q(p) for p in test_props(m)))
     cfg = {"outputs": {k: ("reply" if k == "reply" else f"mock:out-{k}") for k in m["outputs"]}, "error_output": m["error"],
-           "backends": {k: {"mock": f"mock:backend-{k}", "response_use": b.get("response_use", "")} for k, b in m["backends"].items()},
+           "backends": {k: {"mock": f"mock:backend-{k}", "response_use": b.get("response_use", ""), "type": b.get("type", "")}
+                        for k, b in m["backends"].items()},
            "scenario_mapping": [{"scenario": x["scenario"], "outputs": x["outputs"]} for x in m["mapping"]],
            "correlation_header": m["corr"], "correlation_generated": bool(m.get("corr_generated")),
            "scenario_fields": [h for h, _ in m["dims"]], "payload_format": m["format"],
@@ -697,6 +703,7 @@ def main() -> int:
             "generated": {**{k: v for k, v in (old_meta.get("generated") or {}).items() if "-synthetic/" in k or "/stubs/" in k},
                           tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp),
                           etp.relative_to(o).as_posix(): sha(etp)},
+            "templates_sha256": templates_sha(),
             "route_ids": sorted(ids), "errors": len(r.get("errors") or []),
             "task1": str(a.parity.parent.parent.resolve()) if a.parity and a.parity.is_dir() else (old_meta.get("task1") or ""),
             "backends_with_response": [k for k, b in m["backends"].items()
