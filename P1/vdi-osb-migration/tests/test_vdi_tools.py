@@ -639,6 +639,7 @@ class PipelineStateTests(unittest.TestCase):
         os.utime(m / "src/main/resources/routes/x.camel.yaml", (5000, 5000))   # route newer than MUTATION/SMOKE
         d, _ = self.state()
         self.assertEqual(d["next"]["stage"], "mutations")
+        self.assertRegex(d["next"]["text"], r"mutate_route\.py '[^'\\]+' --mvn", "module path quoted, forward slashes (Git Bash eats backslashes)")
         (m / "MUTATION.json").write_text(json.dumps({"killed": 2, "total": 3, "mutations": [{"what": "drop the backend call", "killed": False}]}))
         os.utime(m / "MUTATION.json", (6000, 6000))
         d, _ = self.state()

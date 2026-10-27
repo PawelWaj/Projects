@@ -36,6 +36,12 @@ def env_file(ws: Path) -> dict:
     return out
 
 
+def sh(path) -> str:
+    """A path for a bash command line: forward slashes, single-quoted. Unquoted E:\\Pawel\\work loses its backslashes in
+    bash (E:Pawelwork...), so a script receives a folder that does not exist."""
+    return "'" + str(path).replace("\\", "/").replace("'", "'\\''") + "'"
+
+
 def win_path(arg: str) -> str:
     """Git Bash path (/c/Users/x) -> Windows path (c:/Users/x) when running natively on Windows; else unchanged.
     .osb-kit.env and the exports of a Git Bash session carry /c/... and /e/... paths, which a Windows Python cannot open."""
@@ -231,7 +237,7 @@ class State:
             self.propose("command", f"GEN=skills bash {kit}/pi/vdi_session.sh review '{p}' 2>&1 | tee -a domain/agent-run.log{pi_note}", "review-fix", sc)
             return
         if not approved or open_q:
-            self.propose("human", f"answer the flow card ({open_q} open question(s)): python {kit}/{SKILLS}/card_answers.py {m}  "
+            self.propose("human", f"answer the flow card ({open_q} open question(s)): python {kit}/{SKILLS}/card_answers.py {sh(m)}  "
                                   f"(each question shows its evidence and a recommended answer: Enter accepts it, or type your own; "
                                   f"the card is approved when none is left); then rerun", "card-approval", sc)
             return
@@ -257,7 +263,7 @@ class State:
                                       f"(a missing scenario or case in research/task1 -> fix and rerun flows; or accept it: one line per survivor in {acc}, "
                                       f"the mutation text exactly as above + ' -- reason: ...') before the handover", "mutation-survived", sc)
                 return
-            self.propose("command", f"python {kit}/{SKILLS}/mutate_route.py {m} --mvn \"mvn -B -q $MVN_ARGS\" 2>&1 | tee -a domain/agent-run.log", "mutations", sc)
+            self.propose("command", f"python {kit}/{SKILLS}/mutate_route.py {sh(m)} --mvn \"mvn -B -q $MVN_ARGS\" 2>&1 | tee -a domain/agent-run.log", "mutations", sc)
             return
         props = (m / "src/main/resources/application.properties").read_text(encoding="utf-8", errors="replace") if (m / "src/main/resources/application.properties").is_file() else ""
         http = bool(re.search(r"^flow\.input=platform-http:", props, re.M))
@@ -276,7 +282,7 @@ class State:
             self.add(sc, "local-run", "done" if e2e_ok else "todo",
                      (f"broker run {e2e.get('cases', '-')} cases, {'ok' if e2e.get('ok') else 'DIFF'}" if e2e else "broker run not done"))
             if not e2e_ok:
-                self.propose("command", f"bash {kit}/broker/e2e_local.sh {m} 2>&1 | tee -a domain/agent-run.log", "broker-run", sc)
+                self.propose("command", f"bash {kit}/broker/e2e_local.sh {sh(m)} 2>&1 | tee -a domain/agent-run.log", "broker-run", sc)
                 return
         tgz = self.ws / "review" / f"{p}-{x}.tgz"
         pack_ok = tgz.is_file() and mtime(tgz) >= max(src_t, mtime(m / "GATES.json"), mtime(m / "MUTATION.json"), mtime(m / "SMOKE.json"))
@@ -291,7 +297,7 @@ class State:
                  + (" (stale)" if la and not la_ok and la.get("result") == "PASS" else ""))
         if not la_ok:
             if la.get("result") == "FAIL" and mtime(m / "LOCAL_ACCEPTANCE.json") >= src_t and la.get("failed_step") == "card":
-                self.propose("human", f"answer the flow card: python {kit}/{SKILLS}/card_answers.py {m}  (Enter accepts each recommended answer); then rerun",
+                self.propose("human", f"answer the flow card: python {kit}/{SKILLS}/card_answers.py {sh(m)}  (Enter accepts each recommended answer); then rerun",
                              "card-approval", sc)
             else:
                 self.propose("command", f"bash {kit}/pi/local_acceptance.sh '{p}' 2>&1 | tee -a domain/agent-run.log", "local-acceptance", sc)

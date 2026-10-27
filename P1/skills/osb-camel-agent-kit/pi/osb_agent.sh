@@ -9,7 +9,8 @@
 # Exported before: OSB_PI_MODEL (the operator and the inner research/implementer calls), ARTEMIS_PASSWORD (asked if
 # missing), EXPORT + MASK_KEY when there is a Splunk export (MASK_KEY asked if missing). PACER=0 (default here): pi talks
 # to the model directly; PACER=1 starts the pacer and the broker through vdi_session.sh start.
-# AGENT_TIMEOUT (default 14400 s) bounds one operator round; the inner pi calls inherit it as PI_TIMEOUT.
+# AGENT_TIMEOUT (default 14400 s) bounds one operator round of the pi stages (flows, review-fix); every other stage
+# runs one script and gets AGENT_TIMEOUT_SHORT (default 3600 s). The inner pi calls inherit it as PI_TIMEOUT.
 # Exit: 0 handover reached, 3 a person must act (printed as HUMAN: …), 1 no progress twice or a command failed twice.
 # Logs: domain/agent-run.log (every command's output), domain/agent-<date>.out/.err (the operator's own text).
 set -u
@@ -69,7 +70,8 @@ for round in $(seq 1 "$MAX"); do
     bash -c "$TEXT" < /dev/null || echo "command returned $? (the state decides what it means)" | tee -a "$RUNLOG"
   else
     echo "operator: pi round $round (log $OUT)" | tee -a "$RUNLOG"
-    PI_TIMEOUT="${AGENT_TIMEOUT:-14400}" pi_call "$OUT.$round" "$ERR.$round" \
+    case "$STAGE" in flows|review-fix|review-refreeze) tmo=${AGENT_TIMEOUT:-14400} ;; *) tmo=${AGENT_TIMEOUT_SHORT:-3600} ;; esac
+    PI_TIMEOUT="$tmo" pi_call "$OUT.$round" "$ERR.$round" \
       pi --print --no-session --thinking "${PI_THINKING:-medium}" --skill "$SK" --tools "read,bash,edit,write" \
          --append-system-prompt "$KIT/agents/operator-osb.md" --model "$OSB_PI_MODEL" "$PROMPT" < /dev/null
     rc=$?
