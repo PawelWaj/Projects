@@ -633,6 +633,11 @@ class PipelineStateTests(unittest.TestCase):
         d, _ = self.state()
         self.assertEqual(d["next"]["stage"], "dev-values", "without DEV_VALUES=later the Dev-values gate stays")
 
+    def tpl_sha(self):
+        import hashlib
+        t = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/assets/templates"
+        return hashlib.sha256(b"".join((t / n).read_bytes() for n in ("FlowParityTest.java.tpl", "FlowErrorTest.java.tpl"))).hexdigest()
+
     def test_tests_from_older_templates_are_regenerated_before_mutations(self):
         m = self.approved_module()
         (m / ".scaffold.json").write_text(json.dumps({"proxy": "x", "templates_sha256": "old"}))
@@ -641,6 +646,14 @@ class PipelineStateTests(unittest.TestCase):
         self.assertIn("PI_TESTER=0", d["next"]["text"])
         self.assertRegex(d["next"]["text"], r"run_tests\.sh '[^'\\]+' '[^'\\]+' 'a-prj'")
         self.assertIn("verify_module.py", d["next"]["text"])
+        # tests regenerated after the last mutation check: the survivor is stale, mutations run again
+        (m / "MUTATION.json").write_text(json.dumps({"killed": 4, "total": 5, "mutations": [{"what": "error reply status 500 -> 200", "killed": False}]}))
+        os.utime(m / "MUTATION.json", (2500, 2500))
+        meta = json.loads((m / ".scaffold.json").read_text()); meta["templates_sha256"] = self.tpl_sha(); (m / ".scaffold.json").write_text(json.dumps(meta))
+        (m / "src/test/java").mkdir(parents=True); (m / "src/test/java/FlowErrorTest.java").write_text("x")
+        os.utime(m / "src/test/java/FlowErrorTest.java", (2600, 2600))
+        d, _ = self.state()
+        self.assertEqual(d["next"]["stage"], "mutations", "a survivor older than the regenerated tests is not a human gate")
 
     def test_stale_smoke_and_surviving_mutation(self):
         m = self.approved_module()
