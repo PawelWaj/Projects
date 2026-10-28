@@ -6,7 +6,7 @@
 # Env: ROUTE_AUTHOR (default "pi agent (osb-camelk-route)"): who wrote the route, shown in README_REVIEW.md
 #   reference-route-dir  optional: another route for the same flow (e.g. the hand-written pilot) -> compared against
 #                        the SAME frozen tests with compare_codegen.py
-# Result: review/<project>-<proxy>/ + review/<project>-<proxy>.tgz   (agent logs and build output are left out)
+# Result: review/<project>-<proxy>/ + review/<project>-<proxy>.tgz (reviewer) + review/<project>-<proxy>-dev.tgz (deploy + Dev tests)   (agent logs and build output are left out)
 #   1-research/   RESEARCH.md, research.json, facts.json, SHARE_CHECK.json
 #   2-card/       FLOW_CARD.md
 #   module/       pom.xml, src/main (route, properties, beans), src/test (frozen tests, cases, stubs), env/,
@@ -17,7 +17,8 @@
 #   4-acceptance/ LOCAL_ACCEPTANCE.md/.json, SMOKE.json/.txt (the route run with Camel JBang)
 #   5-results/    TEST_MATRIX.md, GATES.json, MUTATION.json, surefire summaries
 #   6-deploy/     camel-k/ (integration.yaml, DEPLOY.md, CHECK.json) as handed to Argo CD
-#   7-compare/    (optional) generated route vs reference route on the same tests
+#   7-dev-tests/  dev_check.sh (D0) + dev_test.py (D1-D4, against the deployed route, OSB side by side), dev-cases/
+#   8-compare/    (optional) generated route vs reference route on the same tests
 set -uo pipefail
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
 MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
@@ -30,7 +31,7 @@ PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
 R="$WS/research/$P/$X"; M="$WS/modules/$P/$X"; O="$WS/review/$P-$X"
 [ -s "$R/research.json" ] || { echo "no research pack in $R: run run_domain.sh research first"; exit 2; }
 [ -d "$M" ] || { echo "no module in $M: run run_domain.sh tests (and build) first"; exit 2; }
-rm -rf "$O"; mkdir -p "$O"/{1-research,2-card,module,3-tests,4-acceptance,5-results,6-deploy}
+rm -rf "$O"; mkdir -p "$O"/{1-research,2-card,module,3-tests,4-acceptance,5-results,6-deploy,7-dev-tests}
 cp "$R"/RESEARCH.md "$R"/research.json "$R"/facts.json "$R"/SHARE_CHECK.json "$O/1-research/" 2>/dev/null
 cp "$M/FLOW_CARD.md" "$O/2-card/" 2>/dev/null
 for f in pom.xml FLOW_CARD.md MIGRATION_NOTES.md .scaffold.json .gitignore; do [ -f "$M/$f" ] && cp "$M/$f" "$O/module/"; done
@@ -49,6 +50,40 @@ find "$M/src/test/java" -name 'FlowErrorTest.java' -exec cp {} "$T/2-error-paths
 find "$M/src/test/java" -name 'FlowJBangTest.java' -exec cp {} "$T/3-runtime/" \; 2>/dev/null
 cp "$M/SMOKE.txt" "$M/SMOKE.json" "$T/3-runtime/" 2>/dev/null
 [ -d "$M/src/test/resources/stubs" ] && cp -r "$M/src/test/resources/stubs/." "$T/stubs/"
+# Dev tests: the same cases against the deployed route (and OSB side by side), run after the Argo CD sync
+DT="$O/7-dev-tests"; mkdir -p "$DT"
+cp "$KIT/skills/osb-camelk-route/assets/dev-tests/dev_test.py" "$KIT/skills/osb-camelk-route/assets/dev-tests/dev_check.sh" "$DT/"
+cp "$M/src/test/resources/flow-test.json" "$DT/" 2>/dev/null
+[ -d "$M/src/test/resources/parity" ] && cp -r "$M/src/test/resources/parity" "$DT/dev-cases"
+cp "$T/DEV_TEST_PLAN.md" "$DT/" 2>/dev/null
+ENTRY=$(sed -n 's/^flow.input=platform-http://p' "$M/src/main/resources/application.properties" 2>/dev/null | head -1)
+INAME=$(sed -n '/^kind: Integration/,/^---/{s/^  name: *//p;}' "$M/camel-k/integration.yaml" 2>/dev/null | head -1)
+cat > "$DT/README_DEV_TESTS.md" <<DEV
+# Dev tests: $P / $X
+
+Run after Argo CD has synced \`integration.yaml\` to Dev. Needs Python 3 and, for step 1, \`oc\` logged in to the Dev
+namespace. Every result is names, statuses and counts only; the cases are masked or synthetic and stay on client machines.
+
+| Step | Command | Plan IDs |
+|---|---|---|
+| 1 deployment | \`bash dev_check.sh <namespace> ${INAME:-<integration>} ${INAME:-<integration>}-env\` | D0.1-D0.4, D3.1 |
+| 2 functional + errors | \`python dev_test.py --url https://<dev host>${ENTRY:-<entry path>}\` | D1, D2, D3 |
+| 3 side by side with OSB | \`python dev_test.py --url https://<dev host>${ENTRY:-<entry path>} --osb-url https://<osb host>/<proxy path>\` | D4 |
+| 4 by hand | D2.3 (OSB's real error body), D3.2 (log text), D5 (E2E/UAT) in \`DEV_TEST_PLAN.md\` | |
+
+Results: \`results/DEV_CHECK.md\`, \`results/DEV_TEST_RESULT.md\` (+ .json). Copy the results into the Result column of
+\`DEV_TEST_PLAN.md\`.
+
+Test data. \`dev-cases/<scenario>/<case>/\` holds the cases of the local tests (\`input.payload\`, \`headers.json\`,
+\`expected.json\`, \`expected-output.json\`). Masked values do not exist in the Dev backend, so for step 2 replace each
+\`input.payload\` with a record the backend team confirms in Dev (same scenario), or add new case folders. On Dev the
+reply is checked by SHAPE (same key paths and types as \`expected-output.json\`), not by value. Step 3 checks values:
+OSB and the route get the same request and must answer the same.
+
+Credentials. If the Dev gateway needs a token, export it and pass the variable name, never the value:
+\`export DEV_TOKEN=...; python dev_test.py ... --header-env Authorization=DEV_TOKEN\`. Self-signed Dev TLS: \`--insecure\`.
+DEV
+
 cat > "$T/RUN_TESTS.md" <<RUN
 # How to run the tests of $P / $X
 
@@ -69,8 +104,8 @@ RUN
 if [ -n "$REF" ] && [ -d "$REF" ]; then
   echo "== comparing the generated route with $REF on the same frozen tests"
   "$PY" "$(cd "$KIT/../../vdi-osb-migration/bin" 2>/dev/null && pwd || echo "$KIT/bin")/compare_codegen.py" "$M" \
-    --candidate generated="$M/src/main" --candidate reference="$REF" --mvn "mvn -B -q ${MVN_ARGS:-}" -o "$O/7-compare" >/dev/null 2>&1 \
-    && rm -rf "$O"/7-compare/generated "$O"/7-compare/reference || echo "   comparison failed: see $O/7-compare"
+    --candidate generated="$M/src/main" --candidate reference="$REF" --mvn "mvn -B -q ${MVN_ARGS:-}" -o "$O/8-compare" >/dev/null 2>&1 \
+    && rm -rf "$O"/8-compare/generated "$O"/8-compare/reference || echo "   comparison failed: see $O/8-compare"
 fi
 "$PY" - "$O" "$P" "$X" "$M" "${ROUTE_AUTHOR:-pi agent (osb-camelk-route)}" <<'PY'
 import json, sys, re
@@ -103,7 +138,8 @@ lines = [f"# Review package: {p} / {x}", "", banner, "",
          "| 5 | `3-tests/DEV_TEST_PLAN.md` | the tests still to run on Dev / E2E (deploy, functional per scenario, errors, security, side by side with OSB, non-functional) |",
          "| 6 | `4-acceptance/`, `5-results/` | local acceptance result, Camel JBang run, TEST_MATRIX.md, GATES.json (K1-K13), MUTATION.json, surefire summaries |",
          "| 7 | `6-deploy/camel-k/` | integration.yaml + DEPLOY.md as handed to Argo CD |",
-         "| 8 | `7-compare/COMPARISON.md` | (if present) generated route vs reference route on the same tests |", "",
+         "| 8 | `7-dev-tests/README_DEV_TESTS.md` | the tests to run against Dev after deployment: dev_check.sh (deployment), dev_test.py (functional, errors, security, OSB side by side) |",
+         "| 9 | `8-compare/COMPARISON.md` | (if present) generated route vs reference route on the same tests |", "",
          "Run it yourself: `cd module && mvn -B -s <team settings.xml> test` (JDK 21, Maven 3.9); against a local Artemis:",
          "`broker/LOCAL_BROKER_TEST.md` of the kit (`env/local.properties` is in the module).", "",
          "## Summary", "",
@@ -132,4 +168,9 @@ lines = [f"# Review package: {p} / {x}", "", banner, "",
 print(banner); print("\n".join(lines[20:30]))
 PY
 (cd "$WS/review" && tar -czf "$P-$X.tgz" "$P-$X")
+# Dev handover: what the deployer and the Dev tester need, nothing else (deploy files + Dev tests + results so far)
+H="$WS/review/$P-$X-dev"; rm -rf "$H"; mkdir -p "$H"
+cp -r "$O/6-deploy/camel-k" "$H/" 2>/dev/null; cp -r "$O/7-dev-tests" "$H/dev-tests"; cp "$O/3-tests/TESTS.md" "$H/" 2>/dev/null
+(cd "$WS/review" && tar -czf "$P-$X-dev.tgz" "$P-$X-dev" && rm -rf "$P-$X-dev")
+echo "dev handover:   $WS/review/$P-$X-dev.tgz  (camel-k/ + dev-tests/ + TESTS.md)"
 echo "review package: $O  (+ $WS/review/$P-$X.tgz). Keep it on the client machine."

@@ -763,6 +763,77 @@ class FlowTestsReportTests(unittest.TestCase):
                 self.assertIn(s, p)
 
 
+class DevTestsTests(unittest.TestCase):
+    DT = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/assets/dev-tests"
+
+    def _server(self, leak):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+        class H(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                try:
+                    json.loads(body)
+                    st, out, extra = 200, b'{"a": {"b": 1}}', {}
+                except json.JSONDecodeError:
+                    st, out, extra = 500, b"", {"errorCode": "E"}
+                self.send_response(st)
+                self.send_header("traceId", self.headers.get("traceId"))
+                for k, v in extra.items():
+                    self.send_header(k, v)
+                if leak:
+                    self.send_header("x-apikey", "VALUE-SHOULD-NOT-APPEAR")
+                self.end_headers()
+                self.wfile.write(out)
+
+            def log_message(self, *a):
+                pass
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_address[1]}/p"
+
+    def test_dev_test_passes_and_flags_a_leaked_header(self):
+        with tempfile.TemporaryDirectory() as d:
+            c = Path(d) / "cases/s1/case1"
+            c.mkdir(parents=True)
+            (c / "input.payload").write_text('{"x": 1}')
+            (c / "expected-output.json").write_text('{"a": {"b": 7}}')
+            (Path(d) / "ft.json").write_text(json.dumps({"correlation_header": "traceId", "error_http_status": 500}))
+            args = ["--cases", Path(d) / "cases", "--flow-test", Path(d) / "ft.json"]
+            ok = run(self.DT / "dev_test.py", "--url", self._server(False), *args, "-o", Path(d) / "r1", check=False)
+            self.assertEqual(ok.returncode, 0, ok.stdout)
+            bad = run(self.DT / "dev_test.py", "--url", self._server(True), "--osb-url", self._server(False), *args,
+                      "-o", Path(d) / "r2", check=False)
+            self.assertEqual(bad.returncode, 1)
+            md = (Path(d) / "r2/DEV_TEST_RESULT.md").read_text(encoding="utf-8")
+            self.assertIn("names: x-apikey", md)
+            self.assertIn("| D4.1 |", md)
+            self.assertNotIn("VALUE-SHOULD-NOT-APPEAR", md + bad.stdout)
+
+    def test_dev_check_counts_a_secret_in_logs_without_printing_it(self):
+        if not shutil.which("bash"):
+            self.skipTest("bash not available")
+        import base64
+        with tempfile.TemporaryDirectory() as d:
+            b = Path(d) / "bin"
+            b.mkdir()
+            enc = base64.b64encode(b"SECRET-VALUE-123").decode()
+            (b / "oc").write_text("#!/usr/bin/env bash\ncase \"$*\" in\n"
+                                  "  *'get integration'*) printf Running;;\n"
+                                  "  *'get pods'*) printf 'Running true 0\\n';;\n"
+                                  f"  *'get secret'*) printf '{{\"data\":{{\"APIKEY\":\"{enc}\"}}}}';;\n"
+                                  "  *logs*) printf 'x SECRET-VALUE-123\\n';;\nesac\n")
+            (b / "oc").chmod(0o755)
+            env = dict(os.environ, PATH=f"{b}{os.pathsep}{os.environ['PATH']}", OUT=str(Path(d) / "r"), PYTHON=sys.executable)
+            r = subprocess.run(["bash", str(self.DT / "dev_check.sh"), "ns", "flow"], capture_output=True, text=True, env=env)
+            self.assertEqual(r.returncode, 1, r.stdout)
+            md = (Path(d) / "r/DEV_CHECK.md").read_text(encoding="utf-8")
+            self.assertIn("APIKEY=1", md)
+            self.assertNotIn("SECRET-VALUE-123", md + r.stdout)
+
+
 class BatchTask1Tests(unittest.TestCase):
     def test_three_flows_one_export(self):
         import csv as _csv
