@@ -726,6 +726,43 @@ class TestCatalogTests(unittest.TestCase):
             self.assertEqual(neg[0]["headers"], {"resource": "Other Resource"})
 
 
+class FlowTestsReportTests(unittest.TestCase):
+    SK = ROOT / "skills/osb-camel-agent-kit/skills/osb-camelk-route/scripts"
+
+    def test_levels_results_and_dev_plan(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = Path(d) / "modules" / "a-prj" / "Flow"
+            (m / "target/surefire-reports").mkdir(parents=True)
+            (m / "target/surefire-reports/TEST-x.FlowParityTest.xml").write_text(
+                '<testsuite><testcase classname="x.FlowParityTest" name="caseFoldersArePresent"/>'
+                '<testcase classname="x.FlowParityTest" name="correlationIdIsGeneratedWhenMissing"><skipped/></testcase></testsuite>')
+            (m / "target/surefire-reports/TEST-x.FlowErrorTest.xml").write_text(
+                '<testsuite><testcase classname="x.FlowErrorTest" name="backendHttpErrorTakesTheErrorPath(String) b">'
+                '<failure message="m"/></testcase></testsuite>')
+            case = m / "src/test/resources/parity/s1/case1"
+            case.mkdir(parents=True)
+            (case / "input.payload").write_text("SECRET-VALUE")
+            (m / "src/test/resources/flow-test.json").write_text(json.dumps(
+                {"outputs": {"reply": "reply"}, "error_http_status": 500, "payload_format": "json",
+                 "backends": {"bs": {"type": "http"}}, "scenario_mapping": [{"scenario": "s1", "outputs": ["reply"]}]}))
+            (m / "MUTATION.json").write_text(json.dumps({"killed": 1, "total": 2, "mutations": [
+                {"what": "drop call", "killed": True}, {"what": "GET -> POST", "killed": False}]}))
+            (m / "GATES.json").write_text(json.dumps({"gates": {"K1_card": {"ok": True}, "K13_runtime_safe": {"ok": False}}}))
+            (m / "SMOKE.json").write_text(json.dumps({"ok": True, "engine": "jbang", "cases": [{"case": "s1/case1", "status": 200, "problem": None}],
+                                                      "error_case": {"status": 500, "expected": 500, "ok": True}}))
+            out = Path(d) / "out"
+            run(self.SK / "flow_tests_report.py", m, "-o", out)
+            t = (out / "TESTS.md").read_text(encoding="utf-8")
+            for s in ("| L1 functional |", "2 run, 0 failed, 1 skipped", "| L2 error paths |", "1 run, 1 failed",
+                      "1/2 mutations caught", "1/2 gates ok", "| GET -> POST | NO |", "| K13_runtime_safe | FAIL |",
+                      "| s1 | 1 | 0 | reply |", "backend forced to 500"):
+                self.assertIn(s, t)
+            self.assertNotIn("SECRET-VALUE", t)
+            p = (out / "DEV_TEST_PLAN.md").read_text(encoding="utf-8")
+            for s in ("| D0.1 |", "| D1.1 | scenario `s1` |", "HTTP 500", "| D4.1 |", "| D5.4 |"):
+                self.assertIn(s, p)
+
+
 class BatchTask1Tests(unittest.TestCase):
     def test_three_flows_one_export(self):
         import csv as _csv

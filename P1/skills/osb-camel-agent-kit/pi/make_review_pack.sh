@@ -11,8 +11,11 @@
 #   2-card/       FLOW_CARD.md
 #   module/       pom.xml, src/main (route, properties, beans), src/test (frozen tests, cases, stubs), env/,
 #                 MIGRATION_NOTES.md, .scaffold.json  ->  `mvn test` and the broker scripts work in this folder
+#   3-tests/      TESTS.md (every test by level L1-L6 with its result) + DEV_TEST_PLAN.md (D0-D5, to fill on Dev)
+#   4-acceptance/ LOCAL_ACCEPTANCE.md/.json, SMOKE.json/.txt (the route run with Camel JBang)
 #   5-results/    TEST_MATRIX.md, GATES.json, MUTATION.json, surefire summaries
-#   6-compare/    (optional) generated route vs reference route on the same tests
+#   6-deploy/     camel-k/ (integration.yaml, DEPLOY.md, CHECK.json) as handed to Argo CD
+#   7-compare/    (optional) generated route vs reference route on the same tests
 set -uo pipefail
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
 MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
@@ -25,18 +28,21 @@ PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
 R="$WS/research/$P/$X"; M="$WS/modules/$P/$X"; O="$WS/review/$P-$X"
 [ -s "$R/research.json" ] || { echo "no research pack in $R: run run_domain.sh research first"; exit 2; }
 [ -d "$M" ] || { echo "no module in $M: run run_domain.sh tests (and build) first"; exit 2; }
-rm -rf "$O"; mkdir -p "$O"/{1-research,2-card,module,5-results}
+rm -rf "$O"; mkdir -p "$O"/{1-research,2-card,module,3-tests,4-acceptance,5-results,6-deploy}
 cp "$R"/RESEARCH.md "$R"/research.json "$R"/facts.json "$R"/SHARE_CHECK.json "$O/1-research/" 2>/dev/null
 cp "$M/FLOW_CARD.md" "$O/2-card/" 2>/dev/null
 for f in pom.xml FLOW_CARD.md MIGRATION_NOTES.md .scaffold.json .gitignore; do [ -f "$M/$f" ] && cp "$M/$f" "$O/module/"; done
 for d in src env; do [ -d "$M/$d" ] && cp -r "$M/$d" "$O/module/"; done
 cp "$M/GATES.json" "$M/MUTATION.json" "$M/TEST_MATRIX.md" "$M/test-matrix.csv" "$O/5-results/" 2>/dev/null
 [ -d "$M/target/surefire-reports" ] && cp "$M"/target/surefire-reports/*.txt "$O/5-results/" 2>/dev/null
+cp "$M/LOCAL_ACCEPTANCE.md" "$M/LOCAL_ACCEPTANCE.json" "$M/SMOKE.json" "$M/SMOKE.txt" "$O/4-acceptance/" 2>/dev/null
+[ -d "$M/camel-k" ] && cp -r "$M/camel-k" "$O/6-deploy/"
+"$PY" "$KIT/skills/osb-camelk-route/scripts/flow_tests_report.py" "$M" -o "$O/3-tests" >/dev/null || echo "   tests report not written"
 if [ -n "$REF" ] && [ -d "$REF" ]; then
   echo "== comparing the generated route with $REF on the same frozen tests"
   "$PY" "$(cd "$KIT/../../vdi-osb-migration/bin" 2>/dev/null && pwd || echo "$KIT/bin")/compare_codegen.py" "$M" \
-    --candidate generated="$M/src/main" --candidate reference="$REF" --mvn "mvn -B -q ${MVN_ARGS:-}" -o "$O/6-compare" >/dev/null 2>&1 \
-    && rm -rf "$O"/6-compare/generated "$O"/6-compare/reference || echo "   comparison failed: see $O/6-compare"
+    --candidate generated="$M/src/main" --candidate reference="$REF" --mvn "mvn -B -q ${MVN_ARGS:-}" -o "$O/7-compare" >/dev/null 2>&1 \
+    && rm -rf "$O"/7-compare/generated "$O"/7-compare/reference || echo "   comparison failed: see $O/7-compare"
 fi
 "$PY" - "$O" "$P" "$X" "$M" "${ROUTE_AUTHOR:-pi agent (osb-camelk-route)}" <<'PY'
 import json, sys, re
@@ -57,9 +63,11 @@ lines = [f"# Review package: {p} / {x}", "",
          "| 1 | `1-research/RESEARCH.md` | what the OSB flow does (entry, branches, outputs, errors, logs) with evidence; open questions |",
          "| 2 | `2-card/FLOW_CARD.md` | the behaviour the code must implement; status of the approval |",
          f"| 3 | `module/src/main/resources/routes/` | **the Camel route, written by: {author}** (YAML DSL); helper beans in `module/src/main/java`; `application.properties` = production descriptor (OSB names, selector, connection from the environment); `MIGRATION_NOTES.md` |",
-         "| 4 | `module/src/test/` | FlowParityTest (generated, frozen), FlowErrorTest, expected outputs (`flow-test.json`), test messages (`resources/parity`, masked / synthetic), stubs |",
-         "| 5 | `5-results/` | TEST_MATRIX.md, GATES.json (K1-K11), MUTATION.json, surefire summaries |",
-         "| 6 | `6-compare/COMPARISON.md` | (if present) generated route vs reference route on the same tests |", "",
+         "| 4 | `3-tests/TESTS.md` | **all tests by level**: L1 functional, L2 error paths, L3 mutations, L4 gates, L5 runtime run, L6 deploy file, each with its result; test code in `module/src/test/` |",
+         "| 5 | `3-tests/DEV_TEST_PLAN.md` | the tests still to run on Dev / E2E (deploy, functional per scenario, errors, security, side by side with OSB, non-functional) |",
+         "| 6 | `4-acceptance/`, `5-results/` | local acceptance result, Camel JBang run, TEST_MATRIX.md, GATES.json (K1-K13), MUTATION.json, surefire summaries |",
+         "| 7 | `6-deploy/camel-k/` | integration.yaml + DEPLOY.md as handed to Argo CD |",
+         "| 8 | `7-compare/COMPARISON.md` | (if present) generated route vs reference route on the same tests |", "",
          "Run it yourself: `cd module && mvn -B -s <team settings.xml> test` (JDK 21, Maven 3.9); against a local Artemis:",
          "`broker/LOCAL_BROKER_TEST.md` of the kit (`env/local.properties` is in the module).", "",
          "## Summary", "",
@@ -85,7 +93,7 @@ lines = [f"# Review package: {p} / {x}", "",
          "- [ ] Open questions answered or accepted before the card is approved", "",
          "Reviewer: ____________  Date: ________  Result: approve / changes needed"]
 (o / "README_REVIEW.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-print("\n".join(lines[16:26]))
+print("\n".join(lines[18:28]))
 PY
 (cd "$WS/review" && tar -czf "$P-$X.tgz" "$P-$X")
 echo "review package: $O  (+ $WS/review/$P-$X.tgz). Keep it on the client machine."
