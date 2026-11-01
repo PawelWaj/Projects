@@ -46,6 +46,13 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    same log line text under logName `oracle.osb.logging.pipeline`, same error headers, same retries.
    A difference you cannot avoid goes into `MIGRATION_NOTES.md` (what, why, who must accept it).
 4. **No infrastructure in code.** Endpoints are `{{properties}}`; no hosts, ports, credentials (gate K4).
+4b. **Parity stops at what is unsafe in production (gate K13).** Keep OSB's log text, but never a credential in it
+   (headers set from `{{backend.*}}`/`{{env:*}}`, keys, tokens, ids from the APIDetails DVM): drop those placeholders
+   and note it in `MIGRATION_NOTES.md`. A fixed host OSB writes (Host header, constant) becomes a `{{property}}` from
+   env. HTTP backend: catch `org.apache.camel.http.base.HttpOperationFailedException` before `java.lang.Exception` and
+   report `backend returned HTTP ${exception.statusCode}`, never `${exception.message}` (it holds the URL and query).
+   HTTP in + HTTP backend: `removeHeaders` (pattern `*`, excludePattern = the headers OSB sends) right before the
+   backend `to`, and again after it, before the reply is built (excludePattern keeps what the reply needs).
 5. **Original transforms stay.** XQuery/XSLT/XSD files are copied from the OSB source unchanged (delivery:
    `transformations/`, run by `OsbXQuery`/`OsbNxsd`; work module: `src/main/resources/osb/`, `camel-saxon`); never
    rewritten "because it is cleaner". They stay on the client machine, never in a research pack.
@@ -62,7 +69,9 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    helper bean, generated tests, `FLOW_CARD.md` (draft). Route, properties and card are written once; tests always
    follow research.json.
 2. **Approval (human):** a person checks the card against `RESEARCH.md`, resolves or accepts each open question, sets
-   `Status: approved`, `Approver:`, `Date:`.
+   `Status: approved`, `Approver:`, `Date:`. `scripts/card_answers.py <module>` shows each question with its evidence
+   and a recommended answer (Enter accepts) and writes `CARD_ANSWERS.json`. Before Dev: `pi/local_acceptance.sh`
+   (tests + gates incl. K1, mutations, the route on Camel JBang as on Camel K, integration.yaml checked, review pack).
 2b. **Test inputs where Splunk has none (pi tester, before the route):** every `scenario_mapping` row needs a case
    (gate K9). Rows without a real Splunk message get a synthetic case written by the tester role
    (`agents/tester-camelk.md`): fake values, built from the message schema in the OSB source, under
@@ -78,6 +87,10 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    inline in the pipeline (no .xqy file) or a JSON nXSD without its schema in the module is implemented from
    research.json `transforms[].mappings`, row by row (helper bean or jsonpath); never a pass-through when research
    lists a transform. Gate K12 requires an expected reply per case, so a pass-through fails.
+   Backend endpoints carry `?bridgeEndpoint=true` (the scaffold writes it): the call keeps its own URI instead of the
+   CamelHttpUri/Path headers of the entry. Local proof beyond the mocks: `scripts/smoke_http.py <module>` runs the route on
+   Camel Main (`-Prun-local`), plays every backend with its stub on a local port, POSTs each parity case over HTTP and compares
+   the reply (status, golden body, error status when the backend fails); `vdi_session.sh smoke '<project>'` runs it per flow.
 4. **Error tests:** `src/test/java/<pkg>/FlowErrorTest.java` is generated (invalid payload, every backend failing)
    and frozen like FlowParityTest (gate K5): the implementer never edits it. At least one test per error scope on the card: invalid
    payload, each output/backend failing (mock `whenAnyExchangeReceived` throwing), retries counted
@@ -92,7 +105,8 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    K8 tests green · K9 every scenario_mapping row has a case · K10 every property value a plain endpoint (no notes,
    no spaces) and every `{{key}}` defined · K11 each destination once: a JMS business service that writes an `out-*`
    IS that output, so never add a `backend-<x>-bs` send next to `out-<x>` (production would get every message twice) ·
-   K12 request/reply: every case that ends in the reply has `expected-output.json|xml`.
+   K12 request/reply: every case that ends in the reply has `expected-output.json|xml` ·
+   K13 runtime safe: no credential in a log, no fixed host, no backend URL in an error, headers cleaned around an HTTP backend (rule 4b).
 7. **Prove the tests bite:** `python <skill>/scripts/mutate_route.py modules/<project>/<proxy> --mvn "mvn -B -q -s ~/.m2/settings.xml"`
    breaks the route on purpose (conditions negated, outputs swapped or dropped, retries removed); every mutation must
    make a test fail. A survivor means a missing test: a person adds it to the template (assets/templates), never weaken the route to pass.
@@ -104,8 +118,11 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    (assumption until the platform mapping is decided). What it proves: selector + durable subscription, routing to the
    right queues, XML from the XQuery arrives. What it does not prove: byte equality with OSB, the real broker.
 8c. **Camel K deployment:** `python <skill>/scripts/camelk_manifests.py <delivery project | module>` writes
-   `camel-k/integration.yaml` (one file: Kamelets, ConfigMaps, Integration), `DEPLOY.md` (Secret commands) and
-   `CHECK.json` (ready / open CHANGE-ME values). Environment values come from `CAMELK_BROKER_URL`, `CAMELK_ENV_FILE`,
+   `camel-k/` as a Kustomize folder: `integration.yaml` (the Integration resource ONLY, never code: no ConfigMap, no
+   inline source), `sources/` (the route YAML and Java files, byte-identical to the module), `config/`,
+   (`transformations/`, `kamelets/` on the scripts path), `kustomization.yaml` (configMapGenerator; sources hashed so
+   a code change rolls the Integration), `DEPLOY.md` (Secret commands, `oc apply -k .`) and `CHECK.json` (ready /
+   open CHANGE-ME values). Never paste route or Java content into integration.yaml: `check_manifest.py` fails it. Environment values come from `CAMELK_BROKER_URL`, `CAMELK_ENV_FILE`,
    `CAMELK_NAMESPACE`, never from the repository; credential-looking `{{env:X}}` names are read from a Secret.
    `vdi_session.sh deploy` runs it with an `oc` dry run; `APPLY=1` applies (a person's decision).
 9. **Report** (five lines): proxy, gates result, tests run/failed/skipped (skipped = golden outputs pending),
@@ -553,7 +570,7 @@ Per OSB project (from the work modules <ws>/modules/<project>/<proxy>/ and the O
       test/<Flow>Test.java           tests, run with `jbang test/<Flow>Test.java` (JUnit via //DEPS, no pom, no broker)
       test/resources/<proxy>/        flow-test.json + the masked cases
       docs/<proxy>/                  FLOW_CARD.md, TEST_MATRIX.md, GATES.json, BODY_CHAIN.md
-      camel-k/                       integration.yaml, configmaps.yaml, DEPLOY.md (camelk_manifests.py)
+      camel-k/                       Kustomize: integration.yaml (no code), sources/, kustomization.yaml, DEPLOY.md
 
 Routing comes from the frozen scenario table of the module (flow-test.json, checked against the Splunk cases);
 transformations never come from an agent: what OSB does to the body is read from the pipeline and run with OSB's
@@ -1061,7 +1078,7 @@ def readme(app: str, summary: list) -> str:
           "  Common-setup/   osb-jms-source / osb-jms-sink kamelets, OsbNxsd.java, OsbXQuery.java",
           "  <project>/      <domain>-route.yaml  application.properties  local.properties  run-local.sh  RUN_LOCAL.md",
           "                  transformations/ (OSB .xqy and nXSD .xsd)  test/ (jbang tests, cases)  docs/<proxy>/",
-          "                  camel-k/ (integration.yaml, configmaps.yaml, DEPLOY.md: the project on Camel K)", "```", ""]
+          "                  camel-k/ (Kustomize folder: integration.yaml without code + sources/, DEPLOY.md: the project on Camel K)", "```", ""]
     return "\n".join(L)
 
 
@@ -1395,34 +1412,101 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_BODY_CHAIN_PY
+mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/camel_run.py")"
+cat > '.pi/skills/osb-camelk-route/scripts/camel_run.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_CAMEL_RUN_PY'
+#!/usr/bin/env python3
+"""Start a work module with Camel JBang the way Camel K runs it (no Maven build of the module).
+
+    camel_run.py modules/<project>/<proxy> [--overrides env/local.properties] [--port N] [--timeout S] [--print]
+
+Route YAML + Java sources (compiled by Camel, as on Camel K) + resources, the Camel K variant of
+application.properties with the override lines applied (local addresses of the queues, stub backends), and the
+dependency list camelk_manifests.py writes into integration.yaml. Connection values ({{env:BROKER_URL}} ...) come
+from the environment, as on the cluster. `--print` shows the command instead of running it. Used by
+broker/run_local.sh with ENGINE=jbang (JMS flows on the local Artemis) and by local_acceptance.sh.
+"""
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from smoke_http import jbang_command, read_properties, win_path  # noqa: E402
+
+
+def overrides(path: Path | None) -> dict[str, str]:
+    """key=value lines of a local.properties; the selector stays on the broker (artemis_prepare.sh), not in the route."""
+    if not path or not path.is_file():
+        return {}
+    return {k: v for k, v in read_properties(path).items() if not k.endswith(".selector")}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("module", type=Path)
+    ap.add_argument("--overrides", type=Path, help="properties that replace the ones of application.properties")
+    ap.add_argument("--port", type=int, default=0, help="platform-http port (0 = no HTTP server)")
+    ap.add_argument("--timeout", type=int, default=3600, help="the route stops by itself after this many seconds + 600")
+    ap.add_argument("--print", action="store_true", help="print the command, do not run it")
+    a = ap.parse_args()
+    mod = Path(win_path(str(a.module))).resolve()
+    mvn = os.environ.get("VERIFY_MVN", "mvn -B " + os.environ.get("MVN_ARGS", ""))
+    cmd = jbang_command(mod, a.port, a.timeout, overrides(a.overrides), mvn)
+    if a.print:
+        print(" ".join(cmd))
+        return 0
+    sys.stdout.flush()
+    if os.name == "nt":                     # no exec on Windows: wait, so the caller's kill of the tree reaches java
+        return subprocess.call(cmd, cwd=str(mod))
+    os.chdir(mod)
+    os.execv(cmd[0], cmd)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_CAMEL_RUN_PY
 mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/camelk_manifests.py")"
 cat > '.pi/skills/osb-camelk-route/scripts/camelk_manifests.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_CAMELK_MANIFESTS_PY'
 #!/usr/bin/env python3
-"""Camel K deployment of ONE migrated flow: a single integration.yaml you apply to the Dev namespace. Stdlib only.
+"""Camel K deployment of ONE migrated flow: a Kustomize folder you apply to the Dev namespace. Stdlib only.
 
     camelk_manifests.py <delivery>/<app>/<project>         scripts path (called by assemble_jbang.py)
     camelk_manifests.py modules/<project>/<proxy>           skills path (a Maven module, called by run_camelk.sh)
         [--namespace NS] [--domain D] [--broker-url URL] [--env-file FILE]
 
-Writes <folder>/camel-k/:
-  integration.yaml    every resource the flow needs, in apply order, as one multi-document file:
-                      Kamelets (scripts path; shared, re-applying is harmless), ConfigMap <name>-sources (route + Java),
-                      <name>-config (application.properties), <name>-transformations (OSB .xqy/.xsd), the Integration
+Writes <folder>/camel-k/ (no code inside a manifest: every route, Java and OSB file is a file of its own):
+  integration.yaml    the Integration resource only; its sources point to ConfigMap <name>-sources (contentRef)
+  sources/            the route YAML and Java files, byte-identical to the module (the code reviewers read)
+  config/             application.properties (Camel K variant)
+  transformations/    OSB .xqy/.xsd (scripts path), mounted at /etc/camel/resources/osb/transformations
+  kamelets/           the Kamelets (scripts path; shared, re-applying is harmless)
+  kustomization.yaml  configMapGenerator: sources/ -> <name>-sources (name hash, so a code change rolls the
+                      Integration), config/ -> <name>-config, transformations/ -> <name>-transformations (fixed names,
+                      mount hot-reload); kustomizeconfig.yaml teaches Kustomize the Integration contentRef.
+                      Apply: `oc apply -k camel-k/`; Argo CD renders the folder as Kustomize by itself.
   DEPLOY.md           the Secret commands (credentials are never in a file), apply, check, remove
   CHECK.json          ready (true/false) + what is still open (CHANGE-ME values), for the run summary
 Values that differ per environment come from the command line or the environment, never from the repository:
   --broker-url / CAMELK_BROKER_URL   broker of the namespace (scripts path: core protocol tcp://host:61616, the kamelets
                                      use the Artemis core client; skills path: amqp://host:5672 or failover:(...))
   --env-file / CAMELK_ENV_FILE       KEY=VALUE lines for the {{env:X}} values of the route (hosts, ids), kept on the machine
+  CAMELK_SECRET_KEYS='A,B'           env names that go into the Secret too (names with PASSWORD/TOKEN/API_KEY/... always do)
   Names that look like credentials (PASSWORD, SECRET, TOKEN, KEY, USER) are read from Secret <name>-env instead
   (environment trait NAME=secret:<name>-env/NAME, Camel K 2.3+); DEPLOY.md prints the command that creates it.
-Namespace and domain label: --namespace / --domain, else CAMELK_NAMESPACE / CAMELK_DOMAIN, else none / the folder."""
+Namespace and domain label: --namespace / --domain, else CAMELK_NAMESPACE / CAMELK_DOMAIN, else none / the folder.
+DEV_VALUES=later: files for review before the Dev values exist. Missing values stay CHANGE-ME and are listed as open,
+CHECK.json says ready false + for_review true; a value typed as CHANGE-ME or <...> always counts as open."""
 from __future__ import annotations
 
 import argparse
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -1435,29 +1519,6 @@ CHANGE = "CHANGE-ME"
 SECRETISH = re.compile(r"(?i)(PASSWORD|PASSWD|PWD|SECRET|TOKEN|API_?KEY|_KEY$|_USER$|USERNAME|CREDENTIAL)")
 POM_SKIP = {"camel-bom", "camel-main", "camel-mock", "camel-test-main-junit5", "camel-test-junit5", "camel-log"}
 POM_MAP = {"camel-platform-http-main": "camel:platform-http"}
-
-
-def yaml_str(s: str) -> str:
-    return json.dumps(s, ensure_ascii=False)
-
-
-def block(key: str, text: str, ind: int) -> list:
-    """A ConfigMap data entry. Literal block when it round-trips exactly, else a JSON-quoted string (YAML-valid)."""
-    pad = " " * ind
-    first = text.split("\n", 1)[0]
-    literal_ok = (text.endswith("\n") and not text.endswith("\n\n") and "\r" not in text and text.strip()
-                  and not first[:1].isspace() and all(not l or not l[-1].isspace() for l in text.split("\n")))
-    if not literal_ok:
-        return [f"{pad}{key}: {yaml_str(text)}"]
-    return [f"{pad}{key}: |"] + [f"{pad}  {l}" if l else "" for l in text[:-1].split("\n")]
-
-
-def configmap(name: str, files: dict, labels: dict, ns: str) -> list:
-    L = ["apiVersion: v1", "kind: ConfigMap", "metadata:", f"  name: {name}"] + ([f"  namespace: {ns}"] if ns else [])
-    L += ["  labels:"] + [f"    {k}: {v}" for k, v in labels.items()] + ["data:"]
-    for k, text in files.items():
-        L += block(k, text, 2)
-    return L
 
 
 def camelk_properties(text: str) -> str:
@@ -1479,11 +1540,22 @@ def read_env_file(path: str) -> dict:
     return out
 
 
+def for_review(open_: list) -> bool:
+    """DEV_VALUES=later and only missing values open (no structural problem): the files can go to review."""
+    return os.environ.get("DEV_VALUES", "") == "later" and all(": no value" in o for o in open_)
+
+
 def env_refs(texts) -> list:
     names = []
     for t in texts:
         names += re.findall(r"env[:.]([A-Z][A-Z0-9_]*)", t)
     return list(dict.fromkeys(n for n in names if n != "OSB_FILES_DIR"))
+
+
+def extra_secret_keys() -> set:
+    """CAMELK_SECRET_KEYS='A,B': further env names that go into the Secret although their name does not look secret
+    (e.g. client ids a DVM holds next to the API key). Their values never appear in integration.yaml or Git."""
+    return {k for k in re.split(r"[\s,]+", os.environ.get("CAMELK_SECRET_KEYS", "")) if k}
 
 
 def env_vars(name: str, refs: list, values: dict, broker_url: str) -> tuple:
@@ -1492,13 +1564,14 @@ def env_vars(name: str, refs: list, values: dict, broker_url: str) -> tuple:
     for n in refs:
         if n == "BROKER_URL":
             v = broker_url or values.get(n, "")
-        elif SECRETISH.search(n):
+        elif SECRETISH.search(n) or n in extra_secret_keys():
             secret.append(n)
             vars_.append(f"{n}=secret:{name}-env/{n}")
             continue
         else:
             v = values.get(n, "")
-        if not v:
+        if not v or v == CHANGE or re.fullmatch(r"<[^>]*>", v):
+            v = ""
             open_.append(f"{n}: no value (--env-file / CAMELK_ENV_FILE{', --broker-url / CAMELK_BROKER_URL' if n == 'BROKER_URL' else ''})")
         vars_.append(f"{n}={v or CHANGE}")
     return vars_, secret, open_
@@ -1507,6 +1580,8 @@ def env_vars(name: str, refs: list, values: dict, broker_url: str) -> tuple:
 def integration(name: str, labels: dict, ns: str, sources: dict, deps: list, configs: list, resources: list,
                 env: list, kamelets: list, http: bool, origin: str) -> list:
     I = [f"# {name}: Camel K Integration generated from {origin} (camelk_manifests.py, do not edit by hand).",
+         "# No code in this file: the sources are the files in sources/, turned into ConfigMap " + f"{name}-sources by",
+         "# kustomization.yaml. Apply the folder: oc apply -k . (Argo CD: the folder as a Kustomize application).",
          "apiVersion: camel.apache.org/v1", "kind: Integration", "metadata:", f"  name: {name}"]
     I += [f"  namespace: {ns}"] if ns else []
     I += ["  labels:"] + [f"    {k}: {v}" for k, v in labels.items()]
@@ -1515,7 +1590,7 @@ def integration(name: str, labels: dict, ns: str, sources: dict, deps: list, con
         I += [f"    - name: {s}", f"      language: {'java' if s.endswith('.java') else 'yaml'}",
               f"      contentRef: {name}-sources", f"      contentKey: {s}"]
     I += ["  dependencies:"] + [f"    - {d}" for d in deps]
-    I += ["  traits:", "    mount:", "      configs:"] + [f'        - "{c}"' for c in configs]
+    I += ["  traits:", "    mount:", "      hotReload: true", "      configs:"] + [f'        - "{c}"' for c in configs]
     if resources:
         I += ["      resources:"] + [f'        - "{r}"' for r in resources]
     I += ["    environment:", "      vars:"] + [f'        - "{v}"' for v in env]
@@ -1531,7 +1606,9 @@ def integration(name: str, labels: dict, ns: str, sources: dict, deps: list, con
 def deploy_md(name: str, ns: str, secret_env: list, broker_secret: list, open_: list, http: bool, kind: str) -> list:
     nsf = f" -n {ns}" if ns else " -n <namespace>"
     D = [f"# {name} on Camel K ({kind})", "", "Generated with the route; regenerate, never edit. Everything except credentials is in",
-         "`integration.yaml`. Run from this folder, logged in with `oc login` to the Dev cluster.", ""]
+         "this folder as Kustomize: `integration.yaml` (the Integration only, no code), `sources/` (route and Java files),",
+         "`config/`, `kustomization.yaml`. Run from this folder, logged in with `oc login` to the Dev cluster. In Argo CD",
+         "point the Application at this folder; it renders `kustomization.yaml` by itself.", ""]
     n = 1
     if broker_secret:
         D += [f"{n}. Broker credentials (once per namespace and flow). Write `broker.properties` on your machine, create the",
@@ -1543,28 +1620,82 @@ def deploy_md(name: str, ns: str, secret_env: list, broker_secret: list, open_: 
               f"   oc create secret generic {name}-env{nsf} " + " ".join(f"--from-literal={k}=<{k.lower()}>" for k in secret_env),
               "   ```", "   Type the values in the window; do not keep them in a script or the shell history file.", ""]
         n += 1
-    D += [f"{n}. Check, apply, watch:", "   ```", f"   oc apply{nsf} --dry-run=server -f integration.yaml",
-          f"   oc apply{nsf} -f integration.yaml", f"   oc get integration {name}{nsf} -w        # phase Running",
+    D += [f"{n}. Check, apply, watch:", "   ```", "   oc kustomize . | grep -c 'kind: ConfigMap'   # the generated ConfigMaps",
+          f"   oc apply{nsf} --dry-run=server -k .",
+          f"   oc apply{nsf} -k .", f"   oc get integration {name}{nsf} -w        # phase Running",
           f"   oc logs{nsf} -l camel.apache.org/integration={name} --tail=50", "   ```"]
     if http:
         D += ["   The route answers HTTP on the Service `" + name + "` (port 80 -> 8080). Expose it only as the platform",
               "   decides (Route / Istio gateway); no Route is created here."]
-    D += [f"{n + 1}. Remove: `oc delete{nsf} -f integration.yaml` (Secrets stay: delete them by name if needed).", "",
+    D += [f"{n + 1}. Remove: `oc delete{nsf} -k .` (Secrets stay: delete them by name if needed).", "",
           "Camel version: the Camel K runtime of the cluster decides it; routes and tests are built for Camel 4.18, so use a",
           "Camel 4.18 runtime (Camel K 2.x with camel-k-runtime of that line)."]
-    if open_:
+    if open_ or not ns:
         D += ["", "## Open before applying (CHANGE-ME in integration.yaml)", ""] + [f"- {o}" for o in open_]
+        D += [] if ns else ["- namespace: none in the file; the Argo CD Application destination sets it (or `-n <namespace>`)"]
+        D += ["", "Regenerate with the values on the migration machine (dev.env, CAMELK_NAMESPACE) or fill the CHANGE-ME",
+              "lines in the GitOps repository; credentials only through the Secret above."] if open_ else []
     return D
 
 
-def write(out: Path, docs: list, D: list, check: dict) -> None:
+GENERATED_DIRS = ("sources", "config", "transformations", "kamelets")
+
+
+def kustomization(name: str, ns: str, labels: dict, groups: list, kamelets: list) -> list:
+    """groups: (configmap name, folder, file names, hashed). A hashed ConfigMap gets a content hash in its name and
+    kustomizeconfig.yaml rewrites the Integration contentRef to it, so a code change redeploys the Integration."""
+    K = [f"# {name}: generated by camelk_manifests.py, do not edit by hand. Apply: oc apply -k .",
+         "apiVersion: kustomize.config.k8s.io/v1beta1", "kind: Kustomization"] + ([f"namespace: {ns}"] if ns else [])
+    K += ["resources:"] + [f"  - kamelets/{k}" for k in kamelets] + ["  - integration.yaml"]
+    K += ["configurations:", "  - kustomizeconfig.yaml", "generatorOptions:", "  labels:"]
+    K += [f"    {k}: {v}" for k, v in {**labels, "camel.apache.org/integration": name}.items()]
+    K += ["configMapGenerator:"]
+    for cm_name, folder, files, hashed in groups:
+        K += [f"  - name: {cm_name}", "    files:"] + [f"      - {folder}/{f}" for f in files]
+        K += [] if hashed else ["    options:", "      disableNameSuffixHash: true"]
+    return K
+
+
+KUSTOMIZE_CONFIG = ["# Integration.spec.sources[].contentRef names a ConfigMap: Kustomize rewrites it to the hashed name.",
+                    "nameReference:", "  - kind: ConfigMap", "    version: v1", "    fieldSpecs:",
+                    "      - kind: Integration", "        group: camel.apache.org", "        path: spec/sources/contentRef"]
+
+
+def write(out: Path, name: str, ns: str, labels: dict, integ: list, groups: list, kamelets: dict, D: list, check: dict) -> None:
+    """groups: (configmap name, folder, {file: text}, hashed); kamelets: {file name: text}."""
     out.mkdir(exist_ok=True)
-    (out / "integration.yaml").write_text("\n---\n".join("\n".join(d) for d in docs) + "\n", encoding="utf-8", newline="\n")
+    for d in GENERATED_DIRS:
+        shutil.rmtree(out / d, ignore_errors=True)
+    for _, folder, files, _ in groups:
+        (out / folder).mkdir(parents=True, exist_ok=True)
+        for f, text in files.items():
+            (out / folder / f).write_text(text, encoding="utf-8", newline="\n")
+    if kamelets:
+        (out / "kamelets").mkdir(exist_ok=True)
+        for f, text in kamelets.items():
+            (out / "kamelets" / f).write_text(text, encoding="utf-8", newline="\n")
+    (out / "integration.yaml").write_text("\n".join(integ) + "\n", encoding="utf-8", newline="\n")
+    K = kustomization(name, ns, labels, [(c, f, list(files), h) for c, f, files, h in groups], list(kamelets))
+    (out / "kustomization.yaml").write_text("\n".join(K) + "\n", encoding="utf-8", newline="\n")
+    (out / "kustomizeconfig.yaml").write_text("\n".join(KUSTOMIZE_CONFIG) + "\n", encoding="utf-8", newline="\n")
     (out / "DEPLOY.md").write_text("\n".join(D) + "\n", encoding="utf-8", newline="\n")
     (out / "CHECK.json").write_text(json.dumps(check, indent=2) + "\n", encoding="utf-8")
     old = out / "configmaps.yaml"                       # earlier layout: ConfigMaps in their own file
     if old.is_file():
         old.unlink()
+
+
+def cm_open(groups: list) -> list:
+    """ConfigMap limits: 1 MiB of data, keys of [-._a-zA-Z0-9]."""
+    out = []
+    for cm_name, _, files, _ in groups:
+        size = sum(len(t.encode()) for t in files.values())
+        if size > CM_LIMIT:
+            out.append(f"ConfigMap {cm_name} holds {size} bytes, over the 1 MiB limit: split it")
+        bad = [k for k in files if not re.fullmatch(r"[-._a-zA-Z0-9]+", k)]
+        if bad:
+            out.append(f"file names not valid as ConfigMap keys: {', '.join(bad)}")
+    return out
 
 
 def settings(ns: str, domain: str, broker_url: str, env_file: str, default_domain: str) -> tuple:
@@ -1588,29 +1719,33 @@ def manifests(pdir: Path, ns: str = "", domain: str = "", broker_url: str = "", 
     for j in ("OsbNxsd.java", "OsbXQuery.java"):
         sources[j] = (common / j).read_text(encoding="utf-8")
     trans = {f.name: f.read_text(encoding="utf-8") for f in sorted((pdir / "transformations").glob("*")) if f.is_file()}
-    size = sum(len(t.encode()) for t in trans.values())
-    open_ = [f"ConfigMap {name}-transformations holds {size} bytes, over the 1 MiB limit: split it"] if size > CM_LIMIT else []
-    bad = [k for k in trans if not re.fullmatch(r"[-._a-zA-Z0-9]+", k)]
-    if bad:
-        open_.append(f"file names not valid as ConfigMap keys: {', '.join(bad)}")
+    groups = [(f"{name}-sources", "sources", sources, True), (f"{name}-config", "config", {"application.properties": props}, False),
+              (f"{name}-transformations", "transformations", trans, False)]
+    open_ = cm_open(groups)
     refs = ["BROKER_URL"] + [r for r in env_refs([*sources.values(), props]) if r not in ("BROKER_URL", "BROKER_USER", "BROKER_PASSWORD")]
     env, secret_env, more = env_vars(name, refs, values, broker_url)
     env = [f"OSB_FILES_DIR={FILES_DIR}"] + env
     kam = [k.name[:-len(".kamelet.yaml")] for k in kamelets]
     http = any("platform-http" in s for s in sources.values())
-    docs = [k.read_text(encoding="utf-8").rstrip("\n").split("\n") for k in kamelets]
-    docs += [configmap(f"{name}-sources", sources, labels, ns), configmap(f"{name}-config", {"application.properties": props}, labels, ns),
-             configmap(f"{name}-transformations", trans, labels, ns)]
     deps = ["camel:yaml-dsl", "camel:kamelet", "camel:jms", "camel:direct", "camel:jackson", SAXON, ARTEMIS_CLIENT]
-    docs.append(integration(name, labels, ns, sources, deps, [f"configmap:{name}-config", f"secret:{name}-broker"],
+    integ = (integration(name, labels, ns, sources, deps, [f"configmap:{name}-config", f"secret:{name}-broker"],
                             [f"configmap:{name}-transformations@{FILES_DIR}/transformations"], env, kam, http,
                             f"the OSB project {pdir.name}"))
     open_ += more
     check = {"integration": name, "path": "scripts", "ready": not open_, "open": open_,
              "secrets": [f"{name}-broker"] + ([f"{name}-env"] if secret_env else []), "sources": len(sources), "transformations": len(trans)}
-    write(pdir / "camel-k", docs, deploy_md(name, ns, secret_env, [f"camel.kamelet.{k}.{s}" for k in kam for s in SECRET_KEYS],
+    write(pdir / "camel-k", name, ns, labels, integ, groups, {k.name: k.read_text(encoding="utf-8") for k in kamelets}, deploy_md(name, ns, secret_env, [f"camel.kamelet.{k}.{s}" for k in kam for s in SECRET_KEYS],
                                             open_, http, "scripts path"), check)
     return check
+
+
+def module_deps(mod: Path, used: str) -> list:
+    """The Camel K dependency list of a Maven module: its camel-* artifacts as camel:<name> (test-only and runtime-
+    provided ones skipped). Also what local_acceptance passes to `camel run --dep`, so both run the same classpath."""
+    pom = (mod / "pom.xml").read_text(encoding="utf-8") if (mod / "pom.xml").is_file() else ""
+    arts = list(dict.fromkeys(re.findall(r"<artifactId>(camel-[\w-]+)</artifactId>", pom)))
+    deps = ["camel:yaml-dsl"] + [POM_MAP.get(a, "camel:" + a[len("camel-"):]) for a in arts if a not in POM_SKIP and a != "camel-yaml-dsl"]
+    return [d for d in dict.fromkeys(deps) if d != "camel:amqp" or re.search(r"\bamqp:", used)]   # the scaffold pom always has it
 
 
 def module_manifests(mod: Path, ns: str = "", domain: str = "", broker_url: str = "", env_file: str = "") -> dict:
@@ -1628,23 +1763,20 @@ def module_manifests(mod: Path, ns: str = "", domain: str = "", broker_url: str 
     clash = sorted({j.name for j in java if sum(1 for x in java if x.name == j.name) > 1})
     sources.update({j.name: j.read_text(encoding="utf-8") for j in java})
     props = camelk_properties((main / "resources/application.properties").read_text(encoding="utf-8"))
-    pom = (mod / "pom.xml").read_text(encoding="utf-8") if (mod / "pom.xml").is_file() else ""
-    arts = list(dict.fromkeys(re.findall(r"<artifactId>(camel-[\w-]+)</artifactId>", pom)))
-    deps = ["camel:yaml-dsl"] + [POM_MAP.get(a, "camel:" + a[len("camel-"):]) for a in arts if a not in POM_SKIP and a != "camel-yaml-dsl"]
-    used = "\n".join([*sources.values(), props])
-    deps = [d for d in dict.fromkeys(deps) if d != "camel:amqp" or re.search(r"\bamqp:", used)]   # the scaffold pom always has it
+    deps = module_deps(mod, "\n".join([*sources.values(), props]))
     amqp = "camel:amqp" in deps
     env, secret_env, open_ = env_vars(name, env_refs([*sources.values(), props]), values, broker_url)
     if clash:
         open_.append(f"two Java files with the same name ({', '.join(clash)}): Camel K needs unique source names")
     http = any("platform-http" in s for s in [*sources.values(), props])
-    docs = [configmap(f"{name}-sources", sources, labels, ns), configmap(f"{name}-config", {"application.properties": props}, labels, ns)]
-    docs.append(integration(name, labels, ns, sources, deps, [f"configmap:{name}-config"], [], env, [], http,
-                            f"the migrated module {meta.get('project', '')}/{meta.get('proxy', mod.name)}"))
+    groups = [(f"{name}-sources", "sources", sources, True), (f"{name}-config", "config", {"application.properties": props}, False)]
+    open_ += cm_open(groups)
+    integ = integration(name, labels, ns, sources, deps, [f"configmap:{name}-config"], [], env, [], http,
+                        f"the migrated module {meta.get('project', '')}/{meta.get('proxy', mod.name)}")
     kind = "skills path, " + ("HTTP request/reply" if http else "AMQP" if amqp else "messaging")
-    check = {"integration": name, "path": "skills", "ready": not open_, "open": open_,
+    check = {"integration": name, "path": "skills", "ready": not open_, "for_review": for_review(open_), "open": open_,
              "secrets": [f"{name}-env"] if secret_env else [], "sources": len(sources), "dependencies": deps}
-    write(mod / "camel-k", docs, deploy_md(name, ns, secret_env, [], open_, http, kind), check)
+    write(mod / "camel-k", name, ns, labels, integ, groups, {}, deploy_md(name, ns, secret_env, [], open_, http, kind), check)
     return check
 
 
@@ -1664,6 +1796,324 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_CAMELK_MANIFESTS_PY
+mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/card_answers.py")"
+cat > '.pi/skills/osb-camelk-route/scripts/card_answers.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_CARD_ANSWERS_PY'
+#!/usr/bin/env python3
+"""Answer the open questions of a flow card: a recommended answer per question, computed from the evidence the chain
+already has; the person accepts it with Enter or types their own. Then the card is approved.
+
+    card_answers.py modules/<project>/<proxy>                    interactive: Enter accepts [recommended], s = skip
+    card_answers.py modules/<project>/<proxy> --answers a.json   answers prepared in advance {question-prefix: answer}
+    card_answers.py modules/<project>/<proxy> --defaults         every recommendation, no questions (lab / POC only)
+    options: --approver "<name>"  (else asked, recommended from git config user.name / USERNAME)
+
+Evidence per question (names and counts only, never message values): research.json (entry, outputs, backends,
+errors, dependencies), the route YAML (CamelHttpMethod), the OSB source under $APP/<project> (.pipeline / .bix, file
+and line of the HTTP method), MUTATION.json, GATES.json (K7, K9), the parity cases (counted), camel-k/CHECK.json and
+the env names of the route (which go to the Secret). Writes the answers into FLOW_CARD.md section 9
+("- [x] <question> -- answered|accepted: <text> [evidence: ...]"), sets Status/Approver/Date only when no question is
+left open, keeps FLOW_CARD.md.bak-<time>, and writes CARD_ANSWERS.json as the audit trail. Afterwards:
+`vdi_session.sh review '<project>'` refreezes the card (gate K1).
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+SECRETISH = re.compile(r"(?i)(PASSWORD|PASSWD|PWD|SECRET|TOKEN|API_?KEY|_KEY$|_USER$|USERNAME|CREDENTIAL)")
+ENV_REF = re.compile(r"env[:.]([A-Z][A-Z0-9_]*)")
+OPEN = re.compile(r"^- \[ \] (.*)$", re.M)
+
+
+def win_path(arg: str) -> str:
+    return re.sub(r"^/([a-zA-Z])/", r"\1:/", arg) if os.name == "nt" else arg
+
+
+def jload(p: Path) -> dict:
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def env_setting(ws: Path, name: str) -> str:
+    v = os.environ.get(name, "")
+    if not v and (ws / ".osb-kit.env").is_file():
+        m = re.search(rf'^\s*export\s+{name}="?([^"\n]*)"?', (ws / ".osb-kit.env").read_text(encoding="utf-8"), re.M)
+        v = m.group(1) if m and not m.group(1).startswith("${") else ""
+    return win_path(v)
+
+
+class Evidence:
+    """Everything the rules read, loaded once."""
+
+    def __init__(self, mod: Path):
+        self.mod = mod
+        self.meta = jload(mod / ".scaffold.json")
+        self.project = self.meta.get("project") or mod.parent.name
+        self.proxy = self.meta.get("proxy") or mod.name
+        self.ws = mod.parents[2] if len(mod.parents) > 2 else mod.parent
+        self.research = jload(self.ws / "research" / self.project / self.proxy / "research.json")
+        res = mod / "src/main/resources"
+        self.routes = {p.name: p.read_text(encoding="utf-8") for p in sorted((res / "routes").glob("*.yaml"))}
+        self.props = (res / "application.properties").read_text(encoding="utf-8") if (res / "application.properties").is_file() else ""
+        self.gates = (jload(mod / "GATES.json").get("gates") or {})
+        self.mutation = jload(mod / "MUTATION.json")
+        self.check = jload(mod / "camel-k/CHECK.json")
+        self.name = re.sub(r"[^a-z0-9-]+", "-", self.proxy.lower()).strip("-")[:63]
+        self.app = env_setting(self.ws, "APP")
+
+    # -- facts -------------------------------------------------------------------------------------------------------
+    def env_names(self) -> list[str]:
+        names = ENV_REF.findall("\n".join([*self.routes.values(), self.props]))
+        return list(dict.fromkeys(n for n in names if n not in ("OSB_FILES_DIR", "BROKER_URL", "BROKER_USER", "BROKER_PASSWORD")))
+
+    def route_method(self) -> tuple[str, str]:
+        for f, text in self.routes.items():
+            lines = text.splitlines()
+            for i, ln in enumerate(lines):
+                if "CamelHttpMethod" in ln:
+                    for nxt in lines[i + 1:i + 3]:
+                        m = re.search(r'(?:constant|simple):\s*"?(GET|POST|PUT|DELETE|PATCH)"?', nxt)
+                        if m:
+                            return m.group(1), f"{f}:{i + 2}"
+        return "", ""
+
+    def osb_methods(self) -> list[tuple[str, str]]:
+        """(method, file:line) in the OSB source of the project: route-node / business-service HTTP method settings."""
+        base = Path(self.app) / self.project if self.app else None
+        if not base or not base.is_dir():
+            return []
+        out = []
+        for p in sorted([*base.rglob("*.pipeline"), *base.rglob("*.bix"), *base.rglob("*.biz")]):
+            try:
+                lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                continue
+            for i, ln in enumerate(lines, 1):
+                if re.search(r"(?i)(http-?method|request-?method|<[\w:]*method>|verb)", ln):
+                    m = re.search(r"\b(GET|POST|PUT|DELETE|PATCH)\b", ln)
+                    if m:
+                        out.append((m.group(1), f"{p.relative_to(base)}:{i}"))
+        return out
+
+    def method_mutation(self) -> str:
+        for m in self.mutation.get("mutations") or []:
+            if "method" in str(m.get("what", "")).lower():
+                return f"mutation '{m['what']}' {'caught' if m.get('killed') else 'SURVIVED'}"
+        return "no method mutation in MUTATION.json"
+
+    def cases(self) -> tuple[int, int]:
+        par = self.mod / "src/test/resources/parity"
+        real = synth = 0
+        for c in par.glob("*/*/*"):
+            if (c / "input.payload").is_file() or (c / "input.json").is_file():
+                if "-synthetic" in str(c.relative_to(par)).split("/")[0]:
+                    synth += 1
+                else:
+                    real += 1
+        return real, synth
+
+    def gate(self, k: str) -> str:
+        g = next((v for n, v in self.gates.items() if n.startswith(k + "_")), None)
+        return "not run" if g is None else ("ok" if g.get("ok") else "FAIL")
+
+
+# -- rules -----------------------------------------------------------------------------------------------------------
+def rule_host(q: str, e: Evidence):
+    if not re.search(r"(?i)\b(host|endpoint|url|uri|address)\b", q):
+        return None
+    hosts = [n for n in e.env_names() if re.search(r"HOST|URL|URI|ENDPOINT", n)] or ["<BACKEND>_HOST"]
+    return ("answered", f"per-environment value {', '.join(hosts)} from dev.env / the environment, never in code (gate K4 {e.gate('K4')})",
+            f"route env names {', '.join(hosts)}; camel-k/CHECK.json open {len(e.check.get('open') or [])}")
+
+
+def rule_method(q: str, e: Evidence):
+    if not re.search(r"(?i)\b(method|GET|POST|PUT|verb)\b", q):
+        return None
+    rm, rloc = e.route_method()
+    osb = e.osb_methods()
+    mut = e.method_mutation()
+    said = re.findall(r"\b(GET|POST|PUT|DELETE|PATCH)\b", q)
+    override = re.search(r"(?i)overrid\w*\s+(?:\w+\s+){0,3}?(GET|POST|PUT|DELETE|PATCH)", q)
+    want = (override.group(1) if override else "") or (osb[-1][0] if osb else "") or (said[-1] if said else "")
+    ev = [f"route sends {rm or '?'} ({rloc or 'no CamelHttpMethod'})",
+          ("OSB source: " + "; ".join(f"{m} at {loc}" for m, loc in osb[:3])) if osb else "OSB source not readable here (APP unset or no .pipeline/.bix)",
+          mut]
+    if want and rm and want != rm:
+        return ("accepted", f"OSB sends {want} (the route-node setting wins at runtime); the route sends {rm}: "
+                f"change CamelHttpMethod to {want} and rerun before Dev; confirm with one call on Dev", "; ".join(ev))
+    return ("accepted", f"{want or rm} as OSB sends it (the route-node setting wins over the business service); "
+            f"confirm with one call on Dev", "; ".join(ev))
+
+
+def rule_empty(q: str, e: Evidence):
+    if not re.search(r"(?i)\b(empty|no record|no records|not found|nothing)\b", q):
+        return None
+    return ("accepted", "same behaviour as OSB (the reply OSB gives today, no new error); a change is a functional "
+            "decision for the flow owner", "migration rule: parity with OSB")
+
+
+def rule_secret(q: str, e: Evidence):
+    if not re.search(r"(?i)\b(dvm|credential|credentials|api.?key|secret|password|token)\b", q):
+        return None
+    names = e.env_names()
+    sec = [n for n in names if SECRETISH.search(n) or not re.search(r"HOST|URL|URI|ENDPOINT|PORT|PATH", n)]
+    extra = [n for n in sec if not SECRETISH.search(n)]
+    tip = f"; CAMELK_SECRET_KEYS='{','.join(extra)}'" if extra else ""
+    return ("answered", f"values come from Secret {e.name}-env, keys {', '.join(sec) or 'none'}{tip}; nothing in code or Git "
+            f"(gate K4 {e.gate('K4')})", f"route env names {len(names)}, Secret keys {len(sec)}; DEPLOY.md lists the Secret")
+
+
+def rule_scenario(q: str, e: Evidence):
+    if not re.search(r"(?i)\b(scenario|scenarios|trace|traces|test data|log_scenarios|cases)\b", q):
+        return None
+    real, synth = e.cases()
+    return ("answered", f"{real} real Splunk case(s) and {synth} synthetic case(s) in the tests; gate K9 {e.gate('K9')}",
+            f"src/test/resources/parity: {real} real, {synth} synthetic")
+
+
+def rule_messaging(q: str, e: Evidence):
+    if not re.search(r"(?i)\b(selector|topic|queue|jms|subscription|destination)\b", q):
+        return None
+    en = e.research.get("entry") or {}
+    outs = [o.get("name", "?") for o in e.research.get("outputs") or []]
+    return ("answered", f"entry {en.get('destination', '?')}{' (topic, durable subscription)' if en.get('is_topic') else ''}"
+            f"{', selector on the broker' if en.get('selector') else ''}; outputs {', '.join(outs) or '?'}; proven on the "
+            "local Artemis run (local acceptance step 4)", f"research.json entry/outputs ({len(outs)} outputs)")
+
+
+def rule_error(q: str, e: Evidence):
+    if not re.search(r"(?i)(\berror|fault|retry|retries|redelivery|exception|errorcode|unreadable|nxsd fails)", q):
+        return None
+    errs = e.research.get("errors") or []
+    heads = sorted({h for x in errs for h in (x.get("headers") or []) if re.match(r"^[A-Za-z]\w*$", h)})
+    goes = sorted({str(x.get("goes_to")) for x in errs if x.get("goes_to")})
+    err_cases = [s for s in e.research.get("scenario_mapping") or [] if any("error" in o for o in s.get("outputs") or [])]
+    if re.search(r"(?i)errorcode", q):
+        return ("accepted", "errorCode = the Camel exception class name (OSB's BEA-xxxxxx codes have no Camel equivalent); "
+                "errorMessage and debugInfo as OSB; the error-queue consumer must not rely on BEA codes: tell its owner",
+                f"error headers {', '.join(heads) or '?'}; FLOW_CARD section 7; GATES K7 {e.gate('K7')}")
+    return ("answered", f"same error handling as OSB: {len(errs)} error scope(s) to {', '.join(goes) or '?'} with headers "
+            f"{', '.join(heads) or '?'}; {len(err_cases)} error scenario(s) tested (gate K7 {e.gate('K7')}) and sent on the "
+            "local Artemis run (local acceptance step 4)", f"research.json errors {len(errs)}, error scenarios {len(err_cases)}")
+
+
+def rule_routing(q: str, e: Evidence):
+    if not re.search(r"(?i)\b(both|first|branch|route vs publish|publish|which queue|order)\b", q):
+        return None
+    sm = e.research.get("scenario_mapping") or []
+    multi = [s for s in sm if len(s.get("outputs") or []) > 1]
+    if not multi:
+        return None
+    ex = "; ".join(f"{s.get('branch') or s.get('scenario')}: {' + '.join(s['outputs'])}" for s in multi[:2])
+    return ("answered", f"both, as research reads the pipeline ({ex}); the parity test of that scenario expects every "
+            f"output and the local Artemis run counts each queue", f"research.json scenario_mapping: {len(multi)} scenario(s) with more than one output")
+
+
+RULES = (rule_secret, rule_host, rule_method, rule_empty, rule_error, rule_routing, rule_scenario, rule_messaging)
+
+
+def recommend(q: str, e: Evidence) -> tuple[str, str, str]:
+    for r in RULES:
+        out = r(q, e)
+        if out:
+            return out
+    return ("accepted", f"accepted for the POC as stated; to be confirmed by the flow owner", "no rule matched")
+
+
+# -- card ------------------------------------------------------------------------------------------------------------
+def default_approver() -> str:
+    try:
+        n = subprocess.run(["git", "config", "user.name"], capture_output=True, text=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        n = ""
+    return n or os.environ.get("USERNAME") or os.environ.get("USER") or "<name>"
+
+
+def ask(prompt: str, default: str) -> str:
+    print(prompt, end="", flush=True)
+    try:
+        v = input().strip()
+    except EOFError:
+        v = ""
+    return v or default
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("module", type=Path)
+    ap.add_argument("--defaults", action="store_true", help="take every recommendation without asking (lab / POC)")
+    ap.add_argument("--answers", type=Path, help="JSON {question-prefix: answer} prepared in advance")
+    ap.add_argument("--approver", help="name written as Approver (else asked)")
+    a = ap.parse_args()
+    mod = Path(win_path(str(a.module))).resolve()
+    card = mod / "FLOW_CARD.md"
+    if not card.is_file():
+        print(f"no FLOW_CARD.md in {mod}")
+        return 2
+    text = card.read_text(encoding="utf-8")
+    e = Evidence(mod)
+    prepared = json.loads(a.answers.read_text(encoding="utf-8")) if a.answers else {}
+    qs = OPEN.findall(text)
+    if not qs:
+        print("no open question left on the card")
+    log, n_def, n_own, n_skip = [], 0, 0, 0
+    for i, q in enumerate(qs, 1):
+        kind, rec, ev = recommend(q, e)
+        own = next((v for k, v in prepared.items() if q.startswith(k) or k in q), None)
+        print(f"\nQ{i}/{len(qs)}: {q}\n   evidence: {ev}")
+        if own is not None:
+            ans = own
+            print(f"   answer (from {a.answers.name}): {ans}")
+        elif a.defaults:
+            ans = f"{kind}: {rec}"
+            print(f"   answer (recommended): {ans}")
+        else:
+            ans = ask(f"   Answer [{kind}: {rec}]: ", f"{kind}: {rec}")
+        if ans.strip().lower() in ("s", "skip"):
+            n_skip += 1
+            log.append({"question": q, "answer": None, "recommended": f"{kind}: {rec}", "accepted_default": False, "evidence": ev})
+            continue
+        default = ans == f"{kind}: {rec}"
+        n_def += default
+        n_own += not default
+        if not re.match(r"(?i)(answered|accepted)\b", ans):
+            ans = "answered: " + ans
+        line = f"- [x] {q} -- {ans} [evidence: {ev}]"
+        text = text.replace(f"- [ ] {q}", line, 1)
+        log.append({"question": q, "answer": ans, "recommended": f"{kind}: {rec}", "accepted_default": default, "evidence": ev})
+    left = len(OPEN.findall(text))
+    approved = left == 0
+    approver = ""
+    if approved:
+        approver = a.approver or (default_approver() if a.defaults else ask(f"\nApprover [{default_approver()}]: ", default_approver()))
+        today = dt.date.today().isoformat()
+        text = re.sub(r"^Status:.*$", "Status: approved", text, count=1, flags=re.M)
+        text = re.sub(r"^Approver:.*$", f"Approver: {approver}", text, count=1, flags=re.M)
+        text = re.sub(r"^Date:.*$", f"Date: {today}", text, count=1, flags=re.M)
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    (mod / f"FLOW_CARD.md.bak-{stamp}").write_text(card.read_text(encoding="utf-8"), encoding="utf-8")
+    card.write_text(text, encoding="utf-8")
+    trail = jload(mod / "CARD_ANSWERS.json").get("runs") or []
+    trail.append({"when": stamp, "approver": approver or None, "approved": approved, "answers": log})
+    (mod / "CARD_ANSWERS.json").write_text(json.dumps({"runs": trail}, indent=2), encoding="utf-8")
+    print(f"\n{len(qs)} question(s): {n_def} recommended answer(s) accepted, {n_own} own answer(s), {n_skip} skipped; "
+          f"approved: {'yes (' + approver + ')' if approved else 'no, ' + str(left) + ' still open'}")
+    print("next: bash $KIT/pi/vdi_session.sh review '" + e.project + "'   (refreezes the card: gate K1)" if approved
+          else "rerun card_answers.py for the skipped questions")
+    return 0 if approved else 3
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_CARD_ANSWERS_PY
 mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/check_camelk.py")"
 cat > '.pi/skills/osb-camelk-route/scripts/check_camelk.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_CHECK_CAMELK_PY'
 #!/usr/bin/env python3
@@ -1687,6 +2137,13 @@ K11 single destination no destination twice: a backend-<x>-bs next to out-<x> (t
                        or two keys with the same endpoint value: production would get every message twice
 K12 reply expected     request/reply flows: every case that ends in the reply has expected-output.json/.xml, so the
                        reply body is compared (a route that passes the request through unchanged must fail)
+K13 runtime safe       what a parity test cannot see but production must not do: (a) a credential header (set from
+                       {{backend.*}}/{{env:*}}, or named like a key/token/password) or a credential property inside a
+                       log message; (b) a fixed host name as a value in the route or the properties (Host header,
+                       constant); (c) ${exception.message} sent back or logged on a flow with an HTTP backend without
+                       its own catch for HttpOperationFailedException (that message carries the full backend URL with
+                       its query); (d) an HTTP-in flow calling an HTTP backend without removeHeaders before the backend
+                       (caller headers forwarded) and after it (backend headers returned to the caller)
 Writes GATES.json next to the module's pom; exit 1 if any gate fails."""
 import argparse
 import hashlib
@@ -1700,6 +2157,48 @@ HOST = [(re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b"), "IP address"),
         (re.compile(r"://(?!\{\{)[A-Za-z0-9.-]+\.[A-Za-z]{2,}"), "host name in a URI"),
         (re.compile(r"://[^/\s\"']*:\d{2,5}"), "host:port"),
         (re.compile(r"(?i)\b(password|passwd|secret|token|apikey|api-key)\s*[=:]\s*(?!\{\{|\$\{)[^\s\"',}]+"), "credential")]
+
+
+CRED_NAME = re.compile(r"(?i)(api-?key|token|secret|passw|authorization|credential)")
+BARE_HOST = re.compile(r":\s*[\"']?((?:[a-z0-9-]+\.){2,}[a-z]{2,}(?::\d{2,5})?)[\"']?\s*$")
+
+
+def runtime_safe(route: str, props_text: str) -> list:
+    """K13 findings (see the docstring); names and line numbers only."""
+    out = []
+    code = [(i, l) for i, l in enumerate(route.splitlines(), 1) if not l.lstrip().startswith("#")]
+    cred_headers = set()
+    lines = [l for _, l in code]
+    for j, l in enumerate(lines):
+        m = re.match(r"\s*-?\s*name:\s*[\"']?([\w-]+)", l)
+        if m and j > 0 and "setHeader" in lines[j - 1] + (lines[j - 2] if j > 1 else ""):
+            val = " ".join(lines[j + 1:j + 3])
+            if CRED_NAME.search(m.group(1)) or re.search(r"\{\{(backend\.|env:)", val):
+                cred_headers.add(m.group(1))
+    for i, l in code:
+        if "message:" in l:
+            used = set(re.findall(r"\$\{headers?\.([\w-]+)\}", l))
+            leak = sorted(h for h in used if h in cred_headers or CRED_NAME.search(h))
+            leak += re.findall(r"\{\{(backend\.[\w.-]*(?:key|token|secret|passw|requestid|sourceid)[\w.-]*)\}\}", l, re.I)
+            if leak:
+                out.append(f"route line {i}: credential in a log message ({', '.join(leak)})")
+        if BARE_HOST.search(l) and "beanType" not in l and "logName" not in l:
+            out.append(f"route line {i}: fixed host name as a value (make it a {{{{property}}}} from env)")
+    for i, l in enumerate(props_text.splitlines(), 1):
+        if "=" in l and not l.lstrip().startswith(("#", "!")) and re.fullmatch(r"(?:[a-z0-9-]+\.){2,}[a-z]{2,}(?::\d{2,5})?", l.split("=", 1)[1].strip()):
+            out.append(f"application.properties line {i}: fixed host name as a value")
+    http_backend = bool(re.search(r"^backend\.[\w.-]+=\s*https?:", props_text, re.M))
+    if http_backend and "${exception.message}" in route and "HttpOperationFailedException" not in route:
+        out.append("${exception.message} on a flow with an HTTP backend: catch org.apache.camel.http.base.HttpOperationFailedException "
+                   "first and report 'backend returned HTTP ${exception.statusCode}' (the message holds the backend URL and query)")
+    if http_backend and re.search(r"^flow\.input=platform-http:", props_text, re.M):
+        b = route.find("id: backend-")
+        before, after = route[:b] if b >= 0 else route, route[b:] if b >= 0 else ""
+        if "removeHeaders" not in before:
+            out.append("no removeHeaders before the HTTP backend call: every caller header is forwarded (keep only the ones OSB sends)")
+        if b >= 0 and "removeHeaders" not in after:
+            out.append("no removeHeaders after the HTTP backend call: backend response headers go back to the caller")
+    return out
 
 
 def main() -> int:
@@ -1813,6 +2312,9 @@ def main() -> int:
     twice += [" = ".join(ks) for ks in seen.values() if len(ks) > 1]
     gates["K11_single_destination"] = {"ok": not twice, "twice": twice}
 
+    k13 = runtime_safe(route, pf.read_text(encoding="utf-8") if pf.is_file() else "")
+    gates["K13_runtime_safe"] = {"ok": not k13, "findings": k13[:20]}
+
     if not a.no_surefire:
         t = f = e = s = 0
         for rep in (mod / "target/surefire-reports").glob("TEST-*.xml"):
@@ -1835,6 +2337,172 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_CHECK_CAMELK_PY
+mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/check_manifest.py")"
+cat > '.pi/skills/osb-camelk-route/scripts/check_manifest.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_CHECK_MANIFEST_PY'
+#!/usr/bin/env python3
+"""Check the generated camel-k/ Kustomize folder of a work module before it is handed over for Argo CD.
+
+    check_manifest.py modules/<project>/<proxy> [--json]
+
+1. integration.yaml is ONE Integration resource with no code in it (no ConfigMap, no inline source content), and
+   kustomization.yaml generates <name>-sources from every file in sources/ and <name>-config from config/; every file
+   it names exists; kustomizeconfig.yaml maps the Integration contentRef (YAML parsed when PyYAML is installed);
+2. sources/ holds exactly the module's route YAML and Java files, byte for byte, and config/application.properties
+   is exactly the Camel K variant (camelk_manifests.camelk_properties): nothing edited by hand;
+3. every `secret:<name>/<key>` reference is named in DEPLOY.md;
+4. no credential is written as a value: env names that look secret (PASSWORD, TOKEN, API_KEY ...) or are listed in
+   CAMELK_SECRET_KEYS appear only as secret: references, and no value of such a key from CAMELK_ENV_FILE is in the file;
+5. camel-k/CHECK.json: ready, or only per-environment values open ("ready for Dev once values are set").
+Prints names and counts only. Exit 0 = PASS (also "ready once values are set"), 1 = FAIL.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import camelk_manifests as cm  # noqa: E402
+
+
+def docs(text: str) -> list[str]:
+    return [d for d in re.split(r"^---\s*$", text, flags=re.M) if d.strip()]
+
+
+def head(doc: str, key: str) -> str:
+    m = re.search(rf"^{key}:\s*(\S+)", doc, re.M)
+    return m.group(1) if m else ""
+
+
+def meta_name(doc: str) -> str:
+    m = re.search(r"^metadata:\s*\n(?:\s+.*\n)*?\s+name:\s*(\S+)", doc, re.M)
+    return m.group(1) if m else ""
+
+
+def listed(kust: str, cm_name: str) -> list[str]:
+    """files of one configMapGenerator entry in kustomization.yaml as camelk_manifests.kustomization writes it."""
+    m = re.search(rf"^  - name: {re.escape(cm_name)}\n    files:\n((?:      - .+\n)+)", kust, re.M)
+    return re.findall(r"^      - (.+)$", m.group(1), re.M) if m else []
+
+
+def secret_names(mod: Path, text: str) -> set[str]:
+    refs = cm.env_refs([text])
+    return {n for n in refs if cm.SECRETISH.search(n)} | cm.extra_secret_keys()
+
+
+def check(mod: Path) -> dict:
+    out = mod / "camel-k"
+    f = out / "integration.yaml"
+    res = {"module": str(mod), "steps": [], "ok": False, "ready": False, "open": []}
+
+    def step(name: str, ok: bool, detail: str):
+        res["steps"].append({"check": name, "ok": ok, "detail": detail})
+
+    if not f.is_file():
+        step("file", False, "no camel-k/integration.yaml (camelk_manifests.py)")
+        return res
+    text = f.read_text(encoding="utf-8")
+    kf = out / "kustomization.yaml"
+    kust = kf.read_text(encoding="utf-8") if kf.is_file() else ""
+    ds = docs(text)
+    kinds = [head(d, "kind") for d in ds]
+    name = meta_name(ds[0]) if ds else ""
+    bad = []
+    if kinds != ["Integration"]:
+        bad.append(f"integration.yaml must hold only the Integration, has: {kinds}")
+    if re.search(r"^\s+content:\s", text, re.M) or "kind: ConfigMap" in text:
+        bad.append("code inside integration.yaml (inline content or a ConfigMap)")
+    if not kust:
+        bad.append("no kustomization.yaml")
+    else:
+        for need in ("kind: Kustomization", "  - integration.yaml", "  - kustomizeconfig.yaml", f"  - name: {name}-sources",
+                     f"  - name: {name}-config"):
+            if need not in kust:
+                bad.append(f"kustomization.yaml lacks '{need.strip()}'")
+        gone = [g for g in re.findall(r"^      - (.+)$", kust, re.M) if not (out / g).is_file()]
+        gone += [r for r in re.findall(r"^  - (kamelets/.+)$", kust, re.M) if not (out / r).is_file()]
+        if gone:
+            bad.append(f"files named in kustomization.yaml missing: {gone}")
+    kc = out / "kustomizeconfig.yaml"
+    if not kc.is_file() or "path: spec/sources/contentRef" not in kc.read_text(encoding="utf-8"):
+        bad.append("kustomizeconfig.yaml missing or without the Integration contentRef mapping")
+    parsed = "not checked (no PyYAML)"
+    try:
+        import yaml  # type: ignore
+        for t in (text, kust):
+            list(yaml.safe_load_all(t))
+        parsed = "parses"
+    except ImportError:
+        pass
+    except Exception as e:  # noqa: BLE001
+        bad.append(f"YAML: {type(e).__name__}")
+    step("structure", not bad, f"Integration {name} without code + kustomization.yaml, YAML {parsed}" + (f"; broken: {bad}" if bad else ""))
+
+    main = mod / "src/main"
+    want = {p.name: p.read_bytes() for p in sorted((main / "resources/routes").glob("*.yaml"))}
+    want.update({p.name: p.read_bytes() for p in sorted((main / "java").rglob("*.java"))})
+    have = {p.name: p.read_bytes() for p in sorted((out / "sources").glob("*")) if p.is_file()}
+    norm = lambda b: b.replace(b"\r\n", b"\n")   # noqa: E731  (a Windows checkout may differ in line ends only)
+    diff = sorted({k for k in want if norm(have.get(k, b"")) != norm(want[k])} | {k for k in have if k not in want})
+    unlisted = sorted(k for k in have if f"sources/{k}" not in listed(kust, f"{name}-sources"))
+    props = (main / "resources/application.properties").read_text(encoding="utf-8")
+    cfg = out / "config/application.properties"
+    if not cfg.is_file() or cfg.read_text(encoding="utf-8") != cm.camelk_properties(props):
+        diff.append("application.properties")
+    step("sources", not diff and not unlisted,
+         f"{len(have)} source file(s) + properties identical to the module, all in {name}-sources" if not (diff or unlisted)
+         else f"differ: {diff}" + (f"; not in the generator: {unlisted}" if unlisted else ""))
+
+    refs = sorted(set(re.findall(r"secret:([\w.-]+)/([\w.-]+)", text)))
+    deploy = (out / "DEPLOY.md").read_text(encoding="utf-8") if (out / "DEPLOY.md").is_file() else ""
+    missing = [f"{s}/{k}" for s, k in refs if s not in deploy or k not in deploy]
+    step("secrets-documented", not missing, f"{len(refs)} secret reference(s), all in DEPLOY.md" if not missing else f"not in DEPLOY.md: {missing}")
+
+    code = "\n".join(q.read_text(encoding="utf-8", errors="replace") for d in ("sources", "config") for q in sorted((out / d).glob("*")) if q.is_file())
+    names = secret_names(mod, code + "\n" + text)
+    literal = sorted(n for n in names if re.search(rf'"{n}=(?!secret:)', text))
+    env_file = os.environ.get("CAMELK_ENV_FILE", "")
+    leaked = []
+    if env_file and Path(env_file).is_file():
+        vals = cm.read_env_file(env_file)
+        every = "\n".join(q.read_text(encoding="utf-8", errors="replace") for q in sorted(out.rglob("*")) if q.is_file())
+        leaked = sorted(k for k in names if vals.get(k) and len(vals[k]) >= 4 and vals[k] in every)
+    step("no-credentials", not literal and not leaked,
+         f"{len(names)} credential name(s), all as secret: references" if not (literal or leaked)
+         else f"written as values: {literal + leaked}")
+
+    chk = json.loads((out / "CHECK.json").read_text(encoding="utf-8")) if (out / "CHECK.json").is_file() else {}
+    res["open"] = chk.get("open") or []
+    per_env = all("no value (--env-file" in o or "CAMELK_BROKER_URL" in o for o in res["open"])
+    res["ready"] = bool(chk.get("ready"))
+    step("ready", res["ready"] or per_env,
+         "ready: true" if res["ready"] else ("ready for Dev once values are set: " + ", ".join(o.split(":")[0] for o in res["open"]) if per_env
+                                             else f"open: {res['open']}"))
+    res["ok"] = all(s["ok"] for s in res["steps"])
+    return res
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("module", type=Path)
+    ap.add_argument("--json", action="store_true")
+    a = ap.parse_args()
+    r = check(a.module.resolve())
+    if a.json:
+        print(json.dumps(r, indent=1))
+    else:
+        for s in r["steps"]:
+            print(f"{'ok  ' if s['ok'] else 'FAIL'} {s['check']}: {s['detail']}")
+        print("manifest:", "PASS" if r["ok"] else "FAIL")
+    return 0 if r["ok"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_CHECK_MANIFEST_PY
 mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/domain_report.py")"
 cat > '.pi/skills/osb-camelk-route/scripts/domain_report.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_DOMAIN_REPORT_PY'
 #!/usr/bin/env python3
@@ -2104,6 +2772,226 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_FLOW_PATTERNS_PY
+mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/flow_tests_report.py")"
+cat > '.pi/skills/osb-camelk-route/scripts/flow_tests_report.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_FLOW_TESTS_REPORT_PY'
+#!/usr/bin/env python3
+"""Tests report of one flow: every test that ran before Dev, by level, and the plan for the tests that need Dev.
+
+    flow_tests_report.py modules/<project>/<proxy> -o <out dir>      -> <out>/TESTS.md + <out>/DEV_TEST_PLAN.md
+
+TESTS.md levels (what already ran on the client machine):
+  L1 functional   FlowParityTest: every masked / synthetic case reaches the output OSB used, same body, same backend call
+  L2 error paths  FlowErrorTest: unreadable payload, backend fault, backend HTTP 500 -> OSB's error answer
+  L3 test strength  route mutations the tests caught (MUTATION.json)
+  L4 code gates   K1-K13 (GATES.json)
+  L5 runtime      the route run as Camel K runs it, with Camel JBang: HTTP smoke (SMOKE.json) or JMS on the local Artemis
+  L6 deploy file  camel-k/ checked: integration.yaml without code, sources/ identical (camel-k/CHECK.json)
+DEV_TEST_PLAN.md: the tests that cannot run locally (D0 deploy, D1 functional per scenario on Dev, D2 errors, D3 security
+and logs, D4 side by side with OSB, D5 non-functional), with an empty Result column to fill in.
+Reads surefire XML, flow-test.json, the case folder names and the result JSON files. Never reads or prints message
+values: only test names, folder names, scenario keys, statuses and counts. Stdlib only."""
+from __future__ import annotations
+
+import argparse
+import json
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+WHAT = {   # test method -> what it proves, in one line
+    "caseFoldersArePresent": "the test data is in place (at least one case per scenario folder)",
+    "reachesTheSameOutputAsOsb": "the case ends at the same output as OSB (reply / queue), with the expected fields",
+    "backendRequestsAsOsb": "the backend is called with OSB's method, path, query and headers",
+    "correlationIdIsGeneratedWhenMissing": "a request without a correlation id still gets one, as in OSB",
+    "bodyEqualsOriginalXQueryResult": "the body equals what OSB's own XQuery produces for this case",
+    "unreadablePayloadGoesToTheErrorOutput": "a payload that cannot be read goes to OSB's error output",
+    "unreadablePayloadTakesTheErrorPath": "unreadable payload -> error answer with errorCode / errorMessage / debugInfo",
+    "backendFaultTakesTheErrorPath": "backend throws -> the same error answer as OSB",
+    "backendHttpErrorTakesTheErrorPath": "backend answers HTTP 500 -> the same error answer as OSB",
+    "flowTestConfigIsReadable": "the frozen expectations (flow-test.json) are readable",
+}
+LEVEL = {"FlowParityTest": "L1", "FlowErrorTest": "L2", "FlowJBangTest": "L5"}
+
+
+def load(p: Path, default):
+    try:
+        return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else default
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def surefire(mod: Path) -> list[dict]:
+    rows = []
+    for rep in sorted((mod / "target/surefire-reports").glob("TEST-*.xml")):
+        try:
+            root = ET.parse(rep).getroot()
+        except ET.ParseError:
+            continue
+        for tc in root.iter("testcase"):
+            cls = tc.get("classname", "").split(".")[-1]
+            name = tc.get("name", "")
+            method = name.split("(")[0].split("[")[0].strip()
+            st = "FAIL" if tc.find("failure") is not None or tc.find("error") is not None else \
+                 "skip" if tc.find("skipped") is not None else "pass"
+            rows.append({"class": cls, "name": name, "method": method, "status": st, "level": LEVEL.get(cls, "L1")})
+    return rows
+
+
+def describe(row: dict) -> str:
+    for k, v in WHAT.items():
+        if k in row["name"] or k == row["method"]:
+            return v
+    return ""
+
+
+def cases(mod: Path) -> list[tuple[str, int, int]]:
+    """scenario folder -> (real cases, synthetic cases); folder names only."""
+    root = mod / "src/test/resources/parity"
+    out: dict[str, list[int]] = {}
+    for f in root.glob("**/input.payload") if root.is_dir() else []:
+        rel = f.parent.relative_to(root).parts
+        scen = rel[0] if rel else "?"
+        syn = "-synthetic" in f.as_posix()
+        out.setdefault(scen, [0, 0])[1 if syn else 0] += 1
+    return [(k, v[0], v[1]) for k, v in sorted(out.items())]
+
+
+def count(rows, level):
+    sel = [r for r in rows if r["level"] == level]
+    f = sum(r["status"] == "FAIL" for r in sel)
+    s = sum(r["status"] == "skip" for r in sel)
+    return (f"{len(sel)} run, {f} failed, {s} skipped" if sel else "not run"), (f == 0 and bool(sel))
+
+
+def tests_md(mod: Path, proj: str, proxy: str) -> str:
+    rows = surefire(mod)
+    cfg = load(mod / "src/test/resources/flow-test.json", {})
+    gates = load(mod / "GATES.json", {})
+    mut = load(mod / "MUTATION.json", {})
+    smoke = load(mod / "SMOKE.json", {})
+    e2e = load(mod / "target/e2e-result.json", {})
+    chk = load(mod / "camel-k/CHECK.json", {})
+    acc = load(mod / "LOCAL_ACCEPTANCE.json", {})
+    http = bool(cfg.get("error_http_status")) or "reply" in (cfg.get("outputs") or {})
+
+    l1, ok1 = count(rows, "L1")
+    l2, ok2 = count(rows, "L2")
+    g = gates.get("gates", {})
+    l4 = f"{sum(bool(v.get('ok')) for v in g.values())}/{len(g)} gates ok" if g else "not run"
+    l3 = f"{mut.get('killed', '-')}/{mut.get('total', '-')} mutations caught" if mut else "not run"
+    if http:
+        sc = smoke.get("cases") or []
+        ec = smoke.get("error_case") or {}
+        l5 = (f"{len(sc)} cases over HTTP, {sum(bool(c.get('problem')) for c in sc)} failed; backend 500 -> "
+              f"{ec.get('status', '-')} ({'ok' if ec.get('ok') else 'FAIL'}); engine {smoke.get('engine', '-')}") if smoke else "not run"
+        ok5 = bool(smoke.get("ok"))
+    else:
+        l5 = f"{e2e.get('cases', '-')} cases on the local Artemis" if e2e else "not run"
+        ok5 = bool(e2e) and not e2e.get("failed")
+    l6 = ("ready for review (per-environment values open)" if chk.get("for_review") else
+          "ready" if chk.get("ready") else "checked, values open") if chk else "not generated"
+
+    L = [f"# Tests: {proj} / {proxy}", "",
+         "What was tested before Dev, on the client machine. Names and counts only: the test messages are masked and stay on the VDI.",
+         f"Local acceptance: **{acc.get('result', 'not run')}**" + (f" ({acc.get('date')}, kit {acc.get('kit')})" if acc else ""), "",
+         "## Summary by level", "",
+         "| Level | What it proves | How it runs | Where | Result |", "|---|---|---|---|---|",
+         f"| L1 functional | every case ends where OSB sent it, same fields, same backend call | Maven, route in-process, backends mocked | `module/src/test/java/**/FlowParityTest.java`, cases in `module/src/test/resources/parity/` | {l1} |",
+         f"| L2 error paths | bad input and backend failures give OSB's error answer | Maven, mocks throw / answer 500 | `module/src/test/java/**/FlowErrorTest.java` | {l2} |",
+         f"| L3 test strength | the tests fail when the route is broken on purpose | `mutate_route.py`, one change per run | `5-results/MUTATION.json` | {l3} |",
+         f"| L4 code gates | route rules: no hosts/secrets, OSB names, safe logs and errors (K1-K13) | `verify_module.py` | `5-results/GATES.json` | {l4} |",
+         f"| L5 runtime | the route really runs as Camel K runs it, called from outside | Camel JBang, stub backend{' over HTTP' if http else ', local Artemis'} | `4-acceptance/` | {l5} |",
+         f"| L6 deploy file | camel-k/ Kustomize folder: integration.yaml without code, sources/ identical to the module, secrets only as references | `check_manifest.py` | `6-deploy/` | {l6} |",
+         "", "Not tested yet, needs Dev or OSB side by side: see `DEV_TEST_PLAN.md`.", ""]
+
+    L += ["## L1 and L2: every test method", "", "| Level | Test | What it proves | Result |", "|---|---|---|---|"]
+    for r in sorted(rows, key=lambda r: (r["level"], r["class"], r["name"])):
+        L.append(f"| {r['level']} | `{r['class']}` {r['name']} | {describe(r)} | {r['status']} |")
+    if not rows:
+        L.append("| - | no surefire reports (run the tests first) | | |")
+
+    L += ["", "## Test data per scenario", "", "| Scenario folder | Real cases (masked Splunk) | Synthetic cases | Expected outputs |",
+          "|---|---|---|---|"]
+    exp = {str(x.get("scenario")): ", ".join(map(str, x.get("outputs") or [])) for x in cfg.get("scenario_mapping") or []}
+    for scen, real, syn in cases(mod):
+        key = scen.replace("-synthetic", "")
+        L.append(f"| {scen} | {real} | {syn} | {exp.get(key, exp.get(scen, ''))} |")
+
+    if mut:
+        L += ["", "## L3: mutations", "", "| Change made to the route | Caught by a test |", "|---|---|"]
+        L += [f"| {m_.get('what')} | {'yes' if m_.get('killed') else 'NO'} |" for m_ in mut.get("mutations", [])]
+    if g:
+        L += ["", "## L4: gates", "", "| Gate | Result |", "|---|---|"]
+        L += [f"| {k} | {'ok' if v.get('ok') else 'FAIL'} |" for k, v in g.items()]
+    if http and smoke:
+        L += ["", "## L5: runtime run (Camel JBang)", "", "| Case | HTTP status | Result |", "|---|---|---|"]
+        L += [f"| {c.get('case')} | {c.get('status')} | {'FAIL: ' + c['problem'] if c.get('problem') else 'pass'} |" for c in smoke.get("cases", [])]
+        ec = smoke.get("error_case") or {}
+        if ec:
+            L.append(f"| backend forced to 500 | {ec.get('status')} (expected {ec.get('expected')}) | {'pass' if ec.get('ok') else 'FAIL'} |")
+    return "\n".join(L) + "\n"
+
+
+def dev_plan(mod: Path, proj: str, proxy: str) -> str:
+    cfg = load(mod / "src/test/resources/flow-test.json", {})
+    http = bool(cfg.get("error_http_status")) or "reply" in (cfg.get("outputs") or {})
+    err = cfg.get("error_http_status", "-")
+    backends = ", ".join(f"{k} ({v.get('type') or '?'})" for k, v in (cfg.get("backends") or {}).items()) or "none"
+    scen = [x for x in cfg.get("scenario_mapping") or []]
+    row = lambda i, what, how, ok: f"| {i} | {what} | {how} | {ok} | |"
+    L = [f"# Dev test plan: {proj} / {proxy}", "",
+         "The tests the client machine cannot run: a real cluster, a real backend, OSB answering the same request.",
+         "Fill in Result (pass / fail + date + who). Record names, statuses and counts only, never message values.", "",
+         f"Entry: {'HTTP request/reply' if http else 'JMS'}. Backends: {backends}. OSB error status: {err}.", "",
+         "| # | Test | How | Pass when | Result |", "|---|---|---|---|---|",
+         "| **D0** | **Deployment** | | | |",
+         row("D0.1", "Integration builds and runs", "`oc get integration <name> -w`", "phase Running, no restarts"),
+         row("D0.2", "Secret and config present", "`oc describe secret <name>-env` (key names and sizes only)", "all keys present, no CHANGE-ME left"),
+         row("D0.3", "Backend reachable from the pod", "first real call, `oc logs`", "no PKIX / timeout / DNS error (internal CA, egress)"),
+         "| **D1** | **Functional on Dev (one test record per scenario, from the backend team)** | | | |"]
+    for i, x in enumerate(scen, 1):
+        L.append(row(f"D1.{i}", "every request (one scenario)" if x.get("scenario") in ("*", "", None) else f"scenario `{x.get('scenario')}`", "send the Dev test record for this scenario",
+                     f"ends at {', '.join(map(str, x.get('outputs') or []))}, fields filled as in L1"))
+    if not scen:
+        L.append(row("D1.1", "main scenario", "send a Dev test record", "same result as in L1"))
+    L += ["| **D2** | **Errors on Dev** | | | |",
+          row("D2.1", "unreadable payload", "send a body that is not " + str(cfg.get("payload_format", "json")),
+              f"{'HTTP ' + str(err) if http else 'error queue'} with errorCode / errorMessage / debugInfo"),
+          row("D2.2", "backend down or 4xx/5xx", "point one test at a wrong host, or ask for a failing record",
+              f"{'HTTP ' + str(err) if http else 'error queue'}, error text without URL or query"),
+          row("D2.3", "same error body as OSB", "compare with OSB's real error answer (isError body vs headers only)", "same shape, or the difference written in MIGRATION_NOTES.md"),
+          "| **D3** | **Security and logs** | | | |",
+          row("D3.1", "no secrets in logs", "`oc logs` during D1-D2, search for the secret names", "no API key / request id / source id values"),
+          row("D3.2", "log lines as OSB", "compare log text and logName", "same text, correlation id on every line"),
+          row("D3.3", "no backend headers leak to the caller" if http else "no transport headers on business queues", "`curl -v` / browse the queue", "only the expected headers"),
+          "| **D4** | **Side by side with OSB (the proof)** | | | |",
+          row("D4.1", "same requests to OSB and to the route", "20-50 records the backend team confirms in this environment", "replies identical except generated fields (traceId, timestamps)"),
+          row("D4.2", "every difference explained", "list each differing key name", "bug fixed, or a written decision"),
+          "| **D5** | **Non-functional (E2E / UAT)** | | | |",
+          row("D5.1", "timeouts and retries as OSB", "slow backend (stub or test record)", "same timeout and retry count as the OSB business service"),
+          row("D5.2", "latency at production rate", "small k6 run, OSB vs route", "p95 not worse than OSB"),
+          row("D5.3", "restart and rollout", "delete the pod during traffic", "callers see a retryable error, no hang"),
+          row("D5.4", "logs reach Splunk", "search the Dev/E2E index for the flow", "lines present with the correlation id"),
+          "", "Order: D0 -> D1 -> D2 -> D3 on Dev; D4 on Dev or E2E; D5 on E2E/UAT before the switch. Sign-off after D4 and D5."]
+    return "\n".join(L) + "\n"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("module", type=Path)
+    ap.add_argument("-o", "--out", type=Path, required=True)
+    a = ap.parse_args()
+    mod = a.module
+    proxy, proj = mod.name, mod.parent.name
+    a.out.mkdir(parents=True, exist_ok=True)
+    (a.out / "TESTS.md").write_text(tests_md(mod, proj, proxy), encoding="utf-8")
+    (a.out / "DEV_TEST_PLAN.md").write_text(dev_plan(mod, proj, proxy), encoding="utf-8")
+    print(f"test catalogue: {a.out / 'TESTS.md'}, {a.out / 'DEV_TEST_PLAN.md'}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_FLOW_TESTS_REPORT_PY
 mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/generator_coverage.py")"
 cat > '.pi/skills/osb-camelk-route/scripts/generator_coverage.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_GENERATOR_COVERAGE_PY'
 #!/usr/bin/env python3
@@ -2823,17 +3711,22 @@ def is_http(o: dict, b: dict | None) -> bool:
     return bool(http_path(o.get("destination_raw")) or (b and str(b.get("type") or "").lower().startswith("http")))
 
 
+BRIDGE = "?bridgeEndpoint=true"
+
+
 def endpoint(dest: str, kind: str) -> str:
     """Production endpoint for a research destination (scheme:name, never a host)."""
     d = clean(dest)
     if not d or d.upper() == "UNKNOWN":
         return f"{TODO} destination of {kind}"
+    # bridgeEndpoint=true: the call keeps its own URI; the CamelHttpUri/Path headers of the platform-http entry are
+    # not forwarded (without it the backend URL becomes <backend path>/<entry path>: "Invalid url", smoke_http.py)
     m = re.match(r"^(https?):(/.*)$", d)
     if m:
-        return f"{m.group(1)}://{{{{env:{slug(kind).upper().replace('-', '_')}_HOST}}}}{m.group(2)}"
+        return f"{m.group(1)}://{{{{env:{slug(kind).upper().replace('-', '_')}_HOST}}}}{m.group(2)}{BRIDGE}"
     path = http_path(dest)
     if path:                             # 'HTTP POST to /v1/x', 'POST /v1/x': host from env, method set in the route
-        return f"https://{{{{env:{slug(kind).upper().replace('-', '_')}_HOST}}}}{path}"
+        return f"https://{{{{env:{slug(kind).upper().replace('-', '_')}_HOST}}}}{path}{BRIDGE}"
     name = re.sub(r"^(jms|amqp|queue|topic):", "", d)
     kind_ = "topic" if d.startswith("topic:") else "queue"
     return f"amqp:{kind_}:{name}"
@@ -3276,6 +4169,11 @@ def write_once(p: Path, text: str, force: bool) -> bool:
     return True
 
 
+def templates_sha() -> str:
+    """Hash of the test templates: a module built from older templates gets its frozen tests regenerated once."""
+    return hashlib.sha256(b"".join((TPL / n).read_bytes() for n in ("FlowParityTest.java.tpl", "FlowErrorTest.java.tpl"))).hexdigest()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("research", type=Path)
@@ -3358,7 +4256,8 @@ def main() -> int:
         "@@PATTERN@@", "InOut" if "reply" in m["outputs"] else "InOnly").replace(
         "@@TEST_PROPERTIES@@", ", ".join(q(p) for p in test_props(m)))
     cfg = {"outputs": {k: ("reply" if k == "reply" else f"mock:out-{k}") for k in m["outputs"]}, "error_output": m["error"],
-           "backends": {k: {"mock": f"mock:backend-{k}", "response_use": b.get("response_use", "")} for k, b in m["backends"].items()},
+           "backends": {k: {"mock": f"mock:backend-{k}", "response_use": b.get("response_use", ""), "type": b.get("type", "")}
+                        for k, b in m["backends"].items()},
            "scenario_mapping": [{"scenario": x["scenario"], "outputs": x["outputs"]} for x in m["mapping"]],
            "correlation_header": m["corr"], "correlation_generated": bool(m.get("corr_generated")),
            "scenario_fields": [h for h, _ in m["dims"]], "payload_format": m["format"],
@@ -3386,7 +4285,10 @@ def main() -> int:
     stubs += [f"- `{k}.*`: {b.get('type', '')} {b.get('operation', '')}; response use: {b.get('response_use', '') or '-'}" for k, b in m["backends"].items()] or ["- no backends"]
     write_once(o / "src/test/resources/stubs/README.md", "\n".join(stubs) + "\n", True)
     # tests log at WARN: the Camel INFO lines of every test made each mvn run hundreds of KB (full log: target/)
-    write_once(o / "src/test/resources/simplelogger.properties", "org.slf4j.simpleLogger.defaultLogLevel=warn\n", False)
+    # the OSB log lines run in the tests (INFO): at WARN Camel skips a log step, so a broken log expression
+    # (e.g. an operator Simple does not know) would only fail on the cluster, on the error path
+    write_once(o / "src/test/resources/simplelogger.properties",
+               "org.slf4j.simpleLogger.defaultLogLevel=warn\norg.slf4j.simpleLogger.log.oracle.osb.logging.pipeline=info\n", False)
     copied = 0
     if a.parity and a.parity.is_dir():
         dst = o / "src/test/resources/parity"
@@ -3402,6 +4304,7 @@ def main() -> int:
             "generated": {**{k: v for k, v in (old_meta.get("generated") or {}).items() if "-synthetic/" in k or "/stubs/" in k},
                           tp.relative_to(o).as_posix(): sha(tp), cp.relative_to(o).as_posix(): sha(cp),
                           etp.relative_to(o).as_posix(): sha(etp)},
+            "templates_sha256": templates_sha(),
             "route_ids": sorted(ids), "errors": len(r.get("errors") or []),
             "task1": str(a.parity.parent.parent.resolve()) if a.parity and a.parity.is_dir() else (old_meta.get("task1") or ""),
             "backends_with_response": [k for k, b in m["backends"].items()
@@ -3419,6 +4322,500 @@ def main() -> int:
 if __name__ == "__main__":
     sys.exit(main())
 KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_SCAFFOLD_CAMELK_PY
+mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/smoke_http.py")"
+cat > '.pi/skills/osb-camelk-route/scripts/smoke_http.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_SMOKE_HTTP_PY'
+#!/usr/bin/env python3
+"""Local smoke run of an HTTP request/reply module: the route really running, called over HTTP, backends stubbed.
+
+    smoke_http.py modules/<project>/<proxy> [--port 8089] [--stub-port 8099] [--timeout 120] [--mvn "mvn -B -q -s ..."]
+                  [--engine mvn|jbang]
+
+What it proves, beyond the L1 tests (which call the route in-process with mock endpoints):
+  curl -> platform-http entry of the running route -> http backend call -> stub server -> reply to the caller.
+Steps: 1. a stub HTTP server on 127.0.0.1:<stub-port> answers every backend with src/test/resources/stubs/<name>.*;
+2. the route starts on Camel Main (`mvn -Prun-local compile exec:java`, the module's own profile; or, with
+--engine jbang, as Camel K runs it: `camel run` of the route YAML + the Java sources + the Camel K properties with
+the dependency list of integration.yaml, no Maven build of the module) with each
+backend.<name> property pointed at the stub and camel-platform-http-main listening on <port>; every {{env:X}} /
+${env:X} name of the route gets a fake value smoke-X; 3. every parity case (input.payload + headers.json) is POSTed
+to the entry path; a reply must have a 2xx status (outcome success) or error_http_status (other outcomes) and, where
+expected-output.json/.xml exists, the same body (JSON-aware, generated_fields ignored); 4. the stub is switched to 500
+and the first case is sent again: the route must answer error_http_status. Writes SMOKE.json + SMOKE.txt in the
+module, the route log to target/smoke-route.log. Prints names and counts only, never message values. Exit 1 on any
+failure, 2 when the module is not an HTTP flow (JMS flows: broker/run_local.sh). Stdlib only, Git Bash/Windows + macOS.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shlex
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+ENV_REF = re.compile(r"(?:\{\{|\$\{)env:([A-Za-z_][A-Za-z0-9_]*)")
+CONTENT_TYPES = {".json": "application/json", ".xml": "application/xml", ".txt": "text/plain"}
+
+
+def win_path(arg: str) -> str:
+    """Git Bash path (/c/Users/x) -> Windows path (c:/Users/x) when running natively on Windows; else unchanged."""
+    return re.sub(r"^/([a-zA-Z])/", r"\1:/", arg) if os.name == "nt" else arg
+
+
+def read_properties(path: Path) -> dict[str, str]:
+    """key=value lines of a .properties file (comments and blank lines skipped, CRLF tolerated)."""
+    props: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        props[k.strip()] = v.strip()
+    return props
+
+
+def entry_path(props: dict[str, str]) -> str | None:
+    """The HTTP path of flow.input when the flow is an HTTP entry (platform-http:<path>), else None."""
+    m = re.match(r"platform-http:(/[^?]*)", props.get("flow.input", ""))
+    return m.group(1) if m else None
+
+
+def backends(props: dict[str, str], mod: Path | None = None) -> dict[str, str]:
+    """The backend endpoints: backend.<name> properties the route calls as an endpoint URI. A module may keep other
+    backend.<name> values (header values such as an API key or a request id taken from the env); those are no endpoint
+    and get no stub. Route known: the names used in a uri. Else: values that look like an endpoint URI."""
+    cand = {k[len("backend."):]: v for k, v in props.items() if k.startswith("backend.")}
+    used: set[str] = set()
+    if mod is not None:
+        for y in (mod / "src/main/resources/routes").glob("*.yaml"):
+            for line in y.read_text(encoding="utf-8").splitlines():
+                if re.search(r"\b(uri|to)\s*:", line):
+                    used |= set(re.findall(r"\{\{backend\.([\w.-]+)\}\}", line))
+    if used:
+        return {n: v for n, v in cand.items() if n in used}
+    return {n: v for n, v in cand.items() if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:(//)?[^{]", v)}
+
+
+def stub_uri(uri: str, stub_port: int) -> str:
+    """scheme://host[:port] of a backend URI -> http://127.0.0.1:<stub-port>; path, query and options stay."""
+    return re.sub(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?]+", f"http://127.0.0.1:{stub_port}", uri, count=1)
+
+
+def uri_path(uri: str) -> str:
+    rest = re.sub(r"^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?]+", "", uri, count=1)
+    return rest.split("?", 1)[0] or "/"
+
+
+def env_names(*texts: str) -> set[str]:
+    return {m.group(1) for t in texts for m in ENV_REF.finditer(t)}
+
+
+def drop(node, dotted: str) -> None:
+    parts = dotted.split(".")
+    for p in parts[:-1]:
+        node = node.get(p) if isinstance(node, dict) else None
+        if node is None:
+            return
+    if isinstance(node, dict):
+        node.pop(parts[-1], None)
+
+
+def first_difference(want, got, path: str = "$") -> str | None:
+    """Key path of the first difference between two JSON values; never a value."""
+    if type(want) is not type(got):
+        return f"{path}: type {type(want).__name__} vs {type(got).__name__}"
+    if isinstance(want, dict):
+        for k in want:
+            if k not in got:
+                return f"{path}.{k}: missing"
+            d = first_difference(want[k], got[k], f"{path}.{k}")
+            if d:
+                return d
+        extra = [k for k in got if k not in want]
+        return f"{path}.{extra[0]}: unexpected" if extra else None
+    if isinstance(want, list):
+        if len(want) != len(got):
+            return f"{path}: length {len(want)} vs {len(got)}"
+        for i, (a, b) in enumerate(zip(want, got)):
+            d = first_difference(a, b, f"{path}[{i}]")
+            if d:
+                return d
+        return None
+    return None if want == got else f"{path}: value differs"
+
+
+def compare_reply(expected_file: Path, body: bytes, generated_fields: list[str]) -> str | None:
+    """None when the reply equals the golden file; else the first difference (key path only)."""
+    text = body.decode("utf-8", errors="replace")
+    if expected_file.suffix == ".json":
+        try:
+            want = json.loads(expected_file.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            return "golden file is not JSON"
+        try:
+            got = json.loads(text)
+        except json.JSONDecodeError:
+            return "reply is not JSON"
+        for g in generated_fields:
+            drop(want, g)
+            drop(got, g)
+        return first_difference(want, got)
+    norm = lambda s: re.sub(r">\s+<", "><", s.strip())  # noqa: E731
+    return None if norm(expected_file.read_text(encoding="utf-8")) == norm(text) else "xml text differs"
+
+
+class Stub(BaseHTTPRequestHandler):
+    """Answers every backend with its stub file; counts calls per backend; `fail` makes it answer 500."""
+    routes: dict[str, tuple[str, str, bytes]] = {}       # path -> (backend name, content type, body)
+    counts: dict[str, int] = {}
+    fail = False
+    lock = threading.Lock()
+
+    def _answer(self) -> None:
+        length = int(self.headers.get("Content-Length") or 0)
+        if length:
+            self.rfile.read(length)                       # consumed, never logged
+        path = self.path.split("?", 1)[0]
+        hit = self.routes.get(path) or (next(iter(self.routes.values())) if len(self.routes) == 1 else None)
+        if not hit:
+            self.send_response(404)
+            self.end_headers()
+            return
+        name, ctype, body = hit
+        with self.lock:
+            self.counts[name] = self.counts.get(name, 0) + 1
+        if self.fail:
+            self.send_response(500)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error":"stub failure"}')
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    do_GET = do_POST = do_PUT = do_PATCH = do_DELETE = _answer
+
+    def log_message(self, fmt, *args):                    # no request lines on the console
+        pass
+
+
+def stub_files(stubs_dir: Path, names: list[str]) -> dict[str, tuple[str, bytes]]:
+    out = {}
+    for n in names:
+        for ext, ctype in CONTENT_TYPES.items():
+            p = stubs_dir / (n + ext)
+            if p.is_file():
+                out[n] = (ctype, p.read_bytes())
+    return out
+
+
+def port_open(port: int) -> bool:
+    with socket.socket() as s:
+        s.settimeout(1)
+        return s.connect_ex(("127.0.0.1", port)) == 0
+
+
+def call(url: str, data: bytes, headers: dict[str, str]) -> tuple[int, bytes]:
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with LOCAL.open(req, timeout=60) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
+# Local calls never go through a proxy: a VDI exports HTTP_PROXY/HTTPS_PROXY for the corporate proxy, urllib honours
+# them, and the proxy answers 407 (seen on the VDI: every case "status 407", backend calls 0).
+LOCAL = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+LOCAL_HOSTS = "127.0.0.1,localhost"
+
+
+def stop(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+        try:
+            proc.wait(timeout=20)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+
+
+def mvn_command(spec: str) -> list[str]:
+    args = [win_path(os.path.expanduser(x)) for x in shlex.split(spec) if x != "-q"]   # -q would silence the route's log
+    exe = shutil.which(args[0]) or shutil.which(args[0] + ".cmd")
+    if not exe:
+        raise FileNotFoundError(f"cannot find {args[0]} on PATH")
+    return [exe] + args[1:]
+
+
+def jbang_launcher() -> list[str]:
+    """Camel JBang through the kit's JBang wrapper (the JBang jar comes from Nexus), the same on Git Bash and macOS."""
+    sh = Path(__file__).resolve().parents[1] / "assets/templates/package/tools/jbang.sh"
+    bash = git_bash()
+    if not bash:
+        raise FileNotFoundError("bash not on PATH (Git Bash)")
+    return [bash, win_path(str(sh))]
+
+
+def git_bash() -> str | None:
+    """bash for the kit's shell wrappers. On Windows the first bash.exe on PATH is often WSL's launcher
+    (C:\\Windows\\System32\\bash.exe or WindowsApps), which starts Linux and fails at once: take Git Bash instead."""
+    if os.name != "nt":
+        return shutil.which("bash")
+    for d in os.environ.get("PATH", "").split(os.pathsep):
+        low = d.lower().replace("/", "\\")
+        if not d or "\\windows\\system32" in low or "windowsapps" in low:
+            continue
+        cand = Path(win_path(d)) / "bash.exe"
+        if cand.is_file():
+            return str(cand)
+    git = shutil.which("git")
+    if git:
+        for rel in ("../bin/bash.exe", "../../bin/bash.exe", "../usr/bin/bash.exe"):
+            cand = (Path(git).parent / rel).resolve()
+            if cand.is_file():
+                return str(cand)
+    return None
+
+
+def camel_version() -> str:
+    src = (Path(__file__).resolve().parent / "assemble_jbang.py").read_text(encoding="utf-8")
+    return os.environ.get("CAMEL_VERSION") or re.search(r'^CAMEL_VERSION = "([^"]+)"', src, re.M).group(1)
+
+
+def maven_settings(mvn_spec: str) -> str:
+    """The -s file of MVN_ARGS / --mvn (camel run resolves --dep with the same settings as Maven), else ~/.m2."""
+    args = shlex.split(mvn_spec)
+    for i, x in enumerate(args[:-1]):
+        if x in ("-s", "--settings"):
+            return win_path(os.path.expanduser(args[i + 1]))
+    return str(Path.home() / ".m2" / "settings.xml")
+
+
+def repo_args(settings: str) -> list[str]:
+    """Camel JBang's runtime downloader goes to Maven Central even with --maven-settings (seen on a VDI without internet:
+    repo1.maven.org connect timeout), so name the mirror of settings.xml as the repository and switch Central off.
+    CAMEL_REPOS='url[,url]' overrides; no mirror found -> nothing added."""
+    urls = [u for u in os.environ.get("CAMEL_REPOS", "").split(",") if u]
+    if not urls:
+        try:
+            xml = Path(settings).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return []
+        xml = re.sub(r"<!--.*?-->", "", xml, flags=re.S)
+        mirrors = re.findall(r"<mirror>.*?</mirror>", xml, flags=re.S)
+        urls = [m.group(1).strip() for x in mirrors if (m := re.search(r"<url>\s*([^<]+?)\s*</url>", x))]
+    return [f"--repos={','.join(dict.fromkeys(urls))}", "--maven-central-enabled=false"] if urls else []
+
+
+def rel(p: Path, mod: Path) -> str:
+    """A file argument for `camel run`, relative to the module (the process runs with cwd = module): Camel JBang joins
+    --properties and source paths to its working directory, and on Windows "E:\\...\\E:\\..." is an illegal path."""
+    return os.path.relpath(p, mod).replace(os.sep, "/")
+
+
+def jbang_command(mod: Path, port: int, timeout: int, overrides: dict[str, str], mvn_spec: str) -> list[str]:
+    """`camel run` of the module the way Camel K runs it: route YAML + Java sources (compiled by Camel, as on Camel K)
+    + other resources, the Camel K variant of application.properties with the overrides applied, the dependency list
+    camelk_manifests.py writes into integration.yaml. Writes target/camel-run/application.properties."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import camelk_manifests as cm   # noqa: E402  (same folder)
+    res = mod / "src/main/resources"
+    routes = sorted((res / "routes").glob("*.yaml"))
+    java = sorted((mod / "src/main/java").rglob("*.java"))
+    other = sorted(p for p in res.rglob("*") if p.is_file() and p.parent != res / "routes" and p.name != "application.properties")
+    text = (res / "application.properties").read_text(encoding="utf-8")
+    props = cm.camelk_properties(text)
+    lines = []
+    for line in props.splitlines():
+        k = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else None
+        lines.append(f"{k}={overrides[k]}" if k in overrides else line)
+    lines += [f"{k}={v}" for k, v in overrides.items() if not any(l.startswith(k + "=") for l in lines)]
+    out = mod / "target/camel-run"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "application.properties").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    used = "\n".join([text] + [r.read_text(encoding="utf-8") for r in routes + java])
+    deps = cm.module_deps(mod, used)
+    return (jbang_launcher() + ["--main", "main.CamelJBang", f"org.apache.camel:camel-jbang-main:{camel_version()}", "run"]
+            + [rel(p, mod) for p in routes + java + other]
+            + [f"--properties={rel(out / 'application.properties', mod)}", f"--dep={','.join(deps)}",
+               f"--maven-settings={maven_settings(mvn_spec)}", f"--max-seconds={timeout + 600}", f"--name={mod.name}"]
+            + repo_args(maven_settings(mvn_spec))
+            + ([f"--port={port}"] if port else []))
+
+
+def hint(log: Path, offset: int) -> list[str]:
+    """Exception lines the route logged since `offset`, redacted (no query strings, no digit runs): names only."""
+    text = log.read_bytes()[offset:].decode("utf-8", errors="replace")
+    out = []
+    for line in text.splitlines():
+        if re.search(r"[A-Za-z]+(Exception|Error)\b|Invalid url|Caused by", line) and "oracle.osb" not in line:
+            line = re.sub(r"\?\S*", "?...", line)
+            line = re.sub(r"\d{4,}", "#", line)
+            out.append(line.strip()[:200])
+        if len(out) == 2:
+            break
+    return out
+
+
+def cases(parity: Path) -> list[Path]:
+    return sorted(p.parent for p in parity.rglob("input.payload")) if parity.is_dir() else []
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("module", type=Path)
+    ap.add_argument("--port", type=int, default=8089, help="platform-http port of the route")
+    ap.add_argument("--stub-port", type=int, default=8099, help="port of the stub backend server")
+    ap.add_argument("--timeout", type=int, default=120, help="seconds to wait for the route to listen")
+    ap.add_argument("--mvn", default=os.environ.get("VERIFY_MVN", "mvn -B -q " + os.environ.get("MVN_ARGS", "")))
+    ap.add_argument("--engine", choices=("mvn", "jbang"), default="mvn",
+                    help="mvn: the module's run-local profile; jbang: camel run as Camel K runs it (local_acceptance.sh)")
+    a = ap.parse_args()
+    mod = a.module.resolve()
+    res = mod / "src/main/resources"
+    props = read_properties(res / "application.properties")
+    path = entry_path(props)
+    if not path:
+        print(f"not an HTTP flow (flow.input={props.get('flow.input', '<none>')}): use broker/run_local.sh {a.module}")
+        return 2
+    if a.engine == "mvn" and "camel-platform-http-main" not in (mod / "pom.xml").read_text(encoding="utf-8"):
+        print("pom.xml has no camel-platform-http-main: the route cannot listen on Camel Main (scaffold a fresh module)")
+        return 2
+    be = backends(props, mod)
+    cfg = json.loads((mod / "src/test/resources/flow-test.json").read_text(encoding="utf-8"))
+    err_status = int(cfg.get("error_http_status") or 500)
+    generated = [str(g) for g in cfg.get("generated_fields") or []]
+    for p in (a.port, a.stub_port):
+        if port_open(p):
+            print(f"port {p} is already in use: pick another with --port/--stub-port")
+            return 1
+    stubs = stub_files(mod / "src/test/resources/stubs", list(be))
+    missing = [n for n in be if n not in stubs]
+    if missing:
+        print(f"no stub file for backend(s) {missing} in src/test/resources/stubs (gate K6)")
+        return 1
+    Stub.routes = {uri_path(uri): (n, stubs[n][0], stubs[n][1]) for n, uri in be.items()}
+    Stub.counts = {n: 0 for n in be}
+    Stub.fail = False
+    server = ThreadingHTTPServer(("127.0.0.1", a.stub_port), Stub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+    route_files = list((res / "routes").glob("*.yaml")) + [res / "application.properties"]
+    env = dict(os.environ)
+    for k in ("NO_PROXY", "no_proxy"):   # the route's own calls to the stub stay local too
+        env[k] = ",".join(x for x in (env.get(k, ""), LOCAL_HOSTS) if x)
+    fake = sorted(n for n in env_names(*(f.read_text(encoding="utf-8") for f in route_files)) if n not in env)
+    for n in fake:
+        env[n] = f"smoke-{n}"
+    sysprops = [f"-Dbackend.{n}={stub_uri(uri, a.stub_port)}" for n, uri in be.items()]
+    sysprops += ["-Dcamel.server.enabled=true", f"-Dcamel.server.port={a.port}", f"-Dcamel.main.durationMaxSeconds={a.timeout + 600}"]
+    try:
+        if a.engine == "jbang":
+            cmd = jbang_command(mod, a.port, a.timeout, {f"backend.{n}": stub_uri(uri, a.stub_port) for n, uri in be.items()}, a.mvn)
+        else:
+            cmd = mvn_command(a.mvn) + ["-f", str(mod / "pom.xml"), "-Prun-local", "compile", "exec:java"] + sysprops
+    except FileNotFoundError as e:
+        print(e)
+        return 1
+    (mod / "target").mkdir(exist_ok=True)
+    log = mod / "target/smoke-route.log"
+    print(f"route ({a.engine}): {path} on :{a.port}; backends {list(be)} -> stub :{a.stub_port}; fake env {fake}; log target/smoke-route.log")
+    result = {"module": str(mod), "entry": path, "port": a.port, "engine": a.engine, "cases": [], "error_case": None, "backend_calls": {}, "ok": False}
+    with log.open("wb") as lf:
+        proc = subprocess.Popen(cmd, stdout=lf, stderr=subprocess.STDOUT, env=env, cwd=str(mod),
+                                **({} if os.name == "nt" else {"start_new_session": True}))
+    try:
+        t0 = time.time()
+        while not port_open(a.port):
+            if proc.poll() is not None or time.time() - t0 > a.timeout:
+                why = "exited" if proc.poll() is not None else f"did not listen within {a.timeout}s"
+                print(f"ROUTE DID NOT START ({why}); first errors of target/smoke-route.log:")
+                for line in [l for l in log.read_text(encoding="utf-8", errors="replace").splitlines()
+                             if re.search(r"ERROR|Exception|Caused by|BUILD FAILURE", l)][:8]:
+                    print("   " + line[:160])
+                return 1
+            time.sleep(1)
+        print(f"route up after {int(time.time() - t0)}s")
+        url = f"http://127.0.0.1:{a.port}{path}"
+        failed = 0
+        all_cases = cases(mod / "src/test/resources/parity")
+        if not all_cases:
+            print("no parity case with input.payload")
+            return 1
+        for c in all_cases:
+            name = str(c.relative_to(mod / "src/test/resources/parity"))
+            headers = {k: str(v) for k, v in json.loads((c / "headers.json").read_text(encoding="utf-8")).items()} if (c / "headers.json").is_file() else {}
+            headers.setdefault("Content-Type", "application/json" if cfg.get("payload_format", "json") == "json" else "application/xml")
+            expected = json.loads((c / "expected.json").read_text(encoding="utf-8")) if (c / "expected.json").is_file() else {}
+            want_ok = expected.get("outcome", "success") == "success"
+            offset = log.stat().st_size
+            status, body = call(url, (c / "input.payload").read_bytes(), headers)
+            golden = next((c / f for f in ("expected-output.json", "expected-output.xml") if (c / f).is_file()), None)
+            problem = None
+            if want_ok and not 200 <= status < 300:
+                problem = f"status {status}"
+            elif not want_ok and status != err_status:
+                problem = f"status {status}, expected {err_status}"
+            elif want_ok and golden:
+                problem = compare_reply(golden, body, generated)
+            note = "" if golden else " (status only: no expected-output file)"
+            print(f"{'FAIL' if problem else 'PASS'} {name}{': ' + problem if problem else note}")
+            if problem:
+                for h in hint(log, offset):
+                    print("   " + h)
+            failed += bool(problem)
+            result["cases"].append({"case": name, "status": status, "golden": bool(golden), "problem": problem})
+        Stub.fail = True
+        status, body = call(url, (all_cases[0] / "input.payload").read_bytes(),
+                            {k: str(v) for k, v in json.loads((all_cases[0] / "headers.json").read_text(encoding="utf-8")).items()} if (all_cases[0] / "headers.json").is_file() else {})
+        try:
+            json.loads(body.decode("utf-8", errors="replace"))
+            kind = "json"
+        except json.JSONDecodeError:
+            kind = "empty" if not body.strip() else "text"
+        err_ok = status == err_status
+        print(f"{'PASS' if err_ok else 'FAIL'} error case: backend 500 -> reply status {status} (expected {err_status}), body {kind}")
+        result["error_case"] = {"status": status, "expected": err_status, "body": kind, "ok": err_ok}
+        result["backend_calls"] = dict(Stub.counts)
+        result["ok"] = failed == 0 and err_ok
+        print(f"smoke: {len(all_cases)} cases, {failed} failed, error case {'ok' if err_ok else 'FAIL'}, backend calls: {dict(Stub.counts)}")
+        return 0 if result["ok"] else 1
+    finally:
+        stop(proc)
+        server.shutdown()
+        (mod / "SMOKE.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+        lines = [f"{'PASS' if not c['problem'] else 'FAIL'} {c['case']} (status {c['status']})" for c in result["cases"]]
+        if result["error_case"]:
+            lines.append(f"error case: status {result['error_case']['status']} expected {result['error_case']['expected']} -> {'ok' if result['error_case']['ok'] else 'FAIL'}")
+        lines.append(f"backend calls: {result['backend_calls']}")
+        lines.append(f"engine: {result.get('engine')}")
+        lines.append("smoke OK" if result["ok"] else "smoke FAILED")
+        (mod / "SMOKE.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_SMOKE_HTTP_PY
 mkdir -p "$(dirname ".pi/skills/osb-camelk-route/scripts/synth_from_schema.py")"
 cat > '.pi/skills/osb-camelk-route/scripts/synth_from_schema.py' <<'KIT_EOF__PI_SKILLS_OSB_CAMELK_ROUTE_SCRIPTS_SYNTH_FROM_SCHEMA_PY'
 #!/usr/bin/env python3
@@ -3862,6 +5259,10 @@ def yaml_lint(text: str) -> list[str]:
             if ind(nxt) > ind(ln):
                 out.append(f"line {i + 1}: '{m.group(1)}:' must be a plain value on the same line "
                            f"(e.g. {m.group(1)}: \"...${{body}}\"), not a block with '{nxt.strip().split(':')[0]}:' below")
+        for expr in re.findall(r"\$\{([^}]*)\}", s):
+            if re.search(r"\?\?|\?\.|\|\|", expr):   # JS/Kotlin operators the Simple language does not have
+                out.append(f"line {i + 1}: '${{{expr.strip()[:40]}}}' uses an operator Camel Simple does not know "
+                           f"(??, ?., ||): it fails at runtime, often only on the error path; use ${{exception.message}} etc.")
         if s == "steps:":
             prev = next((x for x in reversed(lines[:i]) if x.strip() and not x.strip().startswith("#")), "")
             frm = next((x for x in reversed(lines[:i]) if x.strip() == "from:"), None)
@@ -4086,6 +5487,34 @@ class FlowErrorTest {
         Map<String, Object> headers = JSON.readValue(c.resolve("headers.json").toFile(), Map.class);
         String corr = cfg().path("correlation_header").asText("traceId");
         headers.putIfAbsent(corr, "t-backend-fault");
+        assertErrorPath(Files.readString(c.resolve("input.payload")), headers);
+    }
+
+    /** HTTP backend answering with an error status: camel-http throws HttpOperationFailedException, which the route
+     *  catches on its own (gate K13, without the backend URL in the error text); it must take the same error path. */
+    @ParameterizedTest(name = "backend {0} answers HTTP 500")
+    @MethodSource("backends")
+    void backendHttpErrorTakesTheErrorPath(String backend) throws Exception {
+        Assumptions.assumeFalse(NO_BACKEND.equals(backend), "the flow calls no backend");
+        Assumptions.assumeTrue(cfg().path("backends").path(backend).path("type").asText("").toLowerCase().startsWith("http"),
+            "not an HTTP backend");
+        Class<?> hof;
+        try {
+            hof = Class.forName("org.apache.camel.http.base.HttpOperationFailedException");
+        } catch (ClassNotFoundException e) {
+            Assumptions.abort("no HTTP component on the classpath");
+            return;
+        }
+        Path c = firstCase();
+        Assumptions.assumeTrue(c != null, "no test case to send");
+        Exception fault = (Exception) hof.getConstructor(String.class, int.class, String.class, String.class, Map.class, String.class)
+            .newInstance("http://backend.test/" + backend + "?q=x", 500, "Internal Server Error", null, Map.of(), "");
+        mock(cfg().path("backends").path(backend).path("mock").asText())
+            .whenAnyExchangeReceived(e -> { throw fault; });
+        @SuppressWarnings("unchecked")
+        Map<String, Object> headers = JSON.readValue(c.resolve("headers.json").toFile(), Map.class);
+        String corr = cfg().path("correlation_header").asText("traceId");
+        headers.putIfAbsent(corr, "t-backend-http-error");
         assertErrorPath(Files.readString(c.resolve("input.payload")), headers);
     }
 
@@ -5075,7 +6504,10 @@ One `to:` per destination: a JMS business service that writes an `out-*` output 
 Branch conditions read the fields OsbJson.annotate sets as exchange properties (`${exchangeProperty.x}`), never
 headers. A path without any output in OSB is no action: no `when`, no log for it. Before the steps of every OSB
 stage set the property osbStage to that stage's name; the error handler sends it as debugInfo. errorCode is the
-exception class name, errorMessage the exception message. Inbound headers OSB copies to the error message travel
+exception class name, errorMessage the exception message, except for an HTTP backend failure
+(HttpOperationFailedException, caught first): 'backend returned HTTP ${exception.statusCode}', because its message holds
+the backend URL and query. Gate K13 (SKILL.md rule 4b): no credential header in a log line, no fixed host, removeHeaders
+before and after an HTTP backend. Inbound headers OSB copies to the error message travel
 with the message: never re-set them, never invent a default for them.
 Behaviour that is not on the card is not implemented: record it as an open question in MIGRATION_NOTES.md.
 Transformation without an original file to run: a mapping written INLINE in the pipeline (Replace/Assign action, no
@@ -5147,8 +6579,11 @@ SK=$(skill_dir osb-camelk-route); [ -n "$SK" ] || { echo "skill osb-camelk-route
 [ -s "$RES/research.json" ] || { echo "missing $RES/research.json: run pi/run_research.sh first"; exit 1; }
 if [ -f "$RES/SHARE_CHECK.json" ] && ! grep -q '"pass": true' "$RES/SHARE_CHECK.json"; then echo "research pack did not pass its check: $RES/SHARE_CHECK.json"; exit 1; fi
 
+if [ "${FIX_ONLY:-0}" = 1 ]; then echo "== 1 functional tests: kept (FIX_ONLY=1: green module, a gate failed)"
+else
 echo "== 1 functional tests: generated tests + mocks, synthetic inputs, frozen (pi/run_tests.sh)"
 bash "$KIT/pi/run_tests.sh" "$RES" "$MOD" "$PRJ" ${TASK1:+"$TASK1"} || echo "some scenarios have no test case yet (gate K9 will fail)"
+fi
 
 echo "== 2 approval"
 if [ "${POC:-0}" = 1 ] && ! grep -qiE '^Status:[[:space:]]*approved' "$MOD/FLOW_CARD.md"; then
@@ -5170,12 +6605,12 @@ echo "== 3 implement (pi), in small calls"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,edit,write"
     --append-system-prompt "$KIT/agents/implementer-camelk.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
-VERIFY="$PY $SK/scripts/verify_module.py $MOD"
+VERIFY="\"$PY\" \"$SK/scripts/verify_module.py\" \"$MOD\""   # quoted: Python may sit under C:/Program Files
 RULES="Never run mvn directly: '$VERIFY' runs the tests and the gates and prints a short summary. Never edit FlowParityTest.java, flow-test.json, FLOW_CARD.md or any test case folder. Write nothing outside $MOD. Do not read target/ or the parity cases."
 export VERIFY_MVN="mvn -B -q ${MVN_ARGS:-}"
-pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route (request/reply: step 3b, the reply built from research.json transforms row by row), never edit a test (FlowParityTest, FlowErrorTest, flow-test.json are frozen), and write a backend stub only where src/test/resources/stubs has none. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
+[ "${FIX_ONLY:-0}" = 1 ] || pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route (request/reply: step 3b, the reply built from research.json transforms row by row), never edit a test (FlowParityTest, FlowErrorTest, flow-test.json are frozen), and write a backend stub only where src/test/resources/stubs has none. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
 for round in $(seq 1 "${PI_FIX_ROUNDS:-3}"); do
-  SUMMARY=$($VERIFY 2>&1) && { echo "   verify: PASS after $round call(s)"; break; }
+  SUMMARY=$(eval "$VERIFY" 2>&1) && { echo "   verify: PASS after $round call(s)"; break; }
   echo "   verify round $round: $(echo "$SUMMARY" | head -1)"
   sleep "${PI_PAUSE:-30}"
   pi_call "$LOG/fix-$round.out" "$LOG/fix-$round.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD (card $MOD/FLOW_CARD.md). The last verify printed:
@@ -5375,7 +6810,25 @@ do_build() {
     m="$WS/modules/$p/$x"; [ -s "$WS/research/$p/$x/research.json" ] || { echo "skip $p/$x (no research.json yet)"; continue; }
     # no module yet is fine: run_camelk.sh scaffolds it (GEN=skills alone has no earlier step that does)
     grep -qiE '^Status:[[:space:]]*(approved|poc-run)' "$m/FLOW_CARD.md" 2> /dev/null || [ "${POC:-0}" = 1 ] || { echo "skip $p/$x (card not approved; POC=1 for a proof-of-concept build)"; continue; }
-    if [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json"; then echo "skip $p/$x (tests green)"; continue; fi
+    if [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json"; then
+      # green module whose card was approved after the build: refreeze the card hash and re-run the gates (no pi, no mvn)
+      if grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$m/FLOW_CARD.md" 2> /dev/null \
+         && ! "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K1_card_approved',{}).get('ok') else 1)" "$m/GATES.json"; then
+        echo "=== refreeze $p/$x (card approved after the build)"
+        "$PY" -c "import hashlib,json,sys; p=sys.argv[1]; m=json.load(open(p)); m['card_sha256']=hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest(); json.dump(m,open(p,'w'),indent=2)" "$m/.scaffold.json" "$m/FLOW_CARD.md"
+        "$PY" "$SK/check_camelk.py" "$m" | grep -E '^(ok +|FAIL +)K1|^FAIL$|^PASS$' || true
+        "$PY" "$SK/camelk_manifests.py" "$m" > /dev/null 2>&1 || true
+      else
+        "$PY" "$SK/check_camelk.py" "$m" > /dev/null 2>&1 || true     # gates of the current kit (new gates, e.g. K13)
+        bad=$("$PY" -c "import json,sys; g=json.load(open(sys.argv[1]))['gates']; print(','.join(k for k,v in g.items() if not v.get('ok') and k!='K1_card_approved'))" "$m/GATES.json")
+        if [ -n "$bad" ]; then
+          echo "=== fix $p/$x (tests green, gates failed: $bad): pi fixes the route, tests stay frozen"
+          t1=$(task1_of "$p" "$x")
+          FIX_ONLY=1 OSB_SRC="$APP/$p" timed "$p" "$x" build bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
+        else echo "skip $p/$x (tests green, gates ok)"; fi
+      fi
+      continue
+    fi
     echo "=== build $p/$x"
     t1=$(task1_of "$p" "$x")
     OSB_SRC="$APP/$p" timed "$p" "$x" build bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
@@ -5728,7 +7181,7 @@ pass "pi calls stop after PI_TIMEOUT (default 1800 s): $(command -v timeout >/de
 
 echo "Build and test"
 if command -v java >/dev/null; then
-  v=$(java -version 2>&1 | head -1 | sed -E 's/.*"([0-9]+).*/\1/'); [ "$v" -ge 21 ] 2>/dev/null && pass "java $v" || bad "java $v < 21"
+  v=$(java -version 2>&1 | grep -v 'Picked up' | head -1 | sed -E 's/.*"([0-9]+).*/\1/'); [ "$v" -ge 21 ] 2>/dev/null && pass "java $v" || bad "java $v < 21"
 else bad "java not found (JDK 21)"; fi
 if command -v mvn >/dev/null; then pass "maven $(mvn -v 2>/dev/null | head -1 | awk '{print $3}')"
   [ -f "$HOME/.m2/settings.xml" ] && pass "~/.m2/settings.xml present (mirror/proxy)" || wrn "no ~/.m2/settings.xml: Maven will try Maven Central directly"
@@ -6271,4 +7724,4 @@ cat > '.pi/skills/osb-research/assets/research.schema.json' <<'KIT_EOF__PI_SKILL
 }
 KIT_EOF__PI_SKILLS_OSB_RESEARCH_ASSETS_RESEARCH_SCHEMA_JSON
 chmod +x .pi/skills/osb-camelk-route/scripts/*.py pi/*.sh 2>/dev/null || true
-echo "installed: 37 files (skill osb-camelk-route + domain runner)"
+echo "installed: 42 files (skill osb-camelk-route + domain runner)"

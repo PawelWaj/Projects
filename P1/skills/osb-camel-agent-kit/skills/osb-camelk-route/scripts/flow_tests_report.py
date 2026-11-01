@@ -9,7 +9,7 @@ TESTS.md levels (what already ran on the client machine):
   L3 test strength  route mutations the tests caught (MUTATION.json)
   L4 code gates   K1-K13 (GATES.json)
   L5 runtime      the route run as Camel K runs it, with Camel JBang: HTTP smoke (SMOKE.json) or JMS on the local Artemis
-  L6 deploy file  camel-k/integration.yaml checked (camel-k/CHECK.json)
+  L6 deploy file  camel-k/ checked: integration.yaml without code, sources/ identical (camel-k/CHECK.json)
 DEV_TEST_PLAN.md: the tests that cannot run locally (D0 deploy, D1 functional per scenario on Dev, D2 errors, D3 security
 and logs, D4 side by side with OSB, D5 non-functional), with an empty Result column to fill in.
 Reads surefire XML, flow-test.json, the case folder names and the result JSON files. Never reads or prints message
@@ -124,7 +124,7 @@ def tests_md(mod: Path, proj: str, proxy: str) -> str:
          f"| L3 test strength | the tests fail when the route is broken on purpose | `mutate_route.py`, one change per run | `5-results/MUTATION.json` | {l3} |",
          f"| L4 code gates | route rules: no hosts/secrets, OSB names, safe logs and errors (K1-K13) | `verify_module.py` | `5-results/GATES.json` | {l4} |",
          f"| L5 runtime | the route really runs as Camel K runs it, called from outside | Camel JBang, stub backend{' over HTTP' if http else ', local Artemis'} | `4-acceptance/` | {l5} |",
-         f"| L6 deploy file | integration.yaml structure, sources identical, secrets only as references | `check_manifest.py` | `6-deploy/` | {l6} |",
+         f"| L6 deploy file | camel-k/ Kustomize folder: integration.yaml without code, sources/ identical to the module, secrets only as references | `check_manifest.py` | `6-deploy/` | {l6} |",
          "", "Not tested yet, needs Dev or OSB side by side: see `DEV_TEST_PLAN.md`.", ""]
 
     L += ["## L1 and L2: every test method", "", "| Level | Test | What it proves | Result |", "|---|---|---|---|"]

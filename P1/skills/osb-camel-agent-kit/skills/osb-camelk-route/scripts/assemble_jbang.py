@@ -20,7 +20,7 @@ Per OSB project (from the work modules <ws>/modules/<project>/<proxy>/ and the O
       test/<Flow>Test.java           tests, run with `jbang test/<Flow>Test.java` (JUnit via //DEPS, no pom, no broker)
       test/resources/<proxy>/        flow-test.json + the masked cases
       docs/<proxy>/                  FLOW_CARD.md, TEST_MATRIX.md, GATES.json, BODY_CHAIN.md
-      camel-k/                       integration.yaml, configmaps.yaml, DEPLOY.md (camelk_manifests.py)
+      camel-k/                       Kustomize: integration.yaml (no code), sources/, kustomization.yaml, DEPLOY.md
 
 Routing comes from the frozen scenario table of the module (flow-test.json, checked against the Splunk cases);
 transformations never come from an agent: what OSB does to the body is read from the pipeline and run with OSB's
@@ -528,7 +528,7 @@ def readme(app: str, summary: list) -> str:
           "  Common-setup/   osb-jms-source / osb-jms-sink kamelets, OsbNxsd.java, OsbXQuery.java",
           "  <project>/      <domain>-route.yaml  application.properties  local.properties  run-local.sh  RUN_LOCAL.md",
           "                  transformations/ (OSB .xqy and nXSD .xsd)  test/ (jbang tests, cases)  docs/<proxy>/",
-          "                  camel-k/ (integration.yaml, configmaps.yaml, DEPLOY.md: the project on Camel K)", "```", ""]
+          "                  camel-k/ (Kustomize folder: integration.yaml without code + sources/, DEPLOY.md: the project on Camel K)", "```", ""]
     return "\n".join(L)
 
 

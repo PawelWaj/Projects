@@ -1,14 +1,20 @@
 #!/usr/bin/env python3
-"""Camel K deployment of ONE migrated flow: a single integration.yaml you apply to the Dev namespace. Stdlib only.
+"""Camel K deployment of ONE migrated flow: a Kustomize folder you apply to the Dev namespace. Stdlib only.
 
     camelk_manifests.py <delivery>/<app>/<project>         scripts path (called by assemble_jbang.py)
     camelk_manifests.py modules/<project>/<proxy>           skills path (a Maven module, called by run_camelk.sh)
         [--namespace NS] [--domain D] [--broker-url URL] [--env-file FILE]
 
-Writes <folder>/camel-k/:
-  integration.yaml    every resource the flow needs, in apply order, as one multi-document file:
-                      Kamelets (scripts path; shared, re-applying is harmless), ConfigMap <name>-sources (route + Java),
-                      <name>-config (application.properties), <name>-transformations (OSB .xqy/.xsd), the Integration
+Writes <folder>/camel-k/ (no code inside a manifest: every route, Java and OSB file is a file of its own):
+  integration.yaml    the Integration resource only; its sources point to ConfigMap <name>-sources (contentRef)
+  sources/            the route YAML and Java files, byte-identical to the module (the code reviewers read)
+  config/             application.properties (Camel K variant)
+  transformations/    OSB .xqy/.xsd (scripts path), mounted at /etc/camel/resources/osb/transformations
+  kamelets/           the Kamelets (scripts path; shared, re-applying is harmless)
+  kustomization.yaml  configMapGenerator: sources/ -> <name>-sources (name hash, so a code change rolls the
+                      Integration), config/ -> <name>-config, transformations/ -> <name>-transformations (fixed names,
+                      mount hot-reload); kustomizeconfig.yaml teaches Kustomize the Integration contentRef.
+                      Apply: `oc apply -k camel-k/`; Argo CD renders the folder as Kustomize by itself.
   DEPLOY.md           the Secret commands (credentials are never in a file), apply, check, remove
   CHECK.json          ready (true/false) + what is still open (CHANGE-ME values), for the run summary
 Values that differ per environment come from the command line or the environment, never from the repository:
@@ -27,6 +33,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -39,29 +46,6 @@ CHANGE = "CHANGE-ME"
 SECRETISH = re.compile(r"(?i)(PASSWORD|PASSWD|PWD|SECRET|TOKEN|API_?KEY|_KEY$|_USER$|USERNAME|CREDENTIAL)")
 POM_SKIP = {"camel-bom", "camel-main", "camel-mock", "camel-test-main-junit5", "camel-test-junit5", "camel-log"}
 POM_MAP = {"camel-platform-http-main": "camel:platform-http"}
-
-
-def yaml_str(s: str) -> str:
-    return json.dumps(s, ensure_ascii=False)
-
-
-def block(key: str, text: str, ind: int) -> list:
-    """A ConfigMap data entry. Literal block when it round-trips exactly, else a JSON-quoted string (YAML-valid)."""
-    pad = " " * ind
-    first = text.split("\n", 1)[0]
-    literal_ok = (text.endswith("\n") and not text.endswith("\n\n") and "\r" not in text and text.strip()
-                  and not first[:1].isspace() and all(not l or not l[-1].isspace() for l in text.split("\n")))
-    if not literal_ok:
-        return [f"{pad}{key}: {yaml_str(text)}"]
-    return [f"{pad}{key}: |"] + [f"{pad}  {l}" if l else "" for l in text[:-1].split("\n")]
-
-
-def configmap(name: str, files: dict, labels: dict, ns: str) -> list:
-    L = ["apiVersion: v1", "kind: ConfigMap", "metadata:", f"  name: {name}"] + ([f"  namespace: {ns}"] if ns else [])
-    L += ["  labels:"] + [f"    {k}: {v}" for k, v in labels.items()] + ["data:"]
-    for k, text in files.items():
-        L += block(k, text, 2)
-    return L
 
 
 def camelk_properties(text: str) -> str:
@@ -123,6 +107,8 @@ def env_vars(name: str, refs: list, values: dict, broker_url: str) -> tuple:
 def integration(name: str, labels: dict, ns: str, sources: dict, deps: list, configs: list, resources: list,
                 env: list, kamelets: list, http: bool, origin: str) -> list:
     I = [f"# {name}: Camel K Integration generated from {origin} (camelk_manifests.py, do not edit by hand).",
+         "# No code in this file: the sources are the files in sources/, turned into ConfigMap " + f"{name}-sources by",
+         "# kustomization.yaml. Apply the folder: oc apply -k . (Argo CD: the folder as a Kustomize application).",
          "apiVersion: camel.apache.org/v1", "kind: Integration", "metadata:", f"  name: {name}"]
     I += [f"  namespace: {ns}"] if ns else []
     I += ["  labels:"] + [f"    {k}: {v}" for k, v in labels.items()]
@@ -131,7 +117,7 @@ def integration(name: str, labels: dict, ns: str, sources: dict, deps: list, con
         I += [f"    - name: {s}", f"      language: {'java' if s.endswith('.java') else 'yaml'}",
               f"      contentRef: {name}-sources", f"      contentKey: {s}"]
     I += ["  dependencies:"] + [f"    - {d}" for d in deps]
-    I += ["  traits:", "    mount:", "      configs:"] + [f'        - "{c}"' for c in configs]
+    I += ["  traits:", "    mount:", "      hotReload: true", "      configs:"] + [f'        - "{c}"' for c in configs]
     if resources:
         I += ["      resources:"] + [f'        - "{r}"' for r in resources]
     I += ["    environment:", "      vars:"] + [f'        - "{v}"' for v in env]
@@ -147,7 +133,9 @@ def integration(name: str, labels: dict, ns: str, sources: dict, deps: list, con
 def deploy_md(name: str, ns: str, secret_env: list, broker_secret: list, open_: list, http: bool, kind: str) -> list:
     nsf = f" -n {ns}" if ns else " -n <namespace>"
     D = [f"# {name} on Camel K ({kind})", "", "Generated with the route; regenerate, never edit. Everything except credentials is in",
-         "`integration.yaml`. Run from this folder, logged in with `oc login` to the Dev cluster.", ""]
+         "this folder as Kustomize: `integration.yaml` (the Integration only, no code), `sources/` (route and Java files),",
+         "`config/`, `kustomization.yaml`. Run from this folder, logged in with `oc login` to the Dev cluster. In Argo CD",
+         "point the Application at this folder; it renders `kustomization.yaml` by itself.", ""]
     n = 1
     if broker_secret:
         D += [f"{n}. Broker credentials (once per namespace and flow). Write `broker.properties` on your machine, create the",
@@ -159,13 +147,14 @@ def deploy_md(name: str, ns: str, secret_env: list, broker_secret: list, open_: 
               f"   oc create secret generic {name}-env{nsf} " + " ".join(f"--from-literal={k}=<{k.lower()}>" for k in secret_env),
               "   ```", "   Type the values in the window; do not keep them in a script or the shell history file.", ""]
         n += 1
-    D += [f"{n}. Check, apply, watch:", "   ```", f"   oc apply{nsf} --dry-run=server -f integration.yaml",
-          f"   oc apply{nsf} -f integration.yaml", f"   oc get integration {name}{nsf} -w        # phase Running",
+    D += [f"{n}. Check, apply, watch:", "   ```", "   oc kustomize . | grep -c 'kind: ConfigMap'   # the generated ConfigMaps",
+          f"   oc apply{nsf} --dry-run=server -k .",
+          f"   oc apply{nsf} -k .", f"   oc get integration {name}{nsf} -w        # phase Running",
           f"   oc logs{nsf} -l camel.apache.org/integration={name} --tail=50", "   ```"]
     if http:
         D += ["   The route answers HTTP on the Service `" + name + "` (port 80 -> 8080). Expose it only as the platform",
               "   decides (Route / Istio gateway); no Route is created here."]
-    D += [f"{n + 1}. Remove: `oc delete{nsf} -f integration.yaml` (Secrets stay: delete them by name if needed).", "",
+    D += [f"{n + 1}. Remove: `oc delete{nsf} -k .` (Secrets stay: delete them by name if needed).", "",
           "Camel version: the Camel K runtime of the cluster decides it; routes and tests are built for Camel 4.18, so use a",
           "Camel 4.18 runtime (Camel K 2.x with camel-k-runtime of that line)."]
     if open_ or not ns:
@@ -176,14 +165,64 @@ def deploy_md(name: str, ns: str, secret_env: list, broker_secret: list, open_: 
     return D
 
 
-def write(out: Path, docs: list, D: list, check: dict) -> None:
+GENERATED_DIRS = ("sources", "config", "transformations", "kamelets")
+
+
+def kustomization(name: str, ns: str, labels: dict, groups: list, kamelets: list) -> list:
+    """groups: (configmap name, folder, file names, hashed). A hashed ConfigMap gets a content hash in its name and
+    kustomizeconfig.yaml rewrites the Integration contentRef to it, so a code change redeploys the Integration."""
+    K = [f"# {name}: generated by camelk_manifests.py, do not edit by hand. Apply: oc apply -k .",
+         "apiVersion: kustomize.config.k8s.io/v1beta1", "kind: Kustomization"] + ([f"namespace: {ns}"] if ns else [])
+    K += ["resources:"] + [f"  - kamelets/{k}" for k in kamelets] + ["  - integration.yaml"]
+    K += ["configurations:", "  - kustomizeconfig.yaml", "generatorOptions:", "  labels:"]
+    K += [f"    {k}: {v}" for k, v in {**labels, "camel.apache.org/integration": name}.items()]
+    K += ["configMapGenerator:"]
+    for cm_name, folder, files, hashed in groups:
+        K += [f"  - name: {cm_name}", "    files:"] + [f"      - {folder}/{f}" for f in files]
+        K += [] if hashed else ["    options:", "      disableNameSuffixHash: true"]
+    return K
+
+
+KUSTOMIZE_CONFIG = ["# Integration.spec.sources[].contentRef names a ConfigMap: Kustomize rewrites it to the hashed name.",
+                    "nameReference:", "  - kind: ConfigMap", "    version: v1", "    fieldSpecs:",
+                    "      - kind: Integration", "        group: camel.apache.org", "        path: spec/sources/contentRef"]
+
+
+def write(out: Path, name: str, ns: str, labels: dict, integ: list, groups: list, kamelets: dict, D: list, check: dict) -> None:
+    """groups: (configmap name, folder, {file: text}, hashed); kamelets: {file name: text}."""
     out.mkdir(exist_ok=True)
-    (out / "integration.yaml").write_text("\n---\n".join("\n".join(d) for d in docs) + "\n", encoding="utf-8", newline="\n")
+    for d in GENERATED_DIRS:
+        shutil.rmtree(out / d, ignore_errors=True)
+    for _, folder, files, _ in groups:
+        (out / folder).mkdir(parents=True, exist_ok=True)
+        for f, text in files.items():
+            (out / folder / f).write_text(text, encoding="utf-8", newline="\n")
+    if kamelets:
+        (out / "kamelets").mkdir(exist_ok=True)
+        for f, text in kamelets.items():
+            (out / "kamelets" / f).write_text(text, encoding="utf-8", newline="\n")
+    (out / "integration.yaml").write_text("\n".join(integ) + "\n", encoding="utf-8", newline="\n")
+    K = kustomization(name, ns, labels, [(c, f, list(files), h) for c, f, files, h in groups], list(kamelets))
+    (out / "kustomization.yaml").write_text("\n".join(K) + "\n", encoding="utf-8", newline="\n")
+    (out / "kustomizeconfig.yaml").write_text("\n".join(KUSTOMIZE_CONFIG) + "\n", encoding="utf-8", newline="\n")
     (out / "DEPLOY.md").write_text("\n".join(D) + "\n", encoding="utf-8", newline="\n")
     (out / "CHECK.json").write_text(json.dumps(check, indent=2) + "\n", encoding="utf-8")
     old = out / "configmaps.yaml"                       # earlier layout: ConfigMaps in their own file
     if old.is_file():
         old.unlink()
+
+
+def cm_open(groups: list) -> list:
+    """ConfigMap limits: 1 MiB of data, keys of [-._a-zA-Z0-9]."""
+    out = []
+    for cm_name, _, files, _ in groups:
+        size = sum(len(t.encode()) for t in files.values())
+        if size > CM_LIMIT:
+            out.append(f"ConfigMap {cm_name} holds {size} bytes, over the 1 MiB limit: split it")
+        bad = [k for k in files if not re.fullmatch(r"[-._a-zA-Z0-9]+", k)]
+        if bad:
+            out.append(f"file names not valid as ConfigMap keys: {', '.join(bad)}")
+    return out
 
 
 def settings(ns: str, domain: str, broker_url: str, env_file: str, default_domain: str) -> tuple:
@@ -207,27 +246,22 @@ def manifests(pdir: Path, ns: str = "", domain: str = "", broker_url: str = "", 
     for j in ("OsbNxsd.java", "OsbXQuery.java"):
         sources[j] = (common / j).read_text(encoding="utf-8")
     trans = {f.name: f.read_text(encoding="utf-8") for f in sorted((pdir / "transformations").glob("*")) if f.is_file()}
-    size = sum(len(t.encode()) for t in trans.values())
-    open_ = [f"ConfigMap {name}-transformations holds {size} bytes, over the 1 MiB limit: split it"] if size > CM_LIMIT else []
-    bad = [k for k in trans if not re.fullmatch(r"[-._a-zA-Z0-9]+", k)]
-    if bad:
-        open_.append(f"file names not valid as ConfigMap keys: {', '.join(bad)}")
+    groups = [(f"{name}-sources", "sources", sources, True), (f"{name}-config", "config", {"application.properties": props}, False),
+              (f"{name}-transformations", "transformations", trans, False)]
+    open_ = cm_open(groups)
     refs = ["BROKER_URL"] + [r for r in env_refs([*sources.values(), props]) if r not in ("BROKER_URL", "BROKER_USER", "BROKER_PASSWORD")]
     env, secret_env, more = env_vars(name, refs, values, broker_url)
     env = [f"OSB_FILES_DIR={FILES_DIR}"] + env
     kam = [k.name[:-len(".kamelet.yaml")] for k in kamelets]
     http = any("platform-http" in s for s in sources.values())
-    docs = [k.read_text(encoding="utf-8").rstrip("\n").split("\n") for k in kamelets]
-    docs += [configmap(f"{name}-sources", sources, labels, ns), configmap(f"{name}-config", {"application.properties": props}, labels, ns),
-             configmap(f"{name}-transformations", trans, labels, ns)]
     deps = ["camel:yaml-dsl", "camel:kamelet", "camel:jms", "camel:direct", "camel:jackson", SAXON, ARTEMIS_CLIENT]
-    docs.append(integration(name, labels, ns, sources, deps, [f"configmap:{name}-config", f"secret:{name}-broker"],
+    integ = (integration(name, labels, ns, sources, deps, [f"configmap:{name}-config", f"secret:{name}-broker"],
                             [f"configmap:{name}-transformations@{FILES_DIR}/transformations"], env, kam, http,
                             f"the OSB project {pdir.name}"))
     open_ += more
     check = {"integration": name, "path": "scripts", "ready": not open_, "open": open_,
              "secrets": [f"{name}-broker"] + ([f"{name}-env"] if secret_env else []), "sources": len(sources), "transformations": len(trans)}
-    write(pdir / "camel-k", docs, deploy_md(name, ns, secret_env, [f"camel.kamelet.{k}.{s}" for k in kam for s in SECRET_KEYS],
+    write(pdir / "camel-k", name, ns, labels, integ, groups, {k.name: k.read_text(encoding="utf-8") for k in kamelets}, deploy_md(name, ns, secret_env, [f"camel.kamelet.{k}.{s}" for k in kam for s in SECRET_KEYS],
                                             open_, http, "scripts path"), check)
     return check
 
@@ -262,13 +296,14 @@ def module_manifests(mod: Path, ns: str = "", domain: str = "", broker_url: str 
     if clash:
         open_.append(f"two Java files with the same name ({', '.join(clash)}): Camel K needs unique source names")
     http = any("platform-http" in s for s in [*sources.values(), props])
-    docs = [configmap(f"{name}-sources", sources, labels, ns), configmap(f"{name}-config", {"application.properties": props}, labels, ns)]
-    docs.append(integration(name, labels, ns, sources, deps, [f"configmap:{name}-config"], [], env, [], http,
-                            f"the migrated module {meta.get('project', '')}/{meta.get('proxy', mod.name)}"))
+    groups = [(f"{name}-sources", "sources", sources, True), (f"{name}-config", "config", {"application.properties": props}, False)]
+    open_ += cm_open(groups)
+    integ = integration(name, labels, ns, sources, deps, [f"configmap:{name}-config"], [], env, [], http,
+                        f"the migrated module {meta.get('project', '')}/{meta.get('proxy', mod.name)}")
     kind = "skills path, " + ("HTTP request/reply" if http else "AMQP" if amqp else "messaging")
     check = {"integration": name, "path": "skills", "ready": not open_, "for_review": for_review(open_), "open": open_,
              "secrets": [f"{name}-env"] if secret_env else [], "sources": len(sources), "dependencies": deps}
-    write(mod / "camel-k", docs, deploy_md(name, ns, secret_env, [], open_, http, kind), check)
+    write(mod / "camel-k", name, ns, labels, integ, groups, {}, deploy_md(name, ns, secret_env, [], open_, http, kind), check)
     return check
 
 

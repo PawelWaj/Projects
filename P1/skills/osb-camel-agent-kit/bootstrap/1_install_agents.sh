@@ -433,7 +433,10 @@ One `to:` per destination: a JMS business service that writes an `out-*` output 
 Branch conditions read the fields OsbJson.annotate sets as exchange properties (`${exchangeProperty.x}`), never
 headers. A path without any output in OSB is no action: no `when`, no log for it. Before the steps of every OSB
 stage set the property osbStage to that stage's name; the error handler sends it as debugInfo. errorCode is the
-exception class name, errorMessage the exception message. Inbound headers OSB copies to the error message travel
+exception class name, errorMessage the exception message, except for an HTTP backend failure
+(HttpOperationFailedException, caught first): 'backend returned HTTP ${exception.statusCode}', because its message holds
+the backend URL and query. Gate K13 (SKILL.md rule 4b): no credential header in a log line, no fixed host, removeHeaders
+before and after an HTTP backend. Inbound headers OSB copies to the error message travel
 with the message: never re-set them, never invent a default for them.
 Behaviour that is not on the card is not implemented: record it as an open question in MIGRATION_NOTES.md.
 Transformation without an original file to run: a mapping written INLINE in the pipeline (Replace/Assign action, no
@@ -475,6 +478,32 @@ generate expected outputs, run against real environments.
 
 **Hand-off:** the module path and a list of files changed.
 KIT_EOF_AGENTS_IMPLEMENTER_MD
+mkdir -p "$(dirname "agents/operator-osb.md")"
+cat > 'agents/operator-osb.md' <<'KIT_EOF_AGENTS_OPERATOR_OSB_MD'
+# Role: operator (runs the OSB -> Camel K pipeline from its state, stops at the human gates)
+
+You run ONE OSB project through the kit on the client VDI with skill `osb-migration-run`. You are an operator, not a
+developer: the research, the tests, the route, the gates, the mutation check, the smoke run and the deployment file
+are produced by the kit scripts. You decide only which script runs next, and you decide that by running
+`pipeline_state.py` and doing exactly what its `next:` line says.
+
+You may: run `pipeline_state.py`; run the one command it proposes, unchanged; read `domain/agent-run.log`,
+`domain/STATUS.md`, `GATES.json`, `MUTATION.json`, `SMOKE.json`, `SMOKE.txt`, `.agent-logs/*.err` (last lines) to
+explain a failure; apply a fix only when `references/traps.md` names it for that exact symptom.
+
+You may not: edit a test, a case folder, `flow-test.json`, `FLOW_CARD.md`, `research.json`, `RESEARCH.md`, `GATES.json`,
+`MUTATION.json`, `SMOKE.json`, `.osb-kit.env`, `~/.m2/settings.xml`; run `mvn`, `pi`, `camel`, `jbang` or `oc` by hand;
+run `rm` (except the raw `EXPORT` file once `task1/events.masked.csv` exists); print or write a secret
+(`ARTEMIS_PASSWORD`, `MASK_KEY`, API keys, broker credentials); print message values, payload fields or personal data
+(names and counts only); touch another project; pass a human gate yourself; start a second long command while one runs.
+
+Stop conditions: `HUMAN:` from the state; `DONE:` from the state; the same `next` failing twice; a symptom not in
+`traps.md`. On every stop, answer with exactly three parts: (1) the state table as `pipeline_state.py` printed it,
+(2) "this session:" one line per command run with the counts the scripts printed, (3) "next for the person:" the
+`HUMAN:` text verbatim, or `DONE: hand over camel-k/integration.yaml + DEPLOY.md`, or the failure lines (names and
+counts, no values). Nothing else: no advice, no alternatives, no summary of the OSB flow.
+- Never run `card_answers.py` (with or without `--defaults`), `MUTATION_ACCEPTED.md` or any other answer on a person's behalf: at a HUMAN gate print the command the state gives and stop.
+KIT_EOF_AGENTS_OPERATOR_OSB_MD
 mkdir -p "$(dirname "agents/orchestrator.md")"
 cat > 'agents/orchestrator.md' <<'KIT_EOF_AGENTS_ORCHESTRATOR_MD'
 # Orchestrator: phases, hand-offs, loops
@@ -601,6 +630,175 @@ use `@Disabled` without a reason in the record, relax an assertion to make a tes
 
 **Hand-off:** the test sources, `MANIFEST.csv`, and the list of matrix rows that could not be tested with the reason.
 KIT_EOF_AGENTS_TESTER_MD
+mkdir -p "$(dirname "pi/env_setup.sh")"
+cat > 'pi/env_setup.sh' <<'KIT_EOF_PI_ENV_SETUP_SH'
+#!/usr/bin/env bash
+# Local test environment of a fresh (or reset) VDI: check it, or install what is missing. Git Bash, macOS, Linux.
+# Run it in the workspace (e.g. /e/Pawel/work) after `vdi_session.sh setup <osb-app-folder>` wrote ./.osb-kit.env.
+#   bash <kit>/pi/env_setup.sh check     read-only: one OK/FAIL line per item, exit 1 when something is missing
+#   bash <kit>/pi/env_setup.sh install   Artemis (through Maven/Nexus) + broker instance + start, the JBang jar + a `jbang`
+#                                        launcher in ~/bin, Camel/JUnit dependencies fetched once by a smoke test, then check
+# Needs on the machine: JDK 21, Maven 3.9 with the client settings.xml (Nexus), Python 3.10+. Nothing from the internet.
+# Env: ARTEMIS_PASSWORD (per session, never in a file), MVN_ARGS (-s <settings.xml>), CAMEL_VERSION, PI_PING=1 (also asks
+#      the model for "OK" through pi).
+set -u
+CMD=${1:-check}
+for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
+KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+MVN_ARGS=${MVN_ARGS//\~/$HOME}
+CAMEL_VERSION=${CAMEL_VERSION:-$(sed -n 's/^CAMEL_VERSION = "\(.*\)"/\1/p' "$KIT/skills/osb-camelk-route/scripts/assemble_jbang.py" | head -1)}
+JBANG_SH="$KIT/skills/osb-camelk-route/assets/templates/package/tools/jbang.sh"
+TPL="$KIT/skills/osb-camelk-route/assets/templates/FlowJBangTest.java.tpl"
+SMOKE="${WS:-$(pwd)}/.env-smoke"
+JAVA="${JAVA_HOME:+$JAVA_HOME/bin/}java"
+ok=0; fail=0
+pass() { printf '  [ OK ] %s\n' "$1"; ok=$((ok+1)); }
+bad()  { printf '  [FAIL] %s\n' "$1"; fail=$((fail+1)); }
+info() { printf '  [INFO] %s\n' "$1"; }
+ver_ge() { [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]; }   # $1 >= $2
+settings_file() { printf '%s\n' ${MVN_ARGS:-} | awk 'p {print; exit} $0 == "-s" || $0 == "--settings" {p=1}'; }
+jbang_ver() { jbang --version 2>&1 | grep -v 'Picked up' | grep -oE '^[0-9]+\.[0-9]+\.[0-9]+' | tail -1; }   # JBang prints it on stderr
+local_repo() { mvn -B -q ${MVN_ARGS:-} org.apache.maven.plugins:maven-help-plugin:3.5.1:evaluate \
+  -Dexpression=settings.localRepository -DforceStdout 2>/dev/null | tr -d '\r' | tail -1; }
+
+check() {
+  echo "Base"
+  [ -f ./.osb-kit.env ] && pass "workspace settings ./.osb-kit.env" || bad "no ./.osb-kit.env here: bash $KIT/pi/vdi_session.sh setup <osb-app-folder>"
+  [ -f "$KIT/pi/vdi_session.sh" ] && pass "kit: $KIT" || bad "kit not found: KIT=$KIT"
+  PY=$(command -v python3 || command -v python || command -v py)
+  if [ -n "$PY" ]; then v=$("$PY" -c 'import sys;print("%d.%d"%sys.version_info[:2])'); ver_ge "$v" 3.10 && pass "python $v" || bad "python $v < 3.10"
+  else bad "python not found"; fi
+  command -v curl > /dev/null && pass "curl" || bad "curl missing (broker check)"
+  if "$JAVA" -version > /dev/null 2>&1; then
+    jv=$("$JAVA" -version 2>&1 | grep -v 'Picked up' | head -1 | sed -E 's/.*"([0-9]+).*/\1/'); [ "$jv" -ge 21 ] 2>/dev/null && pass "java $jv (${JAVA_HOME:-PATH})" || bad "java $jv < 21: JAVA_HOME in .osb-kit.env"
+  else bad "java not found: JAVA_HOME in .osb-kit.env (JDK 21)"; fi
+
+  echo "Maven / Nexus"
+  if command -v mvn > /dev/null; then
+    mv=$(mvn -v 2>/dev/null | tr -d '\033' | sed -n 's/.*Apache Maven \([0-9.]*\).*/\1/p' | head -1)
+    ver_ge "${mv:-0}" 3.6.3 && pass "maven $mv" || bad "maven ${mv:-?} < 3.6.3 (Maven 3.9 from Nexus, PATH in .osb-kit.env)"
+    s=$(settings_file); s=${s:-$HOME/.m2/settings.xml}
+    [ -f "$s" ] && pass "settings $s" || bad "no Maven settings at $s (MVN_ARGS=-s <file>)"
+    [ -f "$s" ] && { grep -q '<mirror>' "$s" && pass "settings has a <mirror> (Nexus)" || info "settings has no <mirror>: Maven goes to the repositories it names"; }
+    # JBang reads only ~/.m2/settings.xml: the same mirror must be there
+    if [ "$s" != "$HOME/.m2/settings.xml" ]; then
+      cmp -s "$s" "$HOME/.m2/settings.xml" && pass "~/.m2/settings.xml = $s (JBang uses it)" \
+        || bad "JBang reads ~/.m2/settings.xml, which differs from $s: cp \"$s\" ~/.m2/settings.xml"
+    fi
+    mvn -B -q ${MVN_ARGS:-} org.apache.maven.plugins:maven-dependency-plugin:3.8.1:get -Dartifact=junit:junit:4.13.2 \
+      -Dtransitive=false > /dev/null 2>&1 && pass "Nexus answers (junit:junit:4.13.2 resolved)" || bad "Maven cannot resolve from Nexus: proxy/credentials in settings.xml"
+  else bad "mvn not on PATH (PATH in .osb-kit.env)"; fi
+
+  echo "JBang"
+  if command -v jbang > /dev/null; then
+    jv=$(jbang_ver); [ -n "$jv" ] && pass "jbang $jv ($(command -v jbang))" || bad "jbang on PATH but does not start"
+  else bad "jbang not on PATH: bash $KIT/pi/env_setup.sh install"; fi
+  repo=$(local_repo)
+  if [ -n "$repo" ] && [ -d "$repo/org/apache/camel/camel-core-engine/$CAMEL_VERSION" ]; then pass "Camel $CAMEL_VERSION in $repo"
+  else bad "Camel $CAMEL_VERSION not fetched yet (install runs the smoke test that fetches it)"; fi
+  [ -d "${repo:-/x}/org/apache/camel/camel-jbang-main/$CAMEL_VERSION" ] && pass "Camel JBang $CAMEL_VERSION (camel run)" \
+    || bad "Camel JBang $CAMEL_VERSION not fetched yet (install)"
+  [ -f "$SMOKE/SMOKE.txt" ] && grep -q '1 tests, 0 failed' "$SMOKE/SMOKE.txt" && pass "JBang smoke test passed ($(cut -c1-10 "$SMOKE/SMOKE.ts" 2>/dev/null))" \
+    || bad "JBang smoke test not passed yet (install)"
+
+  echo "Artemis"
+  . "$KIT/broker/lib.sh" 2>/dev/null
+  [ -f "${ARTEMIS_HOME:-/x}/lib/artemis-boot.jar" ] && pass "distribution $ARTEMIS_HOME" || bad "no Artemis distribution (install)"
+  [ -f "${ARTEMIS_BROKER:-/x}/etc/broker.xml" ] && pass "instance $ARTEMIS_BROKER" || bad "no broker instance (install)"
+  if console_up; then pass "broker running: console $ARTEMIS_CONSOLE"
+    if [ -n "${ARTEMIS_PASSWORD:-}" ]; then
+      artemis queue stat --user "$ARTEMIS_USER" --password "$ARTEMIS_PASSWORD" --url "$ARTEMIS_URL" > /dev/null 2>&1 \
+        && pass "login $ARTEMIS_USER works" || bad "broker refuses the login: ARTEMIS_PASSWORD is not the one of the instance"
+    else info "export ARTEMIS_PASSWORD to check the login"; fi
+  else bad "broker not running: bash $KIT/broker/artemis_setup.sh start"; fi
+
+  echo "Agent (research and the skills path only)"
+  command -v pi > /dev/null && pass "pi $(pi --version 2>/dev/null | head -1)" || info "pi not on PATH (task1, scripts path and local tests run without it)"
+  [ -n "${OSB_PI_MODEL:-}" ] && pass "OSB_PI_MODEL=$OSB_PI_MODEL" || info "OSB_PI_MODEL unset"
+  if [ "${PI_PING:-0}" = 1 ] && command -v pi > /dev/null; then
+    r=$(echo 'Reply with the single word OK' | pi --print --no-session ${OSB_PI_MODEL:+--model "$OSB_PI_MODEL"} < /dev/null 2>&1 | tail -1)
+    case "$r" in *OK*) pass "model answers";; *) bad "model did not answer OK (models.json baseUrl/id, OSB_PI_MODEL)";; esac
+  fi
+
+  echo; echo "Result: $ok ok, $fail failed"
+  [ "$fail" -eq 0 ]
+}
+
+install_jbang() {
+  echo "=== JBang"
+  mkdir -p "$HOME/bin"
+  sed 's|^# JBang without an installer|# installed by env_setup.sh. JBang without an installer|' "$JBANG_SH" > "$HOME/bin/jbang" && chmod +x "$HOME/bin/jbang"
+  case ":$PATH:" in *":$HOME/bin:"*) ;; *) export PATH="$HOME/bin:$PATH"
+    grep -q 'jbang launcher (env_setup.sh)' ./.osb-kit.env 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"   # jbang launcher (env_setup.sh)' >> ./.osb-kit.env;; esac
+  [ -n "$(jbang_ver)" ] && echo "jbang $(jbang_ver): $HOME/bin/jbang" || { echo "jbang does not start: see above"; return 1; }
+}
+
+smoke_test() {   # the same //DEPS as the generated tests: fetches Camel, Saxon, JUnit once and proves JBang can resolve them
+  echo "=== JBang smoke test (Camel $CAMEL_VERSION, first run fetches the dependencies, a few minutes)"
+  mkdir -p "$SMOKE"
+  { sed -n '1,/^\/\/SOURCES/p' "$TPL" | grep -v '^//SOURCES' | sed "s/@@CAMEL@@/$CAMEL_VERSION/"
+    cat <<'JAVA'
+
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.component.mock.MockEndpoint;
+import org.apache.camel.impl.DefaultCamelContext;
+import org.junit.jupiter.api.Test;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+public class EnvSmokeTest {
+    @Test
+    void camelRoutesAMessage() throws Exception {
+        try (var camel = new DefaultCamelContext()) {
+            camel.addRoutes(new RouteBuilder() { public void configure() { from("direct:in").to("mock:out"); } });
+            camel.start();
+            MockEndpoint out = camel.getEndpoint("mock:out", MockEndpoint.class);
+            out.expectedBodiesReceived("ping");
+            camel.createProducerTemplate().sendBody("direct:in", "ping");
+            out.assertIsSatisfied();
+            assertTrue(net.sf.saxon.Version.getProductVersion().length() > 0);
+        }
+    }
+
+    public static void main(String... args) {
+        var request = org.junit.platform.launcher.core.LauncherDiscoveryRequestBuilder.request()
+            .selectors(org.junit.platform.engine.discovery.DiscoverySelectors.selectClass(EnvSmokeTest.class)).build();
+        var summary = new org.junit.platform.launcher.listeners.SummaryGeneratingListener();
+        org.junit.platform.launcher.core.LauncherFactory.create().execute(request, summary);
+        var s = summary.getSummary();
+        s.getFailures().forEach(f -> System.out.println("FAIL " + f.getException()));
+        System.out.printf("%d tests, %d failed%n", s.getTestsFoundCount(), s.getTotalFailureCount());
+        System.exit(s.getTotalFailureCount() == 0 && s.getTestsFoundCount() > 0 ? 0 : 1);
+    }
+}
+JAVA
+  } > "$SMOKE/EnvSmokeTest.java"
+  (cd "$SMOKE" && jbang EnvSmokeTest.java 2>&1 | grep -vE '^\[jbang\] (Resolving|Building)' | tail -5 | tee SMOKE.txt)
+  grep -q '1 tests, 0 failed' "$SMOKE/SMOKE.txt" && date '+%F %T' > "$SMOKE/SMOKE.ts" \
+    || { echo "smoke test failed: JBang cannot resolve or run Camel (check ~/.m2/settings.xml mirror)"; return 1; }
+  echo "=== Camel JBang $CAMEL_VERSION (camel run of the routes)"
+  jbang --main main.CamelJBang "org.apache.camel:camel-jbang-main:$CAMEL_VERSION" version 2>&1 | tail -2
+}
+
+install_artemis() {
+  echo "=== Artemis"
+  : "${ARTEMIS_PASSWORD:?export ARTEMIS_PASSWORD=<choose one> first (per session, never in a file)}"
+  bash "$KIT/broker/artemis_setup.sh" install || return 1
+  . ./.osb-kit.env
+  bash "$KIT/broker/artemis_setup.sh" create && bash "$KIT/broker/artemis_setup.sh" start
+}
+
+case "$CMD" in
+  check) check ;;
+  install)
+    [ -f ./.osb-kit.env ] || { echo "run it in the workspace after: bash $KIT/pi/vdi_session.sh setup <osb-app-folder>"; exit 2; }
+    [ -f "$HOME/.m2/settings.xml" ] || { s=$(settings_file); [ -n "$s" ] && [ -f "$s" ] && mkdir -p "$HOME/.m2" && cp "$s" "$HOME/.m2/settings.xml" \
+      && echo "copied $s to ~/.m2/settings.xml (JBang reads only that file)"; }
+    install_artemis || exit 1
+    install_jbang && smoke_test
+    echo; echo "=== check"; . ./.osb-kit.env; check ;;
+  *) echo "usage: env_setup.sh check | install"; exit 2 ;;
+esac
+KIT_EOF_PI_ENV_SETUP_SH
 mkdir -p "$(dirname "pi/init_env.sh")"
 cat > 'pi/init_env.sh' <<'KIT_EOF_PI_INIT_ENV_SH'
 #!/usr/bin/env bash
@@ -640,6 +838,146 @@ grep -E '^export (KIT|APP|WS|JAVA_HOME|EXPORT|SPLUNK_COVERAGE)=' .osb-kit.env | 
 [ -n "$JDK" ] || echo "  WARNING: no JDK 21 found: edit JAVA_HOME in .osb-kit.env"
 [ -n "$MVN" ] || echo "  WARNING: no Maven 3.9 found: edit PATH in .osb-kit.env"
 KIT_EOF_PI_INIT_ENV_SH
+mkdir -p "$(dirname "pi/local_acceptance.sh")"
+cat > 'pi/local_acceptance.sh' <<'KIT_EOF_PI_LOCAL_ACCEPTANCE_SH'
+#!/usr/bin/env bash
+# Local acceptance: the end solution tested on this machine, the gate before Dev. No POC exceptions.
+#   bash <kit>/pi/local_acceptance.sh '<a-prj|b-prj>'          (in the workspace; .osb-kit.env is read)
+# Per work module of the project(s), in order; the first FAIL stops that module (log path printed):
+#   1 card     FLOW_CARD.md approved (Status/Approver, no open question), card hash refrozen
+#   2 tests    Maven tests + gates K1-K12 (verify_module.py): failures 0, errors 0, every gate ok incl. K1
+#   3 mutate   every mutation caught (mutate_route.py), or the reason written in MUTATION_ACCEPTED.md
+#   4 run      the route run as Camel K runs it, with Camel JBang (no Maven build of the module):
+#              HTTP flows: smoke_http.py --engine jbang (stub backend, every case over HTTP, forced 500)
+#              JMS flows:  ENGINE=jbang broker/e2e_local.sh on the local Artemis (one case per scenario, queue counts)
+#   5 manifest camel-k/integration.yaml generated and checked (check_manifest.py): structure, sources identical,
+#              secrets only as references, ready or only per-environment values open
+#   6 review   review package (make_review_pack.sh), newer than everything above
+# Output: <module>/LOCAL_ACCEPTANCE.md + .json, last line "LOCAL ACCEPTANCE: PASS|FAIL <module>". Exit 0 only when
+# every module passed. Needs: ARTEMIS_PASSWORD exported (JMS flows), the broker running, jbang/Camel via Nexus.
+set -u
+for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
+P=${1:?usage: local_acceptance.sh '<a-prj|b-prj>'}
+KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}
+WS=${WS:-$(pwd)}
+PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
+SK="$KIT/skills/osb-camelk-route/scripts"
+MVN_ARGS=${MVN_ARGS//\~/$HOME}
+export VERIFY_MVN="mvn -B -q ${MVN_ARGS:-}"
+KV=$(cd "$KIT/../.." 2>/dev/null && git log --oneline -1 2>/dev/null | cut -c1-7)
+KV=${KV:-zip}
+all=0; n=0
+
+json_get() { "$PY" -c "import json,sys
+try: d=json.load(open(sys.argv[1]))
+except Exception: sys.exit(1)
+v=d
+for k in sys.argv[2].split('.'): v=v.get(k) if isinstance(v,dict) else None
+print(v)" "$1" "$2"; }
+
+accept_module() {   # $1 project  $2 proxy
+  local p=$1 x=$2 m="$WS/modules/$1/$2" log t0 rc res=() status=PASS failed=""
+  log="$WS/domain/acceptance/$p-$x"; mkdir -p "$log"   # not under target/: mvn clean would remove it
+  add() { res+=("$1|$2|$3|$4"); printf '  %-9s %-4s %4ss  %s\n' "$1" "$2" "$3" "$4"; }   # step ok secs detail
+  fail() { add "$1" FAIL "$2" "$3"; status=FAIL; failed=$1; }
+  echo "=== local acceptance $p/$x (kit $KV)"
+
+  # 1 card
+  t0=$SECONDS
+  if grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$m/FLOW_CARD.md" && grep -qE '^Approver:[[:space:]]*[^[:space:]]' "$m/FLOW_CARD.md" \
+     && ! grep -q '^- \[ \]' "$m/FLOW_CARD.md"; then
+    "$PY" -c "import hashlib,json,sys; p=sys.argv[1]; d=json.load(open(p)); d['card_sha256']=hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest(); json.dump(d,open(p,'w'),indent=2)" "$m/.scaffold.json" "$m/FLOW_CARD.md"
+    add card ok $((SECONDS - t0)) "approved by $(sed -n 's/^Approver:[[:space:]]*//p' "$m/FLOW_CARD.md" | head -1), card hash refrozen"
+  else
+    fail card $((SECONDS - t0)) "not approved or open questions left: python $SK/card_answers.py $m"
+  fi
+
+  # 2 tests + gates
+  if [ "$status" = PASS ]; then
+    t0=$SECONDS
+    "$PY" "$SK/verify_module.py" "$m" > "$log/2-tests.txt" 2>&1; rc=$?
+    line=$(grep -m1 -E '^tests [0-9]+' "$log/2-tests.txt")
+    bad=$("$PY" -c "import json,sys; g=json.load(open(sys.argv[1]))['gates']; print(','.join(k.split('_')[0] for k,v in g.items() if not v.get('ok')))" "$m/GATES.json" 2>/dev/null)
+    if [ "$rc" = 0 ] && [ -z "$bad" ] && echo "$line" | grep -qE 'failures 0, errors 0'; then add tests ok $((SECONDS - t0)) "${line}; gates K1-K12 ok"
+    else fail tests $((SECONDS - t0)) "${line:-no test run}; gates failed: ${bad:-?} (log $log/2-tests.txt)"; fi
+  fi
+
+  # 3 mutations
+  if [ "$status" = PASS ]; then
+    t0=$SECONDS
+    "$PY" "$SK/mutate_route.py" "$m" --mvn "mvn -B -q ${MVN_ARGS:-}" > "$log/3-mutations.txt" 2>&1; rc=$?
+    line=$(grep -m1 -E 'mutations caught' "$log/3-mutations.txt")
+    if [ "$rc" = 0 ]; then add mutate ok $((SECONDS - t0)) "${line:-all caught}"
+    elif "$PY" -c "import json,sys,pathlib
+s=[z['what'] for z in json.load(open(sys.argv[1])).get('mutations',[]) if not z.get('killed')]
+a=pathlib.Path(sys.argv[2]); t=a.read_text(encoding='utf-8') if a.is_file() else ''
+sys.exit(0 if s and all(x in t for x in s) else 1)" "$m/MUTATION.json" "$m/MUTATION_ACCEPTED.md" 2>/dev/null; then
+      add mutate ok $((SECONDS - t0)) "${line}; every survivor named with its reason in MUTATION_ACCEPTED.md"
+    else fail mutate $((SECONDS - t0)) "${line:-mutation check did not run}: strengthen the scenario, or name each survivor with its reason in $m/MUTATION_ACCEPTED.md (log $log/3-mutations.txt)"; fi
+  fi
+
+  # 4 run with Camel JBang
+  if [ "$status" = PASS ]; then
+    t0=$SECONDS
+    if grep -q '^flow.input=platform-http:' "$m/src/main/resources/application.properties"; then
+      "$PY" "$SK/smoke_http.py" "$m" --engine jbang > "$log/4-run.txt" 2>&1; rc=$?
+      line=$(grep -E '^smoke:' "$log/4-run.txt" | tail -1)
+      kind="HTTP, Camel JBang"
+    else
+      if [ -z "${ARTEMIS_PASSWORD:-}" ]; then rc=9; line="export ARTEMIS_PASSWORD first (JMS flow on the local Artemis)"
+      else
+        ENGINE=jbang bash "$KIT/broker/e2e_local.sh" "$m" > "$log/4-run.txt" 2>&1; rc=$?
+        line="$(grep -E '^RESULT|differ|all .* OK' "$log/4-run.txt" | tail -1) ($(json_get "$m/target/e2e-result.json" cases) cases)"
+      fi
+      kind="JMS on the local Artemis, Camel JBang"
+    fi
+    if [ "$rc" = 0 ]; then add run ok $((SECONDS - t0)) "$kind: $line"
+    else fail run $((SECONDS - t0)) "$kind: ${line:-did not run} (log $log/4-run.txt)"; fi
+  fi
+
+  # 5 manifest
+  if [ "$status" = PASS ]; then
+    t0=$SECONDS
+    "$PY" "$SK/camelk_manifests.py" "$m" > "$log/5-manifest.txt" 2>&1
+    "$PY" "$SK/check_manifest.py" "$m" >> "$log/5-manifest.txt" 2>&1; rc=$?
+    line=$(grep -E '^(ok  |FAIL) ready' "$log/5-manifest.txt" | sed 's/^ok   ready: //; s/^FAIL ready: //')
+    if [ "$rc" = 0 ]; then add manifest ok $((SECONDS - t0)) "integration.yaml checked; $line"
+    else fail manifest $((SECONDS - t0)) "$(grep -m1 '^FAIL' "$log/5-manifest.txt") (log $log/5-manifest.txt)"; fi
+  fi
+
+  # 6 review package
+  if [ "$status" = PASS ]; then
+    t0=$SECONDS
+    bash "$KIT/pi/make_review_pack.sh" "$p" "$x" > "$log/6-review.txt" 2>&1; rc=$?
+    tgz="$WS/review/$p-$x.tgz"
+    if [ "$rc" = 0 ] && [ -f "$tgz" ] && [ "$tgz" -nt "$m/GATES.json" ]; then add review ok $((SECONDS - t0)) "review/$p-$x.tgz"
+    else fail review $((SECONDS - t0)) "review package not written (log $log/6-review.txt)"; fi
+  fi
+
+  "$PY" - "$m" "$status" "$KV" "${failed:-}" "${res[@]}" <<'PYEOF'
+import json, sys, datetime
+m, status, kv, failed, rows = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4], sys.argv[5:]
+steps = [dict(zip(("step", "ok", "seconds", "detail"), r.split("|", 3))) for r in rows]
+d = {"module": m, "result": status, "failed_step": failed or None, "kit": kv, "engine": "camel-jbang",
+     "date": datetime.datetime.now().isoformat(timespec="seconds"), "steps": steps}
+open(f"{m}/LOCAL_ACCEPTANCE.json", "w", encoding="utf-8").write(json.dumps(d, indent=2))
+L = [f"# Local acceptance: {status}", "", f"Module `{m}`, kit {kv}, {d['date']}, route run with Camel JBang (as on Camel K).", "",
+     "| Step | Result | Seconds | Detail |", "|---|---|---|---|"]
+L += [f"| {s['step']} | {s['ok']} | {s['seconds']} | {s['detail']} |" for s in steps]
+open(f"{m}/LOCAL_ACCEPTANCE.md", "w", encoding="utf-8").write("\n".join(L) + "\n")
+PYEOF
+  echo "LOCAL ACCEPTANCE: $status $p/$x"
+  [ "$status" = PASS ]
+}
+
+while read -r p x; do
+  [ -f "$WS/modules/$p/$x/.scaffold.json" ] || { echo "skip $p/$x (no work module yet: run flows first)"; continue; }
+  n=$((n + 1))
+  accept_module "$p" "$x" || all=1
+done < <(for d in "$WS"/modules/*/*/; do d=${d%/}; x=${d##*/}; p=${d%/*}; p=${p##*/}; echo "$p $x"; done | grep -E "^($P) ")
+[ "$n" -gt 0 ] || { echo "no work module under $WS/modules matches '$P'"; exit 2; }
+exit $all
+KIT_EOF_PI_LOCAL_ACCEPTANCE_SH
 mkdir -p "$(dirname "pi/make_review_pack.sh")"
 cat > 'pi/make_review_pack.sh' <<'KIT_EOF_PI_MAKE_REVIEW_PACK_SH'
 #!/usr/bin/env bash
@@ -650,13 +988,20 @@ cat > 'pi/make_review_pack.sh' <<'KIT_EOF_PI_MAKE_REVIEW_PACK_SH'
 # Env: ROUTE_AUTHOR (default "pi agent (osb-camelk-route)"): who wrote the route, shown in README_REVIEW.md
 #   reference-route-dir  optional: another route for the same flow (e.g. the hand-written pilot) -> compared against
 #                        the SAME frozen tests with compare_codegen.py
-# Result: review/<project>-<proxy>/ + review/<project>-<proxy>.tgz   (agent logs and build output are left out)
+# Result: review/<project>-<proxy>/ + review/<project>-<proxy>.tgz (reviewer) + review/<project>-<proxy>-dev.tgz (deploy + Dev tests)   (agent logs and build output are left out)
 #   1-research/   RESEARCH.md, research.json, facts.json, SHARE_CHECK.json
 #   2-card/       FLOW_CARD.md
 #   module/       pom.xml, src/main (route, properties, beans), src/test (frozen tests, cases, stubs), env/,
 #                 MIGRATION_NOTES.md, .scaffold.json  ->  `mvn test` and the broker scripts work in this folder
+#   3-tests/      TESTS.md (every test by level L1-L6 with its result), RUN_TESTS.md, DEV_TEST_PLAN.md (D0-D5, to fill
+#                 on Dev) + a reading copy of the tests: 1-functional/ (test, expected outputs, cases), 2-error-paths/,
+#                 3-runtime/, stubs/
+#   4-acceptance/ LOCAL_ACCEPTANCE.md/.json, SMOKE.json/.txt (the route run with Camel JBang)
 #   5-results/    TEST_MATRIX.md, GATES.json, MUTATION.json, surefire summaries
-#   6-compare/    (optional) generated route vs reference route on the same tests
+#   6-deploy/     camel-k/ (Kustomize: integration.yaml without code, sources/, config/, kustomization.yaml, DEPLOY.md,
+#                 CHECK.json) as handed to Argo CD
+#   7-dev-tests/  dev_check.sh (D0) + dev_test.py (D1-D4, against the deployed route, OSB side by side), dev-cases/
+#   8-compare/    (optional) generated route vs reference route on the same tests
 set -uo pipefail
 for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
 MVN_ARGS=${MVN_ARGS//\~/$HOME}   # "~" inside a variable is not expanded by the shell
@@ -669,18 +1014,81 @@ PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
 R="$WS/research/$P/$X"; M="$WS/modules/$P/$X"; O="$WS/review/$P-$X"
 [ -s "$R/research.json" ] || { echo "no research pack in $R: run run_domain.sh research first"; exit 2; }
 [ -d "$M" ] || { echo "no module in $M: run run_domain.sh tests (and build) first"; exit 2; }
-rm -rf "$O"; mkdir -p "$O"/{1-research,2-card,module,5-results}
+rm -rf "$O"; mkdir -p "$O"/{1-research,2-card,module,3-tests,4-acceptance,5-results,6-deploy,7-dev-tests}
 cp "$R"/RESEARCH.md "$R"/research.json "$R"/facts.json "$R"/SHARE_CHECK.json "$O/1-research/" 2>/dev/null
 cp "$M/FLOW_CARD.md" "$O/2-card/" 2>/dev/null
 for f in pom.xml FLOW_CARD.md MIGRATION_NOTES.md .scaffold.json .gitignore; do [ -f "$M/$f" ] && cp "$M/$f" "$O/module/"; done
 for d in src env; do [ -d "$M/$d" ] && cp -r "$M/$d" "$O/module/"; done
 cp "$M/GATES.json" "$M/MUTATION.json" "$M/TEST_MATRIX.md" "$M/test-matrix.csv" "$O/5-results/" 2>/dev/null
 [ -d "$M/target/surefire-reports" ] && cp "$M"/target/surefire-reports/*.txt "$O/5-results/" 2>/dev/null
+cp "$M/LOCAL_ACCEPTANCE.md" "$M/LOCAL_ACCEPTANCE.json" "$M/SMOKE.json" "$M/SMOKE.txt" "$O/4-acceptance/" 2>/dev/null
+[ -d "$M/camel-k" ] && cp -r "$M/camel-k" "$O/6-deploy/"
+"$PY" "$KIT/skills/osb-camelk-route/scripts/flow_tests_report.py" "$M" -o "$O/3-tests" >/dev/null || echo "   tests report not written"
+# the tests themselves, by level, so the reviewer reviews them too (a copy: the runnable original stays in module/)
+T="$O/3-tests"; mkdir -p "$T"/{1-functional,2-error-paths,3-runtime,stubs}
+find "$M/src/test/java" -name 'FlowParityTest.java' -exec cp {} "$T/1-functional/" \; 2>/dev/null
+cp "$M/src/test/resources/flow-test.json" "$T/1-functional/" 2>/dev/null
+[ -d "$M/src/test/resources/parity" ] && cp -r "$M/src/test/resources/parity" "$T/1-functional/cases"
+find "$M/src/test/java" -name 'FlowErrorTest.java' -exec cp {} "$T/2-error-paths/" \; 2>/dev/null
+find "$M/src/test/java" -name 'FlowJBangTest.java' -exec cp {} "$T/3-runtime/" \; 2>/dev/null
+cp "$M/SMOKE.txt" "$M/SMOKE.json" "$T/3-runtime/" 2>/dev/null
+[ -d "$M/src/test/resources/stubs" ] && cp -r "$M/src/test/resources/stubs/." "$T/stubs/"
+# Dev tests: the same cases against the deployed route (and OSB side by side), run after the Argo CD sync
+DT="$O/7-dev-tests"; mkdir -p "$DT"
+cp "$KIT/skills/osb-camelk-route/assets/dev-tests/dev_test.py" "$KIT/skills/osb-camelk-route/assets/dev-tests/dev_check.sh" "$DT/"
+cp "$M/src/test/resources/flow-test.json" "$DT/" 2>/dev/null
+[ -d "$M/src/test/resources/parity" ] && cp -r "$M/src/test/resources/parity" "$DT/dev-cases"
+cp "$T/DEV_TEST_PLAN.md" "$DT/" 2>/dev/null
+ENTRY=$(sed -n 's/^flow.input=platform-http://p' "$M/src/main/resources/application.properties" 2>/dev/null | head -1)
+INAME=$(sed -n '/^kind: Integration/,/^---/{s/^  name: *//p;}' "$M/camel-k/integration.yaml" 2>/dev/null | head -1)
+cat > "$DT/README_DEV_TESTS.md" <<DEV
+# Dev tests: $P / $X
+
+Run after Argo CD has synced \`integration.yaml\` to Dev. Needs Python 3 and, for step 1, \`oc\` logged in to the Dev
+namespace. Every result is names, statuses and counts only; the cases are masked or synthetic and stay on client machines.
+
+| Step | Command | Plan IDs |
+|---|---|---|
+| 1 deployment | \`bash dev_check.sh <namespace> ${INAME:-<integration>} ${INAME:-<integration>}-env\` | D0.1-D0.4, D3.1 |
+| 2 functional + errors | \`python dev_test.py --url https://<dev host>${ENTRY:-<entry path>}\` | D1, D2, D3 |
+| 3 side by side with OSB | \`python dev_test.py --url https://<dev host>${ENTRY:-<entry path>} --osb-url https://<osb host>/<proxy path>\` | D4 |
+| 4 by hand | D2.3 (OSB's real error body), D3.2 (log text), D5 (E2E/UAT) in \`DEV_TEST_PLAN.md\` | |
+
+Results: \`results/DEV_CHECK.md\`, \`results/DEV_TEST_RESULT.md\` (+ .json). Copy the results into the Result column of
+\`DEV_TEST_PLAN.md\`.
+
+Test data. \`dev-cases/<scenario>/<case>/\` holds the cases of the local tests (\`input.payload\`, \`headers.json\`,
+\`expected.json\`, \`expected-output.json\`). Masked values do not exist in the Dev backend, so for step 2 replace each
+\`input.payload\` with a record the backend team confirms in Dev (same scenario), or add new case folders. On Dev the
+reply is checked by SHAPE (same key paths and types as \`expected-output.json\`), not by value. Step 3 checks values:
+OSB and the route get the same request and must answer the same.
+
+Credentials. If the Dev gateway needs a token, export it and pass the variable name, never the value:
+\`export DEV_TOKEN=...; python dev_test.py ... --header-env Authorization=DEV_TOKEN\`. Self-signed Dev TLS: \`--insecure\`.
+DEV
+
+cat > "$T/RUN_TESTS.md" <<RUN
+# How to run the tests of $P / $X
+
+The files in this folder are a COPY for reading. To run or change a test, use \`module/\` (tests are frozen: gate K5
+fails if a generated test or expected output is edited; change the card or the research and regenerate instead).
+
+| Level | Files here | Run (on the client machine, in the workspace) | Pass when |
+|---|---|---|---|
+| 1 functional | \`1-functional/FlowParityTest.java\`, \`flow-test.json\` (expected outputs per scenario), \`cases/<scenario>/<case>/\` (input.payload, headers.json, expected.json, expected-output.*) | \`cd module && mvn -B -s <settings.xml> test -Dtest=FlowParityTest\` | 0 failures, 0 errors |
+| 2 error paths | \`2-error-paths/FlowErrorTest.java\` | \`cd module && mvn -B -s <settings.xml> test -Dtest=FlowErrorTest\` | 0 failures, 0 errors |
+| 3 runtime | \`3-runtime/SMOKE.txt\` (last run) | \`python \$KIT/skills/osb-camelk-route/scripts/smoke_http.py module --engine jbang\` (HTTP flows) or \`ENGINE=jbang bash \$KIT/broker/e2e_local.sh module\` (JMS flows) | every case PASS, error case ok |
+| test strength | \`../5-results/MUTATION.json\` | \`python \$KIT/skills/osb-camelk-route/scripts/mutate_route.py module --mvn "mvn -B -q -s <settings.xml>"\` | every mutation caught |
+| gates | \`../5-results/GATES.json\` | \`python \$KIT/skills/osb-camelk-route/scripts/verify_module.py module\` | every gate ok |
+
+Backend stubs used by levels 1 and 3: \`stubs/\`. Results of the last run: \`TESTS.md\`. Still to run on Dev: \`DEV_TEST_PLAN.md\`.
+Test messages are masked (real) or synthetic; they stay on the client machine.
+RUN
 if [ -n "$REF" ] && [ -d "$REF" ]; then
   echo "== comparing the generated route with $REF on the same frozen tests"
   "$PY" "$(cd "$KIT/../../vdi-osb-migration/bin" 2>/dev/null && pwd || echo "$KIT/bin")/compare_codegen.py" "$M" \
-    --candidate generated="$M/src/main" --candidate reference="$REF" --mvn "mvn -B -q ${MVN_ARGS:-}" -o "$O/6-compare" >/dev/null 2>&1 \
-    && rm -rf "$O"/6-compare/generated "$O"/6-compare/reference || echo "   comparison failed: see $O/6-compare"
+    --candidate generated="$M/src/main" --candidate reference="$REF" --mvn "mvn -B -q ${MVN_ARGS:-}" -o "$O/8-compare" >/dev/null 2>&1 \
+    && rm -rf "$O"/8-compare/generated "$O"/8-compare/reference || echo "   comparison failed: see $O/8-compare"
 fi
 "$PY" - "$O" "$P" "$X" "$M" "${ROUTE_AUTHOR:-pi agent (osb-camelk-route)}" <<'PY'
 import json, sys, re
@@ -695,15 +1103,26 @@ card = (m / "FLOW_CARD.md").read_text(encoding="utf-8") if (m / "FLOW_CARD.md").
 st = (re.search(r"^Status:\s*(.+)$", card, re.M) or [None, "-"])[1]
 k8 = g.get("gates", {}).get("K8_tests_green", {})
 routes = sorted(p_.name for p_ in (m / "src/main/resources/routes").glob("*.yaml")) if (m / "src/main/resources/routes").is_dir() else []
-lines = [f"# Review package: {p} / {x}", "",
+acc = load(m / "LOCAL_ACCEPTANCE.json")
+bad = []
+if not k8 or int(k8.get("failures") or 0) or int(k8.get("errors") or 0): bad.append("tests not green")
+if g.get("result") != "PASS": bad.append("gates not PASS")
+if mu and mu.get("killed") != mu.get("total") and not (m / "MUTATION_ACCEPTED.md").is_file(): bad.append("mutations survived")
+if acc.get("result") != "PASS": bad.append("local acceptance " + str(acc.get("result") or "not run"))
+banner = ("**READY FOR REVIEW**: tests green, gates PASS, mutations caught, local acceptance PASS." if not bad else
+          "**NOT READY FOR REVIEW: " + "; ".join(bad) + ".** Fix and rebuild the package before handing it over.")
+lines = [f"# Review package: {p} / {x}", "", banner, "",
          "Everything below stays on the client machine. Read in this order:", "",
          "| # | Where | What to check |", "|---|---|---|",
          "| 1 | `1-research/RESEARCH.md` | what the OSB flow does (entry, branches, outputs, errors, logs) with evidence; open questions |",
          "| 2 | `2-card/FLOW_CARD.md` | the behaviour the code must implement; status of the approval |",
          f"| 3 | `module/src/main/resources/routes/` | **the Camel route, written by: {author}** (YAML DSL); helper beans in `module/src/main/java`; `application.properties` = production descriptor (OSB names, selector, connection from the environment); `MIGRATION_NOTES.md` |",
-         "| 4 | `module/src/test/` | FlowParityTest (generated, frozen), FlowErrorTest, expected outputs (`flow-test.json`), test messages (`resources/parity`, masked / synthetic), stubs |",
-         "| 5 | `5-results/` | TEST_MATRIX.md, GATES.json (K1-K11), MUTATION.json, surefire summaries |",
-         "| 6 | `6-compare/COMPARISON.md` | (if present) generated route vs reference route on the same tests |", "",
+         "| 4 | `3-tests/` | **the tests to review**: `TESTS.md` (results by level), `RUN_TESTS.md` (how to run), `1-functional/` (test, expected outputs, cases), `2-error-paths/`, `3-runtime/`, `stubs/`. **all tests by level**: L1 functional, L2 error paths, L3 mutations, L4 gates, L5 runtime run, L6 deploy file, each with its result; test code in `module/src/test/` |",
+         "| 5 | `3-tests/DEV_TEST_PLAN.md` | the tests still to run on Dev / E2E (deploy, functional per scenario, errors, security, side by side with OSB, non-functional) |",
+         "| 6 | `4-acceptance/`, `5-results/` | local acceptance result, Camel JBang run, TEST_MATRIX.md, GATES.json (K1-K13), MUTATION.json, surefire summaries |",
+         "| 7 | `6-deploy/camel-k/` | the Kustomize folder as handed to Argo CD: integration.yaml (the Integration only, no code), sources/ (route + Java), config/, kustomization.yaml, DEPLOY.md |",
+         "| 8 | `7-dev-tests/README_DEV_TESTS.md` | the tests to run against Dev after deployment: dev_check.sh (deployment), dev_test.py (functional, errors, security, OSB side by side) |",
+         "| 9 | `8-compare/COMPARISON.md` | (if present) generated route vs reference route on the same tests |", "",
          "Run it yourself: `cd module && mvn -B -s <team settings.xml> test` (JDK 21, Maven 3.9); against a local Artemis:",
          "`broker/LOCAL_BROKER_TEST.md` of the kit (`env/local.properties` is in the module).", "",
          "## Summary", "",
@@ -729,11 +1148,102 @@ lines = [f"# Review package: {p} / {x}", "",
          "- [ ] Open questions answered or accepted before the card is approved", "",
          "Reviewer: ____________  Date: ________  Result: approve / changes needed"]
 (o / "README_REVIEW.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-print("\n".join(lines[16:26]))
+print(banner); print("\n".join(lines[20:30]))
 PY
 (cd "$WS/review" && tar -czf "$P-$X.tgz" "$P-$X")
+# Dev handover: what the deployer and the Dev tester need, nothing else (deploy files + Dev tests + results so far)
+H="$WS/review/$P-$X-dev"; rm -rf "$H"; mkdir -p "$H"
+cp -r "$O/6-deploy/camel-k" "$H/" 2>/dev/null; cp -r "$O/7-dev-tests" "$H/dev-tests"; cp "$O/3-tests/TESTS.md" "$H/" 2>/dev/null
+(cd "$WS/review" && tar -czf "$P-$X-dev.tgz" "$P-$X-dev" && rm -rf "$P-$X-dev")
+echo "dev handover:   $WS/review/$P-$X-dev.tgz  (camel-k/ + dev-tests/ + TESTS.md)"
 echo "review package: $O  (+ $WS/review/$P-$X.tgz). Keep it on the client machine."
 KIT_EOF_PI_MAKE_REVIEW_PACK_SH
+mkdir -p "$(dirname "pi/osb_agent.sh")"
+cat > 'pi/osb_agent.sh' <<'KIT_EOF_PI_OSB_AGENT_SH'
+#!/usr/bin/env bash
+# One command per OSB project: the pi operator (skill osb-migration-run, role agents/operator-osb.md) reads the state of
+# the run (pipeline_state.py), executes the one next kit command, reads the state again, and stops at the human gates.
+# Splunk is the input (EXPORT=<csv> + MASK_KEY), everything else is driven from here. Run it in the workspace.
+#   bash <kit>/pi/osb_agent.sh '<a-prj|b-prj>' [--max-rounds N] [--no-pi]
+#     --max-rounds N   operator rounds before giving up (default 12); one round = one pi call that may run several steps
+#     --no-pi          no operator model: this script runs the `next` commands itself (deterministic; research and the
+#                      route still need pi inside flows/review, so without pi on PATH those stages stop as BLOCKED)
+# Exported before: OSB_PI_MODEL (the operator and the inner research/implementer calls), ARTEMIS_PASSWORD (asked if
+# missing), EXPORT + MASK_KEY when there is a Splunk export (MASK_KEY asked if missing). PACER=0 (default here): pi talks
+# to the model directly; PACER=1 starts the pacer and the broker through vdi_session.sh start.
+# AGENT_TIMEOUT (default 14400 s) bounds one operator round of the pi stages (flows, review-fix); every other stage
+# runs one script and gets AGENT_TIMEOUT_SHORT (default 3600 s). The inner pi calls inherit it as PI_TIMEOUT.
+# Exit: 0 handover reached, 3 a person must act (printed as HUMAN: …), 1 no progress twice or a command failed twice.
+# Logs: domain/agent-run.log (every command's output), domain/agent-<date>.out/.err (the operator's own text).
+set -u
+P=${1:?usage: osb_agent.sh '<a-prj|b-prj>' [--max-rounds N] [--no-pi]}; shift
+MAX=12; NOPI=0
+while [ $# -gt 0 ]; do case "$1" in --max-rounds) MAX=$2; shift 2;; --no-pi) NOPI=1; shift;; *) echo "unknown option $1"; exit 2;; esac; done
+WS=$(pwd)
+for f in "${OSB_KIT_ENV:-}" ./.osb-kit.env "$HOME/.osb-kit.env"; do [ -n "$f" ] && [ -f "$f" ] && { . "$f"; break; }; done
+KIT=${KIT:-$(cd "$(dirname "$0")/.." && pwd)}; export KIT WS
+PY=${PYTHON:-$(command -v python3 || command -v python || command -v py)}
+MVN_ARGS=${MVN_ARGS:-}; export MVN_ARGS
+. "$KIT/pi/pi_call.sh"
+mkdir -p "$WS/domain"
+STAMP=$(date +%F-%H%M); RUNLOG="$WS/domain/agent-run.log"; OUT="$WS/domain/agent-$STAMP.out"; ERR="$WS/domain/agent-$STAMP.err"
+STATEPY="$KIT/skills/osb-migration-run/scripts/pipeline_state.py"
+SK="$KIT/skills/osb-migration-run"
+ask() { if [ -z "${!1:-}" ]; then read -r -s -p "$2: " v; echo; export "$1=$v"; fi; }   # secrets: exported, never in a file
+
+echo "=== $(date '+%F %T') osb_agent $P (operator: $([ "$NOPI" = 1 ] && echo 'none, --no-pi' || echo "pi, model ${OSB_PI_MODEL:-<unset>}"))" | tee -a "$RUNLOG"
+if [ "$NOPI" = 0 ]; then
+  command -v pi > /dev/null || { echo "pi not on PATH: install it (pi/VDI_RUNBOOK.md section 3) or run with --no-pi"; exit 2; }
+  : "${OSB_PI_MODEL:?export OSB_PI_MODEL=<model id> (the operator and the research/implementer calls use it)}"
+  if [ "${PACER:-0}" = 0 ]; then
+    grep -q "127.0.0.1:${PACER_PORT:-8765}" "${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/models.json" 2> /dev/null && "$PY" "$KIT/pi/llm_pacer.py" pi-off
+    echo "pi: talks to the model directly (PACER=0)"
+  else
+    bash "$KIT/pi/vdi_session.sh" start || exit 1
+  fi
+fi
+ask ARTEMIS_PASSWORD "Artemis password (user ${ARTEMIS_USER:-artemis})"
+if [ -n "${EXPORT:-}" ] && [ -f "$EXPORT" ]; then ask MASK_KEY "MASK_KEY (from the data owner)"; fi
+
+state() {   # prints the table, sets KIND STAGE FP TEXT
+  "$PY" -I "$STATEPY" "$P" --json > "$WS/domain/agent-state.json" 2> "$WS/domain/agent-state.err" || [ $? = 3 ] || { cat "$WS/domain/agent-state.err"; exit 2; }
+  "$PY" -I "$STATEPY" "$P" | tee -a "$RUNLOG"
+  eval "$("$PY" -c 'import json,sys,shlex; d=json.load(open(sys.argv[1])); n=d["next"]; print("KIND=%s STAGE=%s FP=%s TEXT=%s" % (shlex.quote(n["kind"]), shlex.quote(n["stage"]), shlex.quote(d["fingerprint"]), shlex.quote(n["text"])))' "$WS/domain/agent-state.json")"
+}
+
+PROMPT="Project $P. Workspace: $WS (current folder). Use skill osb-migration-run: run pipeline_state.py first, then exactly its next command, then the state again; continue until the next human gate or the handover, then report as the skill says."
+stall=0; last=""
+for round in $(seq 1 "$MAX"); do
+  echo "--- round $round $(date '+%T')" | tee -a "$RUNLOG"
+  state
+  case "$KIND" in
+    human) echo "(do that, then run the same osb_agent.sh line again)"; exit 3 ;;
+    done)  exit 0 ;;
+  esac
+  if [ "$FP" = "$last" ]; then stall=$((stall + 1)); else stall=0; fi
+  if [ "$stall" -ge 2 ]; then
+    echo "no progress after two rounds at stage $STAGE; last command: $TEXT" | tee -a "$RUNLOG"
+    echo "--- last 30 lines of $RUNLOG"; tail -30 "$RUNLOG"; exit 1
+  fi
+  last=$FP
+  if [ "$NOPI" = 1 ]; then
+    case "$STAGE" in flows|review-fix|review-refreeze) command -v pi > /dev/null || { echo "HUMAN: stage $STAGE needs pi on PATH (research / implementer); install pi or run flows on a machine that has it"; exit 3; } ;; esac
+    echo "run: $TEXT" | tee -a "$RUNLOG"
+    bash -c "$TEXT" < /dev/null || echo "command returned $? (the state decides what it means)" | tee -a "$RUNLOG"
+  else
+    echo "operator: pi round $round (log $OUT)" | tee -a "$RUNLOG"
+    case "$STAGE" in flows|review-fix|review-refreeze) tmo=${AGENT_TIMEOUT:-14400} ;; *) tmo=${AGENT_TIMEOUT_SHORT:-3600} ;; esac
+    PI_TIMEOUT="$tmo" pi_call "$OUT.$round" "$ERR.$round" \
+      pi --print --no-session --thinking "${PI_THINKING:-medium}" --skill "$SK" --tools "read,bash,edit,write" \
+         --append-system-prompt "$KIT/agents/operator-osb.md" --model "$OSB_PI_MODEL" "$PROMPT" < /dev/null
+    rc=$?
+    { echo "=== operator round $round (rc $rc)"; cat "$OUT.$round"; } >> "$OUT"; cat "$ERR.$round" >> "$ERR"; rm -f "$OUT.$round" "$ERR.$round"
+    [ "$rc" = 75 ] && { echo "model endpoint refuses (quota): stopping"; exit 75; }
+    echo "--- operator said (last 12 lines):"; tail -12 "$OUT"
+  fi
+done
+echo "max rounds ($MAX) reached at stage $STAGE" | tee -a "$RUNLOG"; exit 1
+KIT_EOF_PI_OSB_AGENT_SH
 mkdir -p "$(dirname "pi/pi_call.sh")"
 cat > 'pi/pi_call.sh' <<'KIT_EOF_PI_PI_CALL_SH'
 #!/usr/bin/env bash
@@ -843,7 +1353,7 @@ pass "pi calls stop after PI_TIMEOUT (default 1800 s): $(command -v timeout >/de
 
 echo "Build and test"
 if command -v java >/dev/null; then
-  v=$(java -version 2>&1 | head -1 | sed -E 's/.*"([0-9]+).*/\1/'); [ "$v" -ge 21 ] 2>/dev/null && pass "java $v" || bad "java $v < 21"
+  v=$(java -version 2>&1 | grep -v 'Picked up' | head -1 | sed -E 's/.*"([0-9]+).*/\1/'); [ "$v" -ge 21 ] 2>/dev/null && pass "java $v" || bad "java $v < 21"
 else bad "java not found (JDK 21)"; fi
 if command -v mvn >/dev/null; then pass "maven $(mvn -v 2>/dev/null | head -1 | awk '{print $3}')"
   [ -f "$HOME/.m2/settings.xml" ] && pass "~/.m2/settings.xml present (mirror/proxy)" || wrn "no ~/.m2/settings.xml: Maven will try Maven Central directly"
@@ -916,8 +1426,11 @@ SK=$(skill_dir osb-camelk-route); [ -n "$SK" ] || { echo "skill osb-camelk-route
 [ -s "$RES/research.json" ] || { echo "missing $RES/research.json: run pi/run_research.sh first"; exit 1; }
 if [ -f "$RES/SHARE_CHECK.json" ] && ! grep -q '"pass": true' "$RES/SHARE_CHECK.json"; then echo "research pack did not pass its check: $RES/SHARE_CHECK.json"; exit 1; fi
 
+if [ "${FIX_ONLY:-0}" = 1 ]; then echo "== 1 functional tests: kept (FIX_ONLY=1: green module, a gate failed)"
+else
 echo "== 1 functional tests: generated tests + mocks, synthetic inputs, frozen (pi/run_tests.sh)"
 bash "$KIT/pi/run_tests.sh" "$RES" "$MOD" "$PRJ" ${TASK1:+"$TASK1"} || echo "some scenarios have no test case yet (gate K9 will fail)"
+fi
 
 echo "== 2 approval"
 if [ "${POC:-0}" = 1 ] && ! grep -qiE '^Status:[[:space:]]*approved' "$MOD/FLOW_CARD.md"; then
@@ -939,12 +1452,12 @@ echo "== 3 implement (pi), in small calls"
 PI=(pi --print --no-session --thinking "${PI_THINKING:-high}" --skill "$SK" --tools "read,bash,edit,write"
     --append-system-prompt "$KIT/agents/implementer-camelk.md")
 [ -n "${OSB_PI_MODEL:-}" ] && PI+=(--model "$OSB_PI_MODEL")
-VERIFY="$PY $SK/scripts/verify_module.py $MOD"
+VERIFY="\"$PY\" \"$SK/scripts/verify_module.py\" \"$MOD\""   # quoted: Python may sit under C:/Program Files
 RULES="Never run mvn directly: '$VERIFY' runs the tests and the gates and prints a short summary. Never edit FlowParityTest.java, flow-test.json, FLOW_CARD.md or any test case folder. Write nothing outside $MOD. Do not read target/ or the parity cases."
 export VERIFY_MVN="mvn -B -q ${MVN_ARGS:-}"
-pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route (request/reply: step 3b, the reply built from research.json transforms row by row), never edit a test (FlowParityTest, FlowErrorTest, flow-test.json are frozen), and write a backend stub only where src/test/resources/stubs has none. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
+[ "${FIX_ONLY:-0}" = 1 ] || pi_call "$LOG/implement.out" "$LOG/implement.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD. Approved card: $MOD/FLOW_CARD.md. Research: $RES/research.json (RESEARCH.md only if research.json is unclear). ${OSB_SRC:+OSB source (read only, only the files the card names): $OSB_SRC.} Do steps 3-5 of the skill: fill every TODO(flow-card) in the route (request/reply: step 3b, the reply built from research.json transforms row by row), never edit a test (FlowParityTest, FlowErrorTest, flow-test.json are frozen), and write a backend stub only where src/test/resources/stubs has none. Then run '$VERIFY' ONCE and stop: fixing is the next call. $RULES" || true
 for round in $(seq 1 "${PI_FIX_ROUNDS:-3}"); do
-  SUMMARY=$($VERIFY 2>&1) && { echo "   verify: PASS after $round call(s)"; break; }
+  SUMMARY=$(eval "$VERIFY" 2>&1) && { echo "   verify: PASS after $round call(s)"; break; }
   echo "   verify round $round: $(echo "$SUMMARY" | head -1)"
   sleep "${PI_PAUSE:-30}"
   pi_call "$LOG/fix-$round.out" "$LOG/fix-$round.err" "${PI[@]}" "Use skill osb-camelk-route. Module: $MOD (card $MOD/FLOW_CARD.md). The last verify printed:
@@ -1144,7 +1657,25 @@ do_build() {
     m="$WS/modules/$p/$x"; [ -s "$WS/research/$p/$x/research.json" ] || { echo "skip $p/$x (no research.json yet)"; continue; }
     # no module yet is fine: run_camelk.sh scaffolds it (GEN=skills alone has no earlier step that does)
     grep -qiE '^Status:[[:space:]]*(approved|poc-run)' "$m/FLOW_CARD.md" 2> /dev/null || [ "${POC:-0}" = 1 ] || { echo "skip $p/$x (card not approved; POC=1 for a proof-of-concept build)"; continue; }
-    if [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json"; then echo "skip $p/$x (tests green)"; continue; fi
+    if [ -f "$m/GATES.json" ] && "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K8_tests_green',{}).get('ok') else 1)" "$m/GATES.json"; then
+      # green module whose card was approved after the build: refreeze the card hash and re-run the gates (no pi, no mvn)
+      if grep -qiE '^Status:[[:space:]]*approved[[:space:]]*$' "$m/FLOW_CARD.md" 2> /dev/null \
+         && ! "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1]))['gates'].get('K1_card_approved',{}).get('ok') else 1)" "$m/GATES.json"; then
+        echo "=== refreeze $p/$x (card approved after the build)"
+        "$PY" -c "import hashlib,json,sys; p=sys.argv[1]; m=json.load(open(p)); m['card_sha256']=hashlib.sha256(open(sys.argv[2],'rb').read()).hexdigest(); json.dump(m,open(p,'w'),indent=2)" "$m/.scaffold.json" "$m/FLOW_CARD.md"
+        "$PY" "$SK/check_camelk.py" "$m" | grep -E '^(ok +|FAIL +)K1|^FAIL$|^PASS$' || true
+        "$PY" "$SK/camelk_manifests.py" "$m" > /dev/null 2>&1 || true
+      else
+        "$PY" "$SK/check_camelk.py" "$m" > /dev/null 2>&1 || true     # gates of the current kit (new gates, e.g. K13)
+        bad=$("$PY" -c "import json,sys; g=json.load(open(sys.argv[1]))['gates']; print(','.join(k for k,v in g.items() if not v.get('ok') and k!='K1_card_approved'))" "$m/GATES.json")
+        if [ -n "$bad" ]; then
+          echo "=== fix $p/$x (tests green, gates failed: $bad): pi fixes the route, tests stay frozen"
+          t1=$(task1_of "$p" "$x")
+          FIX_ONLY=1 OSB_SRC="$APP/$p" timed "$p" "$x" build bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
+        else echo "skip $p/$x (tests green, gates ok)"; fi
+      fi
+      continue
+    fi
     echo "=== build $p/$x"
     t1=$(task1_of "$p" "$x")
     OSB_SRC="$APP/$p" timed "$p" "$x" build bash "$KIT/pi/run_camelk.sh" "$WS/research/$p/$x" "$m" "$p" ${t1:+"$t1"} < /dev/null || echo "NOT GREEN $p/$x (continuing)"
@@ -1560,12 +2091,16 @@ cat > 'pi/vdi_session.sh' <<'KIT_EOF_PI_VDI_SESSION_SH'
 #   bash <kit>/pi/vdi_session.sh status                   what is running, kit version, settings
 #   bash <kit>/pi/vdi_session.sh flows 'a-prj|b-prj'      research (pi) -> task1 (needs EXPORT) -> review archive
 #   bash <kit>/pi/vdi_session.sh review 'a-prj|b-prj'     only the delivery part (no pi): delivery, tests, broker, archive
-#   bash <kit>/pi/vdi_session.sh deploy 'a-prj|b-prj'     camel-k/integration.yaml per flow + oc dry run; APPLY=1 applies
+#   bash <kit>/pi/vdi_session.sh smoke 'a-prj|b-prj'      HTTP flows: the route really running on Camel Main, every case sent
+#     over HTTP, backends played by a stub server, replies compared (smoke_http.py; JMS flows: broker/run_local.sh)
+#   bash <kit>/pi/vdi_session.sh deploy 'a-prj|b-prj'     camel-k/ (Kustomize: integration.yaml + sources/) per flow + oc dry run; APPLY=1 applies
+#                                                         (DEV_VALUES=later: review files, Dev values as CHANGE-ME)
 #     settings: CAMELK_NAMESPACE (required), CAMELK_BROKER_URL, CAMELK_ENV_FILE (KEY=VALUE, local file), DEPLOY_FROM=
 #     scripts|skills (default: scripts when a delivery exists, else the skills module)
+#   bash <kit>/pi/vdi_session.sh accept 'a-prj|b-prj'    local acceptance, the gate before Dev (pi/local_acceptance.sh)
 #   bash <kit>/pi/vdi_session.sh stop [--broker]          routes stopped, pi back to the platform, pacer stopped
 #   PACER=0 before start/flows: no pacer, pi talks to the model directly (an endpoint without a rate limit)
-#   GEN=scripts|skills|both before flows/review: who builds route + tests after research (default scripts)
+#   GEN=skills|scripts|both before flows/review: who builds route + tests after research (default skills: the agent)
 #     scripts  route generated from the OSB pipeline, tests from Splunk cases + schema (no model)  -> delivery/ + archive
 #     skills   pi writes the route (osb-camelk-route + implementer-camelk) into modules/, frozen tests, mvn, gates
 #     both     the two side by side + one comparison line per flow
@@ -1608,7 +2143,7 @@ use_model_directly() {   # PACER=0: pi -> model platform, no pacer in between
 }
 model_link() { if [ "${PACER:-1}" = 0 ]; then use_model_directly; else pacer_up && pi_on_pacer || start_pacer; fi; }
 
-GEN=${GEN:-scripts}
+GEN=${GEN:-skills}   # decided 2026-10-25: the agentic path is the approach; scripts = no-model fallback (JMS only)
 gen_stage() {   # $1 = projects, $2 = REVIEW_TESTS for the scripts path
   case "$GEN" in
     scripts) PI_TESTER=${PI_TESTER:-0} REVIEW_TESTS=${2:-1} PROJECTS="$1" bash "$KIT/pi/run_domain.sh" review ;;
@@ -1701,26 +2236,46 @@ case "${1:-}" in
     [ "$GEN" = scripts ] || model_link || exit 1
     gen_stage "$P" 0 2>&1 | tee -a "$LOG" ;;
 
+  smoke)
+    P=${2:?usage: vdi_session.sh smoke 'a-prj|b-prj'}
+    PROJECTS="$P" bash "$KIT/pi/run_domain.sh" list 2>/dev/null | awk 'NF==2 && $2 != "proxies"' | while read -r p x; do
+      m="$WS/modules/$p/$x"
+      [ -f "$m/pom.xml" ] || { echo "$p/$x: no module yet (run flows first)"; continue; }
+      grep -q '^flow.input=platform-http:' "$m/src/main/resources/application.properties" 2>/dev/null \
+        || { echo "$p/$x: not an HTTP flow: bash $KIT/broker/run_local.sh $m (local Artemis)"; continue; }
+      echo "=== smoke $p/$x"
+      "$PY" "$KIT/skills/osb-camelk-route/scripts/smoke_http.py" "$m" || echo "NOT GREEN smoke $p/$x (see $m/SMOKE.txt, target/smoke-route.log)"
+    done 2>&1 | tee -a "$LOG" ;;
+
   deploy)
     P=${2:?usage: vdi_session.sh deploy 'a-prj|b-prj'   (CAMELK_NAMESPACE=<dev namespace>, APPLY=1 to apply)}
-    : "${CAMELK_NAMESPACE:?export CAMELK_NAMESPACE=<dev namespace> (and CAMELK_BROKER_URL, CAMELK_ENV_FILE)}"
+    [ "${DEV_VALUES:-}" = later ] || : "${CAMELK_NAMESPACE:?export CAMELK_NAMESPACE=<dev namespace> (and CAMELK_BROKER_URL, CAMELK_ENV_FILE), or DEV_VALUES=later for review files with placeholders}"
+    export DEV_VALUES
     command -v oc > /dev/null && OC=1 || { OC=0; echo "oc not on PATH: manifests only, no dry run / apply"; }
     PROJECTS="$P" bash "$KIT/pi/run_domain.sh" list 2>/dev/null | awk 'NF==2 && $2 != "proxies"' | while read -r p x; do
       d=$(ls -d "$WS"/delivery/*/"$p" 2>/dev/null | head -1); m="$WS/modules/$p/$x"
       src=$([ "${DEPLOY_FROM:-}" = skills ] || [ -z "$d" ] && echo "$m" || echo "$d")
       [ -d "$src" ] || { echo "$p/$x: nothing built yet (run flows or review first)"; continue; }
       echo "=== $p/$x from $src"
-      "$PY" "$KIT/skills/osb-camelk-route/scripts/camelk_manifests.py" "$src" --namespace "$CAMELK_NAMESPACE" || continue
+      "$PY" "$KIT/skills/osb-camelk-route/scripts/camelk_manifests.py" "$src" --namespace "${CAMELK_NAMESPACE:-}" || continue
       f="$src/camel-k/integration.yaml"
-      grep -q '"ready": true' "$src/camel-k/CHECK.json" || { echo "   NOT READY: fill the open values (CHANGE-ME), see $src/camel-k/DEPLOY.md"; continue; }
+      grep -q '"ready": true' "$src/camel-k/CHECK.json" || { grep -q '"for_review": true' "$src/camel-k/CHECK.json" \
+        && echo "   FOR REVIEW: $src/camel-k (Dev values as CHANGE-ME, listed in DEPLOY.md; not for apply yet)" \
+        || echo "   NOT READY: fill the open values (CHANGE-ME), see $src/camel-k/DEPLOY.md"; continue; }
       [ "$OC" = 1 ] || continue
-      oc apply -n "$CAMELK_NAMESPACE" --dry-run=server -f "$f" || { echo "   dry run refused: fix before applying"; continue; }
+      oc apply -n "$CAMELK_NAMESPACE" --dry-run=server -k "$src/camel-k" || { echo "   dry run refused: fix before applying"; continue; }
       for s in $("$PY" -c "import json,sys; print(' '.join(json.load(open(sys.argv[1]))['secrets']))" "$src/camel-k/CHECK.json"); do
         oc get secret "$s" -n "$CAMELK_NAMESPACE" > /dev/null 2>&1 || echo "   MISSING Secret $s: create it first (DEPLOY.md)"
       done
-      if [ "${APPLY:-0}" = 1 ]; then oc apply -n "$CAMELK_NAMESPACE" -f "$f" && echo "   applied: oc get integration -n $CAMELK_NAMESPACE -w"
+      if [ "${APPLY:-0}" = 1 ]; then oc apply -n "$CAMELK_NAMESPACE" -k "$src/camel-k" && echo "   applied: oc get integration -n $CAMELK_NAMESPACE -w"
       else echo "   dry run OK. Apply with: APPLY=1 bash $KIT/pi/vdi_session.sh deploy '$p'"; fi
     done 2>&1 | tee -a "$LOG" ;;
+
+  accept)
+    P=${2:?usage: vdi_session.sh accept 'a-prj|b-prj'   (local acceptance before Dev: card, tests, mutations, Camel JBang run, manifest, review pack)}
+    ask ARTEMIS_PASSWORD "Artemis password (user ${ARTEMIS_USER:-artemis})"
+    broker_up || start_broker || echo "broker not running: JMS flows fail step 4"
+    bash "$KIT/pi/local_acceptance.sh" "$P" 2>&1 | tee -a "$LOG" ;;
 
   stop)
     D=$(ls -d "$WS"/delivery/*/ 2>/dev/null | head -1)
@@ -2082,4 +2637,4 @@ For each red gate, name the owner role per skill camel-migration-verification St
 KIT_EOF__PI_PROMPTS_OSB_VERIFY_MD
 chmod +x pi/*.sh 2>/dev/null || true
 echo "commands /osb-* installed in .pi/prompts: start pi in this folder and trust the project (or pi --approve)"
-echo "installed: 40 files (agent layer)"
+echo "installed: 44 files (agent layer)"

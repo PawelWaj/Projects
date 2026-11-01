@@ -16,7 +16,8 @@
 #                 3-runtime/, stubs/
 #   4-acceptance/ LOCAL_ACCEPTANCE.md/.json, SMOKE.json/.txt (the route run with Camel JBang)
 #   5-results/    TEST_MATRIX.md, GATES.json, MUTATION.json, surefire summaries
-#   6-deploy/     camel-k/ (integration.yaml, DEPLOY.md, CHECK.json) as handed to Argo CD
+#   6-deploy/     camel-k/ (Kustomize: integration.yaml without code, sources/, config/, kustomization.yaml, DEPLOY.md,
+#                 CHECK.json) as handed to Argo CD
 #   7-dev-tests/  dev_check.sh (D0) + dev_test.py (D1-D4, against the deployed route, OSB side by side), dev-cases/
 #   8-compare/    (optional) generated route vs reference route on the same tests
 set -uo pipefail
@@ -137,7 +138,7 @@ lines = [f"# Review package: {p} / {x}", "", banner, "",
          "| 4 | `3-tests/` | **the tests to review**: `TESTS.md` (results by level), `RUN_TESTS.md` (how to run), `1-functional/` (test, expected outputs, cases), `2-error-paths/`, `3-runtime/`, `stubs/`. **all tests by level**: L1 functional, L2 error paths, L3 mutations, L4 gates, L5 runtime run, L6 deploy file, each with its result; test code in `module/src/test/` |",
          "| 5 | `3-tests/DEV_TEST_PLAN.md` | the tests still to run on Dev / E2E (deploy, functional per scenario, errors, security, side by side with OSB, non-functional) |",
          "| 6 | `4-acceptance/`, `5-results/` | local acceptance result, Camel JBang run, TEST_MATRIX.md, GATES.json (K1-K13), MUTATION.json, surefire summaries |",
-         "| 7 | `6-deploy/camel-k/` | integration.yaml + DEPLOY.md as handed to Argo CD |",
+         "| 7 | `6-deploy/camel-k/` | the Kustomize folder as handed to Argo CD: integration.yaml (the Integration only, no code), sources/ (route + Java), config/, kustomization.yaml, DEPLOY.md |",
          "| 8 | `7-dev-tests/README_DEV_TESTS.md` | the tests to run against Dev after deployment: dev_check.sh (deployment), dev_test.py (functional, errors, security, OSB side by side) |",
          "| 9 | `8-compare/COMPARISON.md` | (if present) generated route vs reference route on the same tests |", "",
          "Run it yourself: `cd module && mvn -B -s <team settings.xml> test` (JDK 21, Maven 3.9); against a local Artemis:",

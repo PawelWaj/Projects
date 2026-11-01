@@ -255,8 +255,10 @@ No Dev values yet (review first): `export DEV_VALUES=later` and rerun `osb_agent
 namespace (the Argo CD destination sets it), credentials still only as Secret references; the run ends with
 `DONE: every flow is ready for review`. Regenerate with `dev.env` + `CAMELK_NAMESPACE` before Dev.
 
-Hand over `modules/<project-prj>/<Proxy>/camel-k/integration.yaml` and `DEPLOY.md`; the colleague puts the file into
-the GitOps repository and creates the Secret named in `DEPLOY.md`. A direct `oc apply` would be reverted by Argo CD.
+Hand over the folder `modules/<project-prj>/<Proxy>/camel-k/` (Kustomize: `integration.yaml` = the Integration only,
+no code; `sources/` = route and Java files; `config/`; `kustomization.yaml`; `DEPLOY.md`); the colleague puts the
+folder into the GitOps repository (Argo CD renders it as Kustomize; by hand `oc apply -k camel-k/`) and creates the
+Secret named in `DEPLOY.md`. A direct `oc apply` would be reverted by Argo CD.
 Open with the platform team before the first apply: Camel K is an operator (program rule: no application operators;
 Dev exception), Camel K version ≥ 2.3 for Secret-backed env vars, Secrets by hand today vs Vault.
 
@@ -311,7 +313,7 @@ bash $KIT/pi/vdi_session.sh accept '<project-prj>'       # = pi/local_acceptance
 | 2 tests | Maven tests + gates K1–K12, K1 included | `tests N, failures 0, errors 0`; `gates K1-K12 ok` |
 | 3 mutate | every deliberate break is caught by the tests | `mutations caught x/x` (or each survivor named with its reason in `MUTATION_ACCEPTED.md`) |
 | 4 run | HTTP: stub backend, every case over HTTP, forced 500; JMS: queues on the local Artemis, one case per scenario + an unreadable message, every output queue counted | `smoke: N cases, 0 failed, error case ok` / `every output queue got what the tests expect` |
-| 5 manifest | `integration.yaml` regenerated and checked: structure (and YAML parse), sources byte-identical to the module, every Secret reference in `DEPLOY.md`, no credential written as a value | `ready: true` or `ready for Dev once values are set: <keys>` |
+| 5 manifest | `camel-k/` regenerated and checked: integration.yaml = the Integration only (no code), kustomization.yaml complete, `sources/` byte-identical to the module, every Secret reference in `DEPLOY.md`, no credential written as a value | `ready: true` or `ready for Dev once values are set: <keys>` |
 | 6 review | review package newer than all of the above | `review/<p>-<Proxy>.tgz` |
 
 Output: `<module>/LOCAL_ACCEPTANCE.md` + `.json` (each step, seconds, kit commit, engine), logs in

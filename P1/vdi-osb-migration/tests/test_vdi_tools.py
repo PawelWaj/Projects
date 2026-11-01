@@ -377,7 +377,7 @@ class CheckManifestTests(unittest.TestCase):
 
     def test_hand_edited_source_fails(self):
         self.gen_and_check()
-        f = self.m / "camel-k/integration.yaml"; f.write_text(f.read_text().replace("public class B", "public class C"))
+        f = self.m / "camel-k/sources/B.java"; f.write_text(f.read_text().replace("public class B", "public class C"))
         r = subprocess.run([sys.executable, "-I", str(self.SK / "check_manifest.py"), str(self.m)], capture_output=True, text=True)
         self.assertEqual(r.returncode, 1)
         self.assertIn("differ: ['B.java']", r.stdout)
@@ -387,7 +387,16 @@ class CheckManifestTests(unittest.TestCase):
         y = self.m / "src/main/resources/routes/Flow.camel.yaml"; y.write_text(y.read_text().replace("${env:F_TOKEN}", "${env:F_TOKEN}${env:F_ID}"))
         r = self.gen_and_check({"CAMELK_ENV_FILE": str(envf), "CAMELK_SECRET_KEYS": "F_ID"})
         self.assertEqual(r.returncode, 0, r.stdout)
-        self.assertNotIn("id-value-77", (self.m / "camel-k/integration.yaml").read_text())
+        for q in (self.m / "camel-k").rglob("*"):
+            if q.is_file():
+                self.assertNotIn("id-value-77", q.read_text(), q.name)
+
+    def test_code_pasted_into_integration_yaml_fails(self):
+        self.gen_and_check()
+        f = self.m / "camel-k/integration.yaml"; f.write_text(f.read_text() + "---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n")
+        r = subprocess.run([sys.executable, "-I", str(self.SK / "check_manifest.py"), str(self.m)], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("integration.yaml must hold only the Integration", r.stdout)
 
 
 class RouteLintAndJBangTests(unittest.TestCase):
@@ -1415,20 +1424,24 @@ class SyntheticAndReplyTests(unittest.TestCase):
             for f in ("README.md", "run.sh", "set-env.sh", "tools/jbang.sh", "tools/artemis.sh", "tools/e2e.sh"):
                 self.assertTrue((app / f).is_file(), f)
             self.assertIn("| x-prj | x | x-register | xml |", (app / "README.md").read_text())
-            # Camel K: ONE integration.yaml (kamelets + ConfigMaps + Integration) + DEPLOY.md, no credential value anywhere
+            # Camel K: Kustomize folder; integration.yaml = the Integration only (no code), files next to it
             k = p / "camel-k"
-            allk = (k / "integration.yaml").read_text()
-            integ = allk.split("kind: Integration", 1)[1]
+            integ = (k / "integration.yaml").read_text()
+            kust = (k / "kustomization.yaml").read_text()
+            allk = "\n".join(q.read_text() for q in sorted(k.rglob("*")) if q.is_file())
             for s in ("name: x\n", "contentRef: x-sources", "contentKey: x-route.yaml", "contentKey: OsbXQuery.java",
                       '"configmap:x-config"', '"secret:x-broker"', '"configmap:x-transformations@/etc/camel/resources/osb/transformations"',
                       '"OSB_FILES_DIR=/etc/camel/resources/osb"', 'list: "osb-jms-sink,osb-jms-source"', "mvn:net.sf.saxon:Saxon-HE:12.9",
                       "imagePullPolicy: Always", "    environment:", '"BROKER_URL=CHANGE-ME"'):
                 self.assertIn(s, integ, s)
             self.assertIn("service:\n      enabled: false", integ, "a JMS flow needs no Service")
-            self.assertEqual(allk.count("kind: ConfigMap"), 3)
-            self.assertEqual(allk.count("kind: Kamelet"), 2)
+            self.assertNotIn("kind: ConfigMap", integ); self.assertNotIn("- route:", integ, "no code in integration.yaml")
+            self.assertEqual(kust.count("  - name: x-"), 3)
+            self.assertEqual(len(list((k / "kamelets").glob("*.kamelet.yaml"))), 2)
+            self.assertIn("  - kamelets/osb-jms-sink.kamelet.yaml", kust)
             self.assertNotIn("password", integ.lower())
-            self.assertIn("x-register.xqy:", allk)
+            self.assertEqual((k / "transformations/x-register.xqy").read_text(), (p / "transformations/x-register.xqy").read_text())
+            self.assertEqual((k / "sources/x-route.yaml").read_text(), (p / "x-route.yaml").read_text())
             self.assertIn("osb.files.dir={{env:OSB_FILES_DIR:.}}", allk)
             self.assertNotIn(".password={{env:BROKER_PASSWORD", allk, "credentials only from the Secret")
             self.assertIn("--from-file=broker.properties", (k / "DEPLOY.md").read_text())
@@ -1436,10 +1449,14 @@ class SyntheticAndReplyTests(unittest.TestCase):
             self.assertFalse((k / "configmaps.yaml").exists())
             try:
                 import yaml  # optional: full parse when PyYAML is present
-                docs = list(yaml.safe_load_all(allk))
-                self.assertEqual([d["kind"] for d in docs][-4:], ["ConfigMap", "ConfigMap", "ConfigMap", "Integration"])
-                self.assertEqual(docs[-2]["data"]["x-register.xqy"], (p / "transformations/x-register.xqy").read_text())
-                self.assertEqual(docs[-1]["spec"]["traits"]["mount"]["configs"], ["configmap:x-config", "secret:x-broker"])
+                docs = list(yaml.safe_load_all(integ))
+                self.assertEqual([d["kind"] for d in docs], ["Integration"])
+                self.assertEqual(docs[0]["spec"]["traits"]["mount"]["configs"], ["configmap:x-config", "secret:x-broker"])
+                ky = yaml.safe_load(kust)
+                gen = {g["name"]: g for g in ky["configMapGenerator"]}
+                self.assertIn("sources/x-route.yaml", gen["x-sources"]["files"])
+                self.assertNotIn("options", gen["x-sources"], "sources hashed: a code change rolls the Integration")
+                self.assertTrue(gen["x-config"]["options"]["disableNameSuffixHash"])
             except ImportError:
                 pass
             # a module older than the selector: no flow.input.selector in its properties -> taken from research.json
@@ -1709,12 +1726,18 @@ class CamelKModuleManifestTests(unittest.TestCase):
             r = subprocess.run([sys.executable, str(sk / "camelk_manifests.py"), str(m), "--env-file", str(env)], capture_output=True, text=True)
             out = json.loads(r.stdout)
             self.assertTrue(out["ready"], r.stdout)
-            allk = (m / "camel-k/integration.yaml").read_text()
+            k = m / "camel-k"
+            allk = (k / "integration.yaml").read_text()
+            self.assertNotIn("kind: ConfigMap", allk); self.assertNotIn("public class Mapper", allk, "no code in integration.yaml")
+            self.assertEqual((k / "sources/Mapper.java").read_text(), "package o.p;\npublic class Mapper {}\n")
+            self.assertIn("      - sources/Lookup.camel.yaml", (k / "kustomization.yaml").read_text())
+            self.assertIn("path: spec/sources/contentRef", (k / "kustomizeconfig.yaml").read_text())
+            self.assertIn("oc apply -n <namespace> -k .", (k / "DEPLOY.md").read_text())
             for s in ("name: lookup\n", "contentKey: Lookup.camel.yaml", "contentKey: Mapper.java", "- camel:platform-http",
                       "- camel:http", '"LK_HOST=h.example"', '"LK_APIKEY=secret:lookup-env/LK_APIKEY"', "service:\n      enabled: true"):
                 self.assertIn(s, allk, s)
             self.assertNotIn("camel:amqp", allk, "no amqp endpoint in the route")
-            self.assertNotIn("routes-include-pattern", allk)
+            self.assertNotIn("routes-include-pattern", (k / "config/application.properties").read_text())
             self.assertIn("--from-literal=LK_APIKEY=", (m / "camel-k/DEPLOY.md").read_text())
 
 

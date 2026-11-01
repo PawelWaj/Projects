@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Check the generated camel-k/integration.yaml of a work module before it is handed over for Argo CD.
+"""Check the generated camel-k/ Kustomize folder of a work module before it is handed over for Argo CD.
 
     check_manifest.py modules/<project>/<proxy> [--json]
 
-1. every document has apiVersion, kind and metadata.name (and, when PyYAML is installed, the file parses as YAML);
-2. the ConfigMap sources are exactly the module's route YAML and Java files, and the config ConfigMap is exactly the
-   Camel K variant of application.properties (camelk_manifests.camelk_properties): nothing edited by hand;
+1. integration.yaml is ONE Integration resource with no code in it (no ConfigMap, no inline source content), and
+   kustomization.yaml generates <name>-sources from every file in sources/ and <name>-config from config/; every file
+   it names exists; kustomizeconfig.yaml maps the Integration contentRef (YAML parsed when PyYAML is installed);
+2. sources/ holds exactly the module's route YAML and Java files, byte for byte, and config/application.properties
+   is exactly the Camel K variant (camelk_manifests.camelk_properties): nothing edited by hand;
 3. every `secret:<name>/<key>` reference is named in DEPLOY.md;
 4. no credential is written as a value: env names that look secret (PASSWORD, TOKEN, API_KEY ...) or are listed in
    CAMELK_SECRET_KEYS appear only as secret: references, and no value of such a key from CAMELK_ENV_FILE is in the file;
@@ -39,33 +41,10 @@ def meta_name(doc: str) -> str:
     return m.group(1) if m else ""
 
 
-def configmap_data(doc: str) -> dict[str, str]:
-    """data entries of a ConfigMap as camelk_manifests.block writes them (literal block or JSON-quoted string)."""
-    lines = doc.split("\n")
-    try:
-        start = lines.index("data:") + 1
-    except ValueError:
-        return {}
-    out, i = {}, start
-    while i < len(lines):
-        ln = lines[i]
-        m = re.match(r"^  ([^ ][^:]*): (\|)?(.*)$", ln)
-        if not m:
-            i += 1
-            continue
-        key, lit, rest = m.group(1), m.group(2), m.group(3)
-        if not lit:
-            out[key] = json.loads(rest)
-            i += 1
-            continue
-        body, i = [], i + 1
-        while i < len(lines) and (lines[i].startswith("    ") or lines[i] == ""):
-            body.append(lines[i][4:])
-            i += 1
-        while body and body[-1] == "":
-            body.pop()
-        out[key] = "\n".join(body) + "\n"
-    return out
+def listed(kust: str, cm_name: str) -> list[str]:
+    """files of one configMapGenerator entry in kustomization.yaml as camelk_manifests.kustomization writes it."""
+    m = re.search(rf"^  - name: {re.escape(cm_name)}\n    files:\n((?:      - .+\n)+)", kust, re.M)
+    return re.findall(r"^      - (.+)$", m.group(1), re.M) if m else []
 
 
 def secret_names(mod: Path, text: str) -> set[str]:
@@ -85,44 +64,71 @@ def check(mod: Path) -> dict:
         step("file", False, "no camel-k/integration.yaml (camelk_manifests.py)")
         return res
     text = f.read_text(encoding="utf-8")
+    kf = out / "kustomization.yaml"
+    kust = kf.read_text(encoding="utf-8") if kf.is_file() else ""
     ds = docs(text)
-    bad = [i for i, d in enumerate(ds, 1) if not (head(d, "apiVersion") and head(d, "kind") and meta_name(d))]
+    kinds = [head(d, "kind") for d in ds]
+    name = meta_name(ds[0]) if ds else ""
+    bad = []
+    if kinds != ["Integration"]:
+        bad.append(f"integration.yaml must hold only the Integration, has: {kinds}")
+    if re.search(r"^\s+content:\s", text, re.M) or "kind: ConfigMap" in text:
+        bad.append("code inside integration.yaml (inline content or a ConfigMap)")
+    if not kust:
+        bad.append("no kustomization.yaml")
+    else:
+        for need in ("kind: Kustomization", "  - integration.yaml", "  - kustomizeconfig.yaml", f"  - name: {name}-sources",
+                     f"  - name: {name}-config"):
+            if need not in kust:
+                bad.append(f"kustomization.yaml lacks '{need.strip()}'")
+        gone = [g for g in re.findall(r"^      - (.+)$", kust, re.M) if not (out / g).is_file()]
+        gone += [r for r in re.findall(r"^  - (kamelets/.+)$", kust, re.M) if not (out / r).is_file()]
+        if gone:
+            bad.append(f"files named in kustomization.yaml missing: {gone}")
+    kc = out / "kustomizeconfig.yaml"
+    if not kc.is_file() or "path: spec/sources/contentRef" not in kc.read_text(encoding="utf-8"):
+        bad.append("kustomizeconfig.yaml missing or without the Integration contentRef mapping")
     parsed = "not checked (no PyYAML)"
     try:
         import yaml  # type: ignore
-        list(yaml.safe_load_all(text))
+        for t in (text, kust):
+            list(yaml.safe_load_all(t))
         parsed = "parses"
     except ImportError:
         pass
     except Exception as e:  # noqa: BLE001
         bad.append(f"YAML: {type(e).__name__}")
-    kinds = [head(d, "kind") for d in ds]
-    step("structure", not bad, f"{len(ds)} documents ({', '.join(kinds)}), YAML {parsed}" + (f"; broken: {bad}" if bad else ""))
+    step("structure", not bad, f"Integration {name} without code + kustomization.yaml, YAML {parsed}" + (f"; broken: {bad}" if bad else ""))
 
     main = mod / "src/main"
-    want = {p.name: p.read_text(encoding="utf-8") for p in sorted((main / "resources/routes").glob("*.yaml"))}
-    want.update({p.name: p.read_text(encoding="utf-8") for p in sorted((main / "java").rglob("*.java"))})
+    want = {p.name: p.read_bytes() for p in sorted((main / "resources/routes").glob("*.yaml"))}
+    want.update({p.name: p.read_bytes() for p in sorted((main / "java").rglob("*.java"))})
+    have = {p.name: p.read_bytes() for p in sorted((out / "sources").glob("*")) if p.is_file()}
+    norm = lambda b: b.replace(b"\r\n", b"\n")   # noqa: E731  (a Windows checkout may differ in line ends only)
+    diff = sorted({k for k in want if norm(have.get(k, b"")) != norm(want[k])} | {k for k in have if k not in want})
+    unlisted = sorted(k for k in have if f"sources/{k}" not in listed(kust, f"{name}-sources"))
     props = (main / "resources/application.properties").read_text(encoding="utf-8")
-    cms = {meta_name(d): configmap_data(d) for d in ds if head(d, "kind") == "ConfigMap"}
-    src = next((v for k, v in cms.items() if k.endswith("-sources")), {})
-    cfg = next((v for k, v in cms.items() if k.endswith("-config")), {})
-    diff = sorted({k for k in want if src.get(k) != want[k]} | {k for k in src if k not in want})
-    if cfg.get("application.properties") != cm.camelk_properties(props):
+    cfg = out / "config/application.properties"
+    if not cfg.is_file() or cfg.read_text(encoding="utf-8") != cm.camelk_properties(props):
         diff.append("application.properties")
-    step("sources", not diff, f"{len(src)} source(s) + properties identical to the module" if not diff else f"differ: {diff}")
+    step("sources", not diff and not unlisted,
+         f"{len(have)} source file(s) + properties identical to the module, all in {name}-sources" if not (diff or unlisted)
+         else f"differ: {diff}" + (f"; not in the generator: {unlisted}" if unlisted else ""))
 
     refs = sorted(set(re.findall(r"secret:([\w.-]+)/([\w.-]+)", text)))
     deploy = (out / "DEPLOY.md").read_text(encoding="utf-8") if (out / "DEPLOY.md").is_file() else ""
     missing = [f"{s}/{k}" for s, k in refs if s not in deploy or k not in deploy]
     step("secrets-documented", not missing, f"{len(refs)} secret reference(s), all in DEPLOY.md" if not missing else f"not in DEPLOY.md: {missing}")
 
-    names = secret_names(mod, text)
+    code = "\n".join(q.read_text(encoding="utf-8", errors="replace") for d in ("sources", "config") for q in sorted((out / d).glob("*")) if q.is_file())
+    names = secret_names(mod, code + "\n" + text)
     literal = sorted(n for n in names if re.search(rf'"{n}=(?!secret:)', text))
     env_file = os.environ.get("CAMELK_ENV_FILE", "")
     leaked = []
     if env_file and Path(env_file).is_file():
         vals = cm.read_env_file(env_file)
-        leaked = sorted(k for k in names if vals.get(k) and len(vals[k]) >= 4 and vals[k] in text)
+        every = "\n".join(q.read_text(encoding="utf-8", errors="replace") for q in sorted(out.rglob("*")) if q.is_file())
+        leaked = sorted(k for k in names if vals.get(k) and len(vals[k]) >= 4 and vals[k] in every)
     step("no-credentials", not literal and not leaked,
          f"{len(names)} credential name(s), all as secret: references" if not (literal or leaked)
          else f"written as values: {literal + leaked}")

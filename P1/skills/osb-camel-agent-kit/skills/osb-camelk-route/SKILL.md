@@ -112,8 +112,11 @@ edited tests to pass (caught by gate K5 and by the client reviewer). Pattern: `p
    (assumption until the platform mapping is decided). What it proves: selector + durable subscription, routing to the
    right queues, XML from the XQuery arrives. What it does not prove: byte equality with OSB, the real broker.
 8c. **Camel K deployment:** `python <skill>/scripts/camelk_manifests.py <delivery project | module>` writes
-   `camel-k/integration.yaml` (one file: Kamelets, ConfigMaps, Integration), `DEPLOY.md` (Secret commands) and
-   `CHECK.json` (ready / open CHANGE-ME values). Environment values come from `CAMELK_BROKER_URL`, `CAMELK_ENV_FILE`,
+   `camel-k/` as a Kustomize folder: `integration.yaml` (the Integration resource ONLY, never code: no ConfigMap, no
+   inline source), `sources/` (the route YAML and Java files, byte-identical to the module), `config/`,
+   (`transformations/`, `kamelets/` on the scripts path), `kustomization.yaml` (configMapGenerator; sources hashed so
+   a code change rolls the Integration), `DEPLOY.md` (Secret commands, `oc apply -k .`) and `CHECK.json` (ready /
+   open CHANGE-ME values). Never paste route or Java content into integration.yaml: `check_manifest.py` fails it. Environment values come from `CAMELK_BROKER_URL`, `CAMELK_ENV_FILE`,
    `CAMELK_NAMESPACE`, never from the repository; credential-looking `{{env:X}}` names are read from a Secret.
    `vdi_session.sh deploy` runs it with an `oc` dry run; `APPLY=1` applies (a person's decision).
 9. **Report** (five lines): proxy, gates result, tests run/failed/skipped (skipped = golden outputs pending),

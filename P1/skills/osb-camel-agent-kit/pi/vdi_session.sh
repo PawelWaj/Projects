@@ -10,7 +10,7 @@
 #   bash <kit>/pi/vdi_session.sh review 'a-prj|b-prj'     only the delivery part (no pi): delivery, tests, broker, archive
 #   bash <kit>/pi/vdi_session.sh smoke 'a-prj|b-prj'      HTTP flows: the route really running on Camel Main, every case sent
 #     over HTTP, backends played by a stub server, replies compared (smoke_http.py; JMS flows: broker/run_local.sh)
-#   bash <kit>/pi/vdi_session.sh deploy 'a-prj|b-prj'     camel-k/integration.yaml per flow + oc dry run; APPLY=1 applies
+#   bash <kit>/pi/vdi_session.sh deploy 'a-prj|b-prj'     camel-k/ (Kustomize: integration.yaml + sources/) per flow + oc dry run; APPLY=1 applies
 #                                                         (DEV_VALUES=later: review files, Dev values as CHANGE-ME)
 #     settings: CAMELK_NAMESPACE (required), CAMELK_BROKER_URL, CAMELK_ENV_FILE (KEY=VALUE, local file), DEPLOY_FROM=
 #     scripts|skills (default: scripts when a delivery exists, else the skills module)
@@ -180,11 +180,11 @@ case "${1:-}" in
         && echo "   FOR REVIEW: $src/camel-k (Dev values as CHANGE-ME, listed in DEPLOY.md; not for apply yet)" \
         || echo "   NOT READY: fill the open values (CHANGE-ME), see $src/camel-k/DEPLOY.md"; continue; }
       [ "$OC" = 1 ] || continue
-      oc apply -n "$CAMELK_NAMESPACE" --dry-run=server -f "$f" || { echo "   dry run refused: fix before applying"; continue; }
+      oc apply -n "$CAMELK_NAMESPACE" --dry-run=server -k "$src/camel-k" || { echo "   dry run refused: fix before applying"; continue; }
       for s in $("$PY" -c "import json,sys; print(' '.join(json.load(open(sys.argv[1]))['secrets']))" "$src/camel-k/CHECK.json"); do
         oc get secret "$s" -n "$CAMELK_NAMESPACE" > /dev/null 2>&1 || echo "   MISSING Secret $s: create it first (DEPLOY.md)"
       done
-      if [ "${APPLY:-0}" = 1 ]; then oc apply -n "$CAMELK_NAMESPACE" -f "$f" && echo "   applied: oc get integration -n $CAMELK_NAMESPACE -w"
+      if [ "${APPLY:-0}" = 1 ]; then oc apply -n "$CAMELK_NAMESPACE" -k "$src/camel-k" && echo "   applied: oc get integration -n $CAMELK_NAMESPACE -w"
       else echo "   dry run OK. Apply with: APPLY=1 bash $KIT/pi/vdi_session.sh deploy '$p'"; fi
     done 2>&1 | tee -a "$LOG" ;;
 
